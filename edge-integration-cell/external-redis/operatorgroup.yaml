@@ -1,0 +1,9 @@
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: redis-sap-eic-opg
+  namespace: sap-eic-external-redis
+spec:
+  targetNamespaces:
+    - sap-eic-external-redis
+  upgradeStrategy: Default
