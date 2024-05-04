@@ -1,0 +1,12 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: redis-enterprise-operator-cert
+  namespace: sap-eic-external-redis
+spec:
+  channel: production
+  installPlanApproval: Automatic
+  name: redis-enterprise-operator-cert
+  source: certified-operators
+  sourceNamespace: openshift-marketplace
+  startingCSV: redis-enterprise-operator.v7.4.2-2.6
