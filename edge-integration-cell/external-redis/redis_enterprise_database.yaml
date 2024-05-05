@@ -1,0 +1,9 @@
+apiVersion: app.redislabs.com/v1alpha1
+kind: RedisEnterpriseDatabase
+metadata:
+  name: redb
+  namespace: sap-eic-external-redis
+spec:
+  redisEnterpriseCluster:
+    name: rec
+  tlsMode: enabled
