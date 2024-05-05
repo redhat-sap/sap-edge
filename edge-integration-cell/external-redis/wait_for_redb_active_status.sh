@@ -8,10 +8,10 @@ while true; do
     status=$(oc get RedisEnterpriseDatabase "$database_name" -n sap-eic-external-redis -o json | jq -r '.status.status')
 
     if [[ "$status" == "active" ]]; then
-        echo "Status is active. Exiting loop."
+        echo "Redis Enterprise Database Status is active. Exiting loop."
         break
     else
-        echo "Status is $status. Waiting..."
+        echo "Redis Enterprise Database Status is $status. Waiting..."
         sleep 10  # Adjust the sleep time as needed
     fi
 done

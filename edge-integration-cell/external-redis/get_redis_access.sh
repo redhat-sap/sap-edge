@@ -22,7 +22,6 @@ service_name=$(echo "$secret_data" | jq -r '.data["service_name"]' | base64 --de
 
 
 service_name_with_ns="${service_name}.${namespace}.svc"
-echo $service_name_with_ns
 
 # Check if any of the values are empty
 if [[ -z "$password" || -z "$port" || -z "$service_name" ]]; then
@@ -33,8 +32,8 @@ fi
 # Get the proxy certificate content
 kubectl exec -n sap-eic-external-redis -it rec-0 -c redis-enterprise-node -- cat /etc/opt/redislabs/proxy_cert.pem > proxy_cert.pem
 
-echo "Password: $password"
-echo "Port: $port"
-echo "Service Name: $service_name"
-echo "Proxy Certificate content saved to proxy_cert.pem"
+echo "External Redis Password: $password"
+echo "External Redis Port: $port"
+echo "External Redis Service Name: $service_name_with_ns"
+echo "External Redis TLS Certificate content saved to proxy_cert.pem"
 
