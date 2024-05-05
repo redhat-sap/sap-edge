@@ -32,8 +32,11 @@ fi
 # Get the proxy certificate content
 kubectl exec -n sap-eic-external-redis -it rec-0 -c redis-enterprise-node -- cat /etc/opt/redislabs/proxy_cert.pem > external_redis_tls_certificate.pem
 
+echo "External Redis Addresses: $service_name_with_ns:$port"
+echo "External Redis Mode: standalone"
+echo "External Redis Username: [leave me blank]"
 echo "External Redis Password: $password"
-echo "External Redis Port: $port"
-echo "External Redis Service Name: $service_name_with_ns"
+echo "External Redis Sentinel Username: [leave me blank]"
+echo "External Redis Sentinel Password: [leave me blank]"
 echo "External Redis TLS Certificate content saved to external_redis_tls_certificate.pem"
-
+echo "External Redis Server Name: [leave me blank]"
