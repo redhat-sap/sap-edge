@@ -1,17 +1,20 @@
 #!/bin/bash
 
-postgres_csv=""
+redis_csv=""
 
-while [ -z "$postgres_csv" ]; do
-    redis_csv=$(oc get subscription crunchy-postgres-operator -n sap-eic-external-redis -o json | jq -r '.status.currentCSV')
-    if [ -z "$postgres_csv" ]; then
-        echo "No Postgres CSV found. Retrying..."
+while [ -z "$redis_csv" ]; do
+    redis_csv=$(oc get subscription redis-enterprise-operator-cert -n sap-eic-external-redis -o json | jq -r '.status.currentCSV')
+    if [ -z "$redis_csv" ]; then
+        echo "No Redis CSV found. Retrying..."
         sleep 5  # Adjust the sleep time as needed
     fi
 done
 
+echo "Found CSV: $redis_csv"
+
+
 while true; do
-    phase=$(oc get csv $postgres_csv -o json | jq -r '.status.phase')
+    phase=$(oc get csv $redis_csv -o json | jq -r '.status.phase')
     if [[ "$phase" == "Succeeded" ]]; then
         echo "Postgres Operator installation is Succeeded."
         break
