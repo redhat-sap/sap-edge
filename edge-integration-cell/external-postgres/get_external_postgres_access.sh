@@ -27,11 +27,11 @@ echo " External DB Name: $dbname"
 dbusername=$(kubectl get secret "$secret_name" -n "$namespace" -o jsonpath="{.data.user}" | base64 --decode)
 
 # Output the dbusername
-echo " External DB User Name: $dbusername "
+echo " External DB Username: $dbusername "
 
 # Define variables
 secret_name="pgo-root-cacert"
-output_file="external_db_tls_root_cert"
+output_file="external_postgres_db_tls_root_cert.crt"
 
 # Get the secret and extract the root.crt field
 root_crt=$(kubectl get secret "$secret_name" -n "$namespace" -o json | jq -r '.data["root.crt"]' | base64 -d)

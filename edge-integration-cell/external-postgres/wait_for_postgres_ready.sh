@@ -8,10 +8,10 @@ while true; do
     ready_replicas=$(oc get postgrescluster "$cluster_name" -o json | jq -r '.status.instances[0].readyReplicas')
 
     if [[ "$ready_replicas" == "1" ]]; then
-        echo " Postgres readyReplicas is 1. Exiting loop."
+        echo "Crunchy Postgres is ready. Exiting loop."
         break
     else
-        echo "Postgres readyReplicas is $ready_replicas. Waiting..."
+        echo "Crunchy Postgres readyReplicas is $ready_replicas. Waiting..."
         sleep 5  # Adjust the sleep time as needed
     fi
 done

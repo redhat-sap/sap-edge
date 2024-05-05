@@ -1,0 +1,15 @@
+apiVersion: app.redislabs.com/v1
+kind: RedisEnterpriseCluster
+metadata:
+  name: rec
+  namespace: sap-eic-external-redis
+spec:
+  bootstrapperImageSpec:
+    repository: registry.connect.redhat.com/redislabs/redis-enterprise-operator
+  nodes: 1
+  persistentSpec:
+    enabled: true
+  redisEnterpriseImageSpec:
+    repository: registry.connect.redhat.com/redislabs/redis-enterprise
+  redisEnterpriseServicesRiggerImageSpec:
+    repository: registry.connect.redhat.com/redislabs/services-manager
