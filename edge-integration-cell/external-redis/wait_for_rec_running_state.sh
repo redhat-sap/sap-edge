@@ -12,6 +12,7 @@ while true; do
     pod_status=$(oc get pod "$pod_name" -n sap-eic-external-redis -o json | jq -r '.status.phase')
 
     if [[ "$cluster_state" == "Running" || "$pod_status" == "Running" ]]; then
+        sleep 30 # Let admission webhook to be ready to work with database creation
         echo "Redis Enterprise Cluster State is Running or Pod $pod_name is running. Exiting loop."
         break
     else
