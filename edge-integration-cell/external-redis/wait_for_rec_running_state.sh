@@ -5,7 +5,7 @@ cluster_name="rec"
 
 # Loop until state equals "Running"
 while true; do
-    state=$(oc get RedisEnterpriseCluster "$cluster_name" -o json | jq -r '.status.state')
+    state=$(oc get RedisEnterpriseCluster "$cluster_name" -n sap-eic-external-redis -o json | jq -r '.status.state')
 
     if [[ "$state" == "Running" ]]; then
         echo "State is Running. Exiting loop."
