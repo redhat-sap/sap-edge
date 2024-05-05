@@ -30,10 +30,10 @@ if [[ -z "$password" || -z "$port" || -z "$service_name" ]]; then
 fi
 
 # Get the proxy certificate content
-kubectl exec -n sap-eic-external-redis -it rec-0 -c redis-enterprise-node -- cat /etc/opt/redislabs/proxy_cert.pem > proxy_cert.pem
+kubectl exec -n sap-eic-external-redis -it rec-0 -c redis-enterprise-node -- cat /etc/opt/redislabs/proxy_cert.pem > external_redis_tls_certificate.pem
 
 echo "External Redis Password: $password"
 echo "External Redis Port: $port"
 echo "External Redis Service Name: $service_name_with_ns"
-echo "External Redis TLS Certificate content saved to proxy_cert.pem"
+echo "External Redis TLS Certificate content saved to external_redis_tls_certificate.pem"
 
