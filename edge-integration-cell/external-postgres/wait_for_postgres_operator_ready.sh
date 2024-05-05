@@ -3,7 +3,7 @@
 postgres_csv=""
 
 while [ -z "$postgres_csv" ]; do
-    redis_csv=$(oc get subscription crunchy-postgres-operator -n sap-eic-external-redis -o json | jq -r '.status.currentCSV')
+    redis_csv=$(oc get subscription crunchy-postgres-operator -n sap-eic-external-postgres -o json | jq -r '.status.currentCSV')
     if [ -z "$postgres_csv" ]; then
         echo "No Postgres CSV found. Retrying..."
         sleep 5  # Adjust the sleep time as needed
