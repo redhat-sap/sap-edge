@@ -11,7 +11,7 @@ while [ -z "$postgres_csv" ]; do
 done
 
 while true; do
-    phase=$(oc get csv $postgres_csv -o json | jq -r '.status.phase')
+    phase=$(oc get csv $postgres_csv -n sap-eic-external-postgres -o json | jq -r '.status.phase')
     if [[ "$phase" == "Succeeded" ]]; then
         echo "Postgres Operator installation is Succeeded."
         break

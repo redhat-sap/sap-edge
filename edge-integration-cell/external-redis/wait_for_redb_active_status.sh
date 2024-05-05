@@ -5,7 +5,7 @@ database_name="redb"
 
 # Loop until status equals "active"
 while true; do
-    status=$(oc get RedisEnterpriseDatabase "$database_name" -o json | jq -r '.status.status')
+    status=$(oc get RedisEnterpriseDatabase "$database_name" -n sap-eic-external-redis -o json | jq -r '.status.status')
 
     if [[ "$status" == "active" ]]; then
         echo "Status is active. Exiting loop."

@@ -14,7 +14,7 @@ echo "Found CSV: $redis_csv"
 
 
 while true; do
-    phase=$(oc get csv $redis_csv -o json | jq -r '.status.phase')
+    phase=$(oc get csv $redis_csv -n sap-eic-external-redis -o json | jq -r '.status.phase')
     if [[ "$phase" == "Succeeded" ]]; then
         echo "Postgres Operator installation is Succeeded."
         break
