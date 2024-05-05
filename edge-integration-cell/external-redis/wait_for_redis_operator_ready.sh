@@ -16,10 +16,10 @@ echo "Found CSV: $redis_csv"
 while true; do
     phase=$(oc get csv $redis_csv -n sap-eic-external-redis -o json | jq -r '.status.phase')
     if [[ "$phase" == "Succeeded" ]]; then
-        echo "Postgres Operator installation is Succeeded."
+        echo "Redis Operator installation is Succeeded."
         break
     else
-        echo "Postgres Operator installation is still $phase. Waiting..."
+        echo "Redis Operator installation is still $phase. Waiting..."
         sleep 5  # Adjust the sleep time as needed
     fi
 done
