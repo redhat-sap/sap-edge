@@ -4,7 +4,7 @@ echo "=====================================Postgres=============================
 
 # Set namespace and secret name
 namespace="sap-eic-external-postgres"
-secret_name="hippo-pguser-hippo"
+secret_name="eic-pguser-eic"
 
 # Get dbhostname from the secret
 dbhostname=$(kubectl get secret "$secret_name" -n "$namespace" -o jsonpath="{.data.host}" | base64 --decode)
