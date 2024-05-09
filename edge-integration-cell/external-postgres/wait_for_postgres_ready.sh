@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Define the name of the PostgreSQL cluster
-cluster_name="hippo"
+cluster_name="eic"
 
 # Loop until readyReplicas equals 1
 while true; do
