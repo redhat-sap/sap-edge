@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Define the name of the PostgreSQL cluster
-cluster_name="hippo"
+cluster_name="eic"
 
 # Define the namespace
 namespace="sap-eic-external-postgres"
