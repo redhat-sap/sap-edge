@@ -4,7 +4,6 @@ metadata:
   name: eic
   namespace: sap-eic-external-postgres
 spec:
-  image: registry.developers.crunchydata.com/crunchydata/crunchy-postgres:ubi8-16.2-0
   postgresVersion: 16
   instances:
     - name: instance1
@@ -14,6 +13,11 @@ spec:
         resources:
           requests:
             storage: 1Gi
+  users:
+    - name: eic
+      databases:
+        - eic
+      options: 'SUPERUSER'
   backups:
     pgbackrest:
       image: registry.developers.crunchydata.com/crunchydata/crunchy-pgbackrest:ubi8-2.49-0
