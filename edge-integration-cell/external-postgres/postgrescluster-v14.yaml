@@ -4,7 +4,6 @@ metadata:
   name: eic
   namespace: sap-eic-external-postgres
 spec:
-  image: registry.developers.crunchydata.com/crunchydata/crunchy-postgres:ubi8-14.10-0
   postgresVersion: 14
   instances:
     - name: instance1
@@ -16,9 +15,14 @@ spec:
             storage: 50Gi
   backups:
     pgbackrest:
-      image: registry.developers.crunchydata.com/crunchydata/crunchy-pgbackrest:ubi8-2.47-0
+      global:
+        repo1-retention-full: ""
+        repo1-retention-full-type: count
       repos:
         - name: repo1
+          schedules:
+            full: "0 1 * * 0"
+            differential: "0 1 * * 1-6"
           volume:
             volumeClaimSpec:
               accessModes:
