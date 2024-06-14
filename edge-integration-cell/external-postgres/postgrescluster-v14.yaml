@@ -4,7 +4,6 @@ metadata:
   name: eic
   namespace: sap-eic-external-postgres
 spec:
-  image: registry.developers.crunchydata.com/crunchydata/crunchy-postgres:ubi8-14.10-0
   postgresVersion: 14
   instances:
     - name: instance1
@@ -17,9 +16,8 @@ spec:
   backups:
     pgbackrest:
       global:
-        repo1-retention-full: "2"
+        repo1-retention-full: ""
         repo1-retention-full-type: count
-      image: registry.developers.crunchydata.com/crunchydata/crunchy-pgbackrest:ubi8-2.47-0
       repos:
         - name: repo1
           schedules:

@@ -21,9 +21,8 @@ spec:
   backups:
     pgbackrest:
       global:
-        repo1-retention-full: "2"
+        repo1-retention-full: "1"
         repo1-retention-full-type: count
-      image: registry.developers.crunchydata.com/crunchydata/crunchy-pgbackrest:ubi8-2.51-0
       repos:
         - name: repo1
           schedules:
