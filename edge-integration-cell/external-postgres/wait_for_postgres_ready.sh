@@ -5,7 +5,7 @@ cluster_name="eic"
 
 # Loop until readyReplicas equals 1
 while true; do
-    ready_replicas=$(oc get postgrescluster "$cluster_name" -o json -n sap-eic-external-postgres | jq -r '.status.instances[0].readyReplicas')
+    ready_replicas=$(kubectl get postgrescluster "$cluster_name" -o json -n sap-eic-external-postgres | jq -r '.status.instances[0].readyReplicas')
 
     if [[ "$ready_replicas" == "1" ]]; then
         echo "Crunchy Postgres is ready. Exiting loop."

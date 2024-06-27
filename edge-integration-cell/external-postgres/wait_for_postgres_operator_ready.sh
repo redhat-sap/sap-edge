@@ -4,7 +4,7 @@ postgres_csv=""
 namespace="sap-eic-external-postgres"
 
 while [ -z "$postgres_csv" ]; do
-    postgres_csv=$(oc get subscription crunchy-postgres-operator -n sap-eic-external-postgres -o json | jq -r '.status.currentCSV')
+    postgres_csv=$(kubectl get subscription crunchy-postgres-operator -n $namespace -o json | jq -r '.status.currentCSV')
     if [ -z "$postgres_csv" ]; then
         echo "No Postgres CSV found. Retrying..."
         sleep 5  # Adjust the sleep time as needed
@@ -14,7 +14,7 @@ done
 while true; do
 
     # Get CSVs in the namespace and filter by name containing "postgresoperator"
-    csv_list=$(oc get csv -n "$namespace" --no-headers | grep 'postgresoperator')
+    csv_list=$(kubectl get csv -n "$namespace" --no-headers | grep 'postgresoperator')
 
     # Check if any CSVs were found
     if [ -z "$csv_list" ]; then
@@ -27,7 +27,7 @@ while true; do
             echo "Current CSV is $postgres_csv"
         done <<< "$csv_list"
     fi
-    phase=$(oc get csv $postgres_csv -n sap-eic-external-postgres -o json | jq -r '.status.phase')
+    phase=$(kubectl get csv $postgres_csv -n $namespace -o json | jq -r '.status.phase')
     if [[ "$phase" == "Succeeded" ]]; then
         echo "Postgres Operator installation is Succeeded."
         break
