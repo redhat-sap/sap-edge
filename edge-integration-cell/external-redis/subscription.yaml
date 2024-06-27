@@ -9,4 +9,3 @@ spec:
   name: redis-enterprise-operator-cert
   source: certified-operators
   sourceNamespace: openshift-marketplace
-  startingCSV: redis-enterprise-operator.v7.4.2-2.6
