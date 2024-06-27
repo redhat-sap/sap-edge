@@ -9,7 +9,7 @@ namespace="sap-eic-external-postgres"
 # Loop until the PostgreSQL cluster is deleted
 while true; do
     # Check if the PostgreSQL cluster still exists
-    cluster_exists=$(oc get postgrescluster "$cluster_name" -n "$namespace" &>/dev/null; echo $?)
+    cluster_exists=$(kubectl get postgrescluster "$cluster_name" -n "$namespace" &>/dev/null; echo $?)
 
     if [[ "$cluster_exists" != 0 ]]; then
         echo "Postgres Cluster $cluster_name is deleted. Exiting loop."

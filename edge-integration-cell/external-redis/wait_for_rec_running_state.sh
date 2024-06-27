@@ -8,8 +8,8 @@ pod_name="rec-0"
 
 # Loop until state equals "Running" and pod is running
 while true; do
-    cluster_state=$(oc get RedisEnterpriseCluster "$cluster_name" -n sap-eic-external-redis -o json | jq -r '.status.state')
-    pod_status=$(oc get pod "$pod_name" -n sap-eic-external-redis -o json | jq -r '.status.phase')
+    cluster_state=$(kubectl get RedisEnterpriseCluster "$cluster_name" -n sap-eic-external-redis -o json | jq -r '.status.state')
+    pod_status=$(kubectl get pod "$pod_name" -n sap-eic-external-redis -o json | jq -r '.status.phase')
 
     if [[ "$cluster_state" == "Running" || "$pod_status" == "Running" ]]; then
         sleep 30 # Let admission webhook to be ready to work with database creation
