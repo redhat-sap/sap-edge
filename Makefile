@@ -18,6 +18,4 @@ lint: yamllint shellcheck  # Run linting for the repo
 
 .PHONY: shellcheck
 shellcheck:  ## Run shell check analysis
-	find . \
-	-name '*.sh' \
-	-exec shellcheck -x {} +
+	. .venv/bin/activate && $(TOX) -e shellcheck
