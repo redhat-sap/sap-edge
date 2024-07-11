@@ -1,0 +1,1 @@
+shellcheck [dev] ==0.10.0
