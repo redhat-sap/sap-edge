@@ -19,3 +19,7 @@ lint: yamllint shellcheck  # Run linting for the repo
 .PHONY: shellcheck
 shellcheck: .venv/bin/activate  ## Run shell check analysis
 	. .venv/bin/activate && $(TOX) -e shellcheck
+
+.PHONY: reuse
+reuse: .venv/bin/activate  ## Run reuse lint
+	. .venv/bin/activate && $(TOX) -e reuse
