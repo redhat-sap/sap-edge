@@ -12,3 +12,6 @@ export TOX
 .PHONY: yamllint
 yamllint: .venv/bin/activate ## Run yamllint
 	. .venv/bin/activate && $(TOX) -e yamllint
+
+.PHONY: lint
+lint: yamllint # Run linting for the repo
