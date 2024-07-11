@@ -14,7 +14,7 @@ yamllint: .venv/bin/activate ## Run yamllint
 	. .venv/bin/activate && $(TOX) -e yamllint
 
 .PHONY: lint
-lint: yamllint shellcheck  # Run linting for the repo
+lint: yamllint shellcheck reuse  # Run linting for the repo
 
 .PHONY: shellcheck
 shellcheck: .venv/bin/activate  ## Run shell check analysis
