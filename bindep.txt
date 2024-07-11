@@ -1,1 +1,4 @@
 shellcheck [dev] ==0.10.0
+oc
+jq
+git
