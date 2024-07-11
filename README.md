@@ -1,4 +1,4 @@
-# OCP External Services for SAP EIC
+# OCP External Services for SAP EIC Validation
 
 This repository provides scripts and procedures for setting up and validating external services for SAP EIC on OpenShift Container Platform (OCP). The services covered include PostgreSQL and Redis. This guide will help you install and configure these services, as well as perform cleanup after validation.
 
@@ -160,3 +160,7 @@ oc get csv -n sap-eic-external-redis --no-headers | grep 'redis-enterprise-opera
 oc delete scc redis-enterprise-scc-v2
 oc delete namespace sap-eic-external-redis
 ````
+
+# License
+
+This project is licensed under the Apache License 2.0. See the [LICENSE](https://www.apache.org/licenses/LICENSE-2.0) for details.
