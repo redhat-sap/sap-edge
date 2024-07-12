@@ -27,7 +27,7 @@ while true; do
             echo "Current CSV is $postgres_csv"
         done <<< "$csv_list"
     fi
-    phase=$(kubectl get csv $postgres_csv -n $namespace -o json | jq -r '.status.phase')
+    phase=$(kubectl get csv "$postgres_csv" -n $namespace -o json | jq -r '.status.phase')
     if [[ "$phase" == "Succeeded" ]]; then
         echo "Postgres Operator installation is Succeeded."
         break
