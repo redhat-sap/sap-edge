@@ -5,3 +5,8 @@ ignore: []
 yaml-files:
   - '*.yaml'
   - '*.yml'
+
+rules:
+  line-length:
+    ignore: |
+      *
