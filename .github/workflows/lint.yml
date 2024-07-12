@@ -1,0 +1,17 @@
+---
+name: lint
+"on":
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+jobs:
+  lint:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Run lint
+        run: make lint
