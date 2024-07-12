@@ -1,0 +1,8 @@
+OCP External Services for SAP EIC
+
+Copyright 2024 SAP edge team
+
+This repository provides scripts and procedures for setting up and
+validating external services for SAP EIC on OpenShift Container Platform (OCP).
+
+This product includes software developed by SAP edge team.
