@@ -1,3 +1,8 @@
+# SPDX-FileCopyrightText: 2024 SAP edge team
+# SPDX-FileContributor: SAP edge team
+#
+# SPDX-License-Identifier: Apache-2.0
+
 PYTHON?=python3.10
 export PYTHON
 TOX?=tox
@@ -31,4 +36,8 @@ reuse-annotate: .venv/bin/activate  ## Run reuse annotate
 		--copyright "SAP edge team" \
 		--license Apache-2.0 \
 		--contributor "SAP edge team" \
-		--year 2024 .
+		--year 2024 \
+		--recursive \
+		--skip-unrecognised \
+		--skip-existing \
+		.
