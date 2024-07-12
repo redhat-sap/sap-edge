@@ -23,3 +23,12 @@ shellcheck: .venv/bin/activate  ## Run shell check analysis
 .PHONY: reuse
 reuse: .venv/bin/activate  ## Run reuse lint
 	. .venv/bin/activate && $(TOX) -e reuse
+
+.PHONY: reuse-annotate
+reuse-annotate: .venv/bin/activate  ## Run reuse annotate
+	. .venv/bin/activate && $(TOX) exec -e reuse -- \
+		reuse annotate \
+		--copyright "SAP edge team" \
+		--license Apache-2.0 \
+		--contributor "SAP edge team" \
+		--year 2024 .
