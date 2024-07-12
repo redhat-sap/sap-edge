@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# SPDX-FileCopyrightText: 2024 SAP edge team
+# SPDX-FileContributor: Kirill Satarin (@kksat)
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
 # Define the namespace, RedisEnterpriseDatabase name, and RedisEnterpriseDatabase secret field
 namespace="sap-eic-external-redis"
 database_name="redb"
