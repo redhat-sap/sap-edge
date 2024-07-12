@@ -30,7 +30,7 @@ while true; do
             echo "Current CSV is $redis_csv"
         done <<< "$csv_list"
     fi
-    phase=$(kubectl get csv $redis_csv -n sap-eic-external-redis -o json | jq -r '.status.phase')
+    phase=$(kubectl get csv "$redis_csv" -n sap-eic-external-redis -o json | jq -r '.status.phase')
     if [[ "$phase" == "Succeeded" ]]; then
         echo "Redis Operator installation is Succeeded."
         break
