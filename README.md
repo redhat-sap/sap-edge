@@ -170,7 +170,10 @@ oc delete redisenterprisecluster rec -n sap-eic-external-redis
 bash sap-edge/edge-integration-cell/external-redis/wait_for_deletion_of_rec.sh
 oc delete subscription redis-enterprise-operator-cert -n sap-eic-external-redis
 oc get csv -n sap-eic-external-redis --no-headers | grep 'redis-enterprise-operator' | awk '{print $1}' | xargs -I{} oc delete csv {} -n sap-eic-external-redis
+# For OpenShift versions earlier than 4.16
 oc delete scc redis-enterprise-scc-v2
+# For OpenShift versions 4.16 and later
+oc delete scc redis-enterprise-scc
 oc delete namespace sap-eic-external-redis
 ````
 
