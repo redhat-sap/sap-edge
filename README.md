@@ -116,6 +116,11 @@ The following steps will install the Redis Enterprise Operator and use its featu
     oc apply -f sap-edge/edge-integration-cell/external-redis/subscription.yaml
     ```
 5. Apply the Security Context Constraint (SCC):
+   - For OpenShift versions earlier than 4.16, use:
+    ```bash
+    oc apply -f sap-edge/edge-integration-cell/external-redis/security_context_constraint_v2.yaml
+    ```
+   - For OpenShift versions 4.16 and later, use
     ```bash
     oc apply -f sap-edge/edge-integration-cell/external-redis/security_context_constraint.yaml
     ```
