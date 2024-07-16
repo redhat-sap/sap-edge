@@ -52,7 +52,7 @@ root_crt=$(kubectl get secret "$secret_name" -n "$namespace" -o json | jq -r '.d
 if [[ -n "$root_crt" ]]; then
     # Write the content to the output file
     echo "$root_crt" > "$output_file"
-    echo "External DB TLS Root Certificate saved to $output_file."
+    echo "External DB TLS Root Certificate saved to $output_file"
 else
     echo "Error: Failed to fetch root.crt from secret $secret_name in namespace $namespace."
 fi
