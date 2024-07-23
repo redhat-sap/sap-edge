@@ -52,7 +52,7 @@ The following steps will install the Crunchy Postgres Operator and use its featu
     ```
 6. Create a PostgresCluster:
     ```bash
-    oc apply -f sap-edge/edge-integration-cell/external-postgres/postgrescluster-v14.yaml
+    oc apply -f sap-edge/edge-integration-cell/external-postgres/postgrescluster-v15.yaml
     ```
     - For other versions, replace `v14` with `v15` or `v16`.
 7. Wait for Crunchy Postgres to be ready:
