@@ -25,7 +25,7 @@ yamllint: .venv/bin/activate ## Run yamllint
 	. .venv/bin/activate && $(TOX) -e yamllint
 
 .PHONY: lint
-lint: yamllint shellcheck reuse  # Run linting for the repo
+lint: yamllint shellcheck reuse lint-bicep  # Run linting for the repo
 
 .PHONY: shellcheck
 shellcheck: .venv/bin/activate  ## Run shell check analysis
@@ -47,3 +47,7 @@ reuse-annotate: .venv/bin/activate  ## Run reuse annotate
 		--skip-unrecognised \
 		--skip-existing \
 		.
+
+.PHONY: lint-bicep
+lint-bicep:  ## Run bicep lint
+	az bicep lint --file bicep/aro.bicep
