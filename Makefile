@@ -14,6 +14,8 @@ CONTRIBUTORS=\
 	--contributor "Kirill Satarin (@kksat)"
 YEAR=$$(date +%Y)
 
+include bicep.makefile
+
 .PHONY: .venv/bin/activate
 .venv/bin/activate:  # Create python virtual environment
 	$(PYTHON) -m venv .venv
