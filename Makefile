@@ -51,3 +51,4 @@ reuse-annotate: .venv/bin/activate  ## Run reuse annotate
 .PHONY: lint-bicep
 lint-bicep:  ## Run bicep lint
 	az bicep lint --file bicep/aro.bicep
+	az bicep lint --file bicep/empty.bicep
