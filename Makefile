@@ -4,6 +4,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+ifneq (,$(wildcard ./.env))
+    include .env
+    export
+endif
+
 PYTHON?=python3.10
 export PYTHON
 TOX?=tox
