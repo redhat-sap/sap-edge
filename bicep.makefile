@@ -1,4 +1,5 @@
 ARO_RESOURCE_GROUP?=aro-sapeic
+ARO_LOCATION?=northeurope
 
 ARO_CLUSTER_NAME?=aro-sapeic
 ARO_DOMAIN?=aro.saponrhel.org
@@ -22,3 +23,7 @@ aro-deploy:  # Deploy ARO
 network-deploy:  # Deploy network
 	az deployment group create --resource-group ${ARO_RESOURCE_GROUP} \
 		--template-file bicep/network.bicep
+
+.PNONY: resource-group
+resource-group:  # Create resource group
+	az group create --name ${ARO_RESOURCE_GROUP} --location ${ARO_LOCATION} --query name -o tsv
