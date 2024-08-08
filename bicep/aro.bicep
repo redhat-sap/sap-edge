@@ -38,7 +38,7 @@ resource aroCluster 'Microsoft.RedHatOpenShift/openShiftClusters@2023-11-22' = {
       pullSecret: !empty(pullSecret) ? pullSecret : null
       domain: domain
       version: version
-      // resourceGroupId: resourceGroup().id
+      fipsValidatedModules: 'Disabled'
     }
     networkProfile: {
       podCidr: '10.128.0.0/14'
@@ -51,6 +51,7 @@ resource aroCluster 'Microsoft.RedHatOpenShift/openShiftClusters@2023-11-22' = {
     masterProfile: {
       vmSize: masterVmSize
       subnetId: masterSubnet.id
+      encryptionAtHost: 'Disabled'
     }
     workerProfiles: [
       {
@@ -59,6 +60,7 @@ resource aroCluster 'Microsoft.RedHatOpenShift/openShiftClusters@2023-11-22' = {
         diskSizeGB: workerDiskSizeGB
         subnetId: workerSubnet.id
         count: workerCount
+        encryptionAtHost: 'Disabled'
       }
     ]
     apiserverProfile: {
@@ -66,6 +68,7 @@ resource aroCluster 'Microsoft.RedHatOpenShift/openShiftClusters@2023-11-22' = {
     }
     ingressProfiles: [
       {
+        name: 'default'
         visibility: 'Public'
       }
     ]
