@@ -10,7 +10,7 @@ aro-remove:  # Remove ARO
 	az deployment group create --resource-group ${ARO_RESOURCE_GROUP} --template-file bicep/empty.bicep --mode Complete
 
 .PHONY: aro-deploy
-aro-deploy:  # Deploy ARO
+aro-deploy: network-deploy  # Deploy ARO
 	@az deployment group create --resource-group ${ARO_RESOURCE_GROUP} \
 		--template-file bicep/aro.bicep \
 		--parameters \
