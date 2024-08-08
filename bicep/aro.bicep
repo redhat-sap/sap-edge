@@ -7,8 +7,7 @@
 param clusterName string
 param domain string
 @secure()
-param pullSecret string
-
+param pullSecret string = ''
 @allowed([
   '4.14.16'
   '4.13.40'
