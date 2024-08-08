@@ -35,7 +35,7 @@ resource aroCluster 'Microsoft.RedHatOpenShift/openShiftClusters@2023-11-22' = {
   location: location
   properties: {
     clusterProfile: {
-      pullSecret: pullSecret
+      pullSecret: !empty(pullSecret) ? pullSecret : null
       domain: domain
       version: version
       // resourceGroupId: resourceGroup().id
