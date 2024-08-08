@@ -15,6 +15,9 @@ param pullSecret string
   '4.12.25'
 ])
 param version string
+param servicePrincipalClientId string
+@secure()
+param servicePrincipalClientSecret string
 
 param vnetName string = 'aro-sapeic-vnet'
 param masterSubnetName string = 'master'
@@ -40,6 +43,10 @@ resource aroCluster 'Microsoft.RedHatOpenShift/openShiftClusters@2023-11-22' = {
     networkProfile: {
       podCidr: '10.128.0.0/14'
       serviceCidr: '172.30.0.0/16'
+    }
+    servicePrincipalProfile: {
+      clientId: servicePrincipalClientId
+      clientSecret: servicePrincipalClientSecret
     }
     masterProfile: {
       vmSize: masterVmSize

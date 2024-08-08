@@ -17,7 +17,9 @@ aro-deploy: network-deploy  # Deploy ARO
 		clusterName=${ARO_CLUSTER_NAME} \
 		pullSecret=${PULL_SECRET} \
 		domain=${ARO_DOMAIN} \
-		version=${ARO_VERSION}
+		version=${ARO_VERSION} \
+		servicePrincipalClientId=${CLIENT_ID} \
+		servicePrincipalClientSecret=${CLIENT_SECRET}
 
 .PHONY: network-deploy
 network-deploy:  # Deploy network
