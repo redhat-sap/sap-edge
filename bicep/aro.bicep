@@ -19,7 +19,7 @@ param servicePrincipalClientId string
 param servicePrincipalClientSecret string
 param aroResourceGroup string = '${resourceGroup().name}-resources'
 
-param vnetName string = 'aro-sapeic-vnet'
+param vnetName string = '${resourceGroup().name}-vnet'
 param masterSubnetName string = 'master'
 param workerSubnetName string = 'worker'
 param masterVmSize string = 'Standard_D8s_v3'
