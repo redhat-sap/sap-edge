@@ -21,6 +21,14 @@ aro-deploy: network-deploy  ## Deploy ARO
 		servicePrincipalClientId=${CLIENT_ID} \
 		servicePrincipalClientSecret=${CLIENT_SECRET}
 
+.PHONY: domain-records
+.ONESHELL:
+domain-records:  ## Create domain records for ARO
+	hack/domain-records.sh \
+		--domain ${ARO_DOMAIN} \
+		--aro-name ${ARO_CLUSTER_NAME} \
+		--aro-resource-group ${ARO_RESOURCE_GROUP}
+
 .PHONY: network-deploy
 network-deploy:  ## Deploy network
 	az deployment group create --resource-group ${ARO_RESOURCE_GROUP} \
