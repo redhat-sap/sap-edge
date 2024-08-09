@@ -29,3 +29,13 @@ network-deploy:  # Deploy network
 .PNONY: resource-group
 resource-group:  # Create resource group
 	az group create --name ${ARO_RESOURCE_GROUP} --location ${ARO_LOCATION} --query name -o tsv
+
+.PHONY: service-principal
+.ONESHELL:
+service-principal:  # Create sevice principal for ARO deployment
+	az ad sp create-for-rbac \
+		--name "aro-service-principal" \
+		--role Contributor \
+		--scopes \
+		"/subscriptions/$$(az account show --query id -o tsv)/resourceGroups/${ARO_RESOURCE_GROUP}"
+
