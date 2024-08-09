@@ -39,3 +39,11 @@ service-principal:  # Create sevice principal for ARO deployment
 		--scopes \
 		"/subscriptions/$$(az account show --query id -o tsv)/resourceGroups/${ARO_RESOURCE_GROUP}"
 
+
+.PHONY: arorp-service-principal
+.ONESHELL:
+arorp-service-principal:  # Assign required roles to "Azure Red Hat Openshift" RP service principal
+	az role assignment create --assignee $$(az ad sp list --display-name "Azure Red Hat OpenShift RP" --query "[0].id" -o tsv) \
+	--role Contributor \
+	--scope "/subscriptions/$$(az account show --query id -o tsv)/resourceGroups/${ARO_RESOURCE_GROUP}"
+
