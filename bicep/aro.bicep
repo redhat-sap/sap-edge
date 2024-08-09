@@ -17,6 +17,7 @@ param version string
 param servicePrincipalClientId string
 @secure()
 param servicePrincipalClientSecret string
+param aroResourceGroup string = '${resourceGroup().name}-resources'
 
 param vnetName string = 'aro-sapeic-vnet'
 param masterSubnetName string = 'master'
@@ -38,6 +39,7 @@ resource aroCluster 'Microsoft.RedHatOpenShift/openShiftClusters@2023-11-22' = {
       domain: domain
       version: version
       fipsValidatedModules: 'Disabled'
+      resourceGroupId: '/subscriptions/${subscription().subscriptionId}/resourceGroups/${aroResourceGroup}'
     }
     networkProfile: {
       podCidr: '10.128.0.0/14'
