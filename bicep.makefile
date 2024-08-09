@@ -49,3 +49,6 @@ arorp-service-principal:  # Assign required roles to "Azure Red Hat Openshift" R
 
 aro-credentials:  # Get ARO credentials
 	az aro list-credentials --name ${ARO_CLUSTER_NAME} --resource-group ${ARO_RESOURCE_GROUP}
+
+aro-url:  # Get ARO URL
+	az aro show --name ${ARO_CLUSTER_NAME} --resource-group ${ARO_RESOURCE_GROUP} --query "apiserverProfile.url" -o tsv
