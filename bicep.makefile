@@ -2,7 +2,7 @@ ARO_RESOURCE_GROUP?=aro-sapeic
 ARO_LOCATION?=northeurope
 
 ARO_CLUSTER_NAME?=aro-sapeic
-ARO_DOMAIN?=aro.saponrhel.org
+ARO_DOMAIN?=saponrhel.org
 ARO_VERSION?=4.14.16
 
 .PHONY: aro-remove
