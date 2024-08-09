@@ -10,7 +10,7 @@ aro-remove:  ## Remove ARO
 	az deployment group create --resource-group ${ARO_RESOURCE_GROUP} --template-file bicep/empty.bicep --mode Complete
 
 .PHONY: aro-deploy
-aro-deploy: network-deploy  ## Deploy ARO
+aro-deploy: domain-zone-exists network-deploy  ## Deploy ARO
 	@az deployment group create --resource-group ${ARO_RESOURCE_GROUP} \
 		--template-file bicep/aro.bicep \
 		--parameters \
@@ -60,3 +60,7 @@ aro-credentials:  ## Get ARO credentials
 
 aro-url:  ## Get ARO URL
 	@az aro show --name ${ARO_CLUSTER_NAME} --resource-group ${ARO_RESOURCE_GROUP} --query "apiserverProfile.url" -o tsv
+
+.PHONY: domain-zone-exists
+domain-zone-exists:  ## Fail if DNS domain zone does not exists
+	ARO_DOMAIN=${ARO_DOMAIN} hack/domain-zone-exists.sh
