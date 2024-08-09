@@ -59,3 +59,4 @@ reuse-annotate: .venv/bin/activate  ## Run reuse annotate
 lint-bicep:  ## Run bicep lint
 	az bicep lint --file bicep/aro.bicep
 	az bicep lint --file bicep/empty.bicep
+	az bicep lint --file bicep/domain-records.bicep
