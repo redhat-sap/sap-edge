@@ -64,3 +64,9 @@ aro-url:  ## Get ARO URL
 .PHONY: domain-zone-exists
 domain-zone-exists:  ## Fail if DNS domain zone does not exists
 	ARO_DOMAIN=${ARO_DOMAIN} hack/domain-zone-exists.sh
+
+.PHONY: oc-login
+oc-login:  ## Login with oc to existing ARO cluster
+	oc login "$(shell az aro show --name ${ARO_CLUSTER_NAME} --resource-group ${ARO_RESOURCE_GROUP} --query "apiserverProfile.url" -o tsv)" \
+		-u "$(shell az aro list-credentials --name ${ARO_CLUSTER_NAME} --resource-group ${ARO_RESOURCE_GROUP} --query 'kubeadminUsername' -o tsv)" \
+		-p "$(shell az aro list-credentials --name ${ARO_CLUSTER_NAME} --resource-group ${ARO_RESOURCE_GROUP} --query 'kubeadminPassword' -o tsv)"
