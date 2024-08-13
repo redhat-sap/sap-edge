@@ -1,3 +1,9 @@
+// SPDX-FileCopyrightText: 2024 SAP edge team
+// SPDX-FileContributor: Kirill Satarin (@kksat)
+// SPDX-FileContributor: Manjun Jiao (@mjiao)
+//
+// SPDX-License-Identifier: Apache-2.0
+
 @description('The name of the DNS zone where A records will be created, must already exist')
 param domainZoneName string
 
