@@ -40,34 +40,34 @@ if [ -z "$DOMAIN" ] || [ -z "$ARO_NAME" ] || [ -z "$ARO_RESOURCE_GROUP" ]; then
   print_help
 fi
 
-if ! [ $(az resource show --name ${ARO_CLUSTER_NAME} \
-  --resource-group ${ARO_RESOURCE_GROUP} \
+if ! [ "$(az resource show --name "${ARO_CLUSTER_NAME}" \
+  --resource-group "${ARO_RESOURCE_GROUP}" \
   --resource-type 'Microsoft.RedHatOpenShift/openShiftClusters' \
-  --query "id" -o tsv) ]; then
+  --query "id" -o tsv)" ]; then
     echo "ARO does not exists"
 fi
 
-API_IP=$(az aro show --name ${ARO_CLUSTER_NAME} --resource-group ${ARO_RESOURCE_GROUP} \
+API_IP=$(az aro show --name "${ARO_CLUSTER_NAME}" --resource-group "${ARO_RESOURCE_GROUP}" \
   --query 'apiserverProfile.ip' -o tsv)
 
-INGRESS_IP=$(az aro show --name ${ARO_CLUSTER_NAME} --resource-group ${ARO_RESOURCE_GROUP} \
+INGRESS_IP=$(az aro show --name "${ARO_CLUSTER_NAME}" --resource-group "${ARO_RESOURCE_GROUP}" \
   --query 'ingressProfiles[0].ip' -o tsv)
 
 echo Create domain records for existing OpenShift cluster
 
 az deployment group create \
-  --resource-group $(az network dns zone list --query "[?name=='saponrhel.org'].resourceGroup" -o tsv) \
+  --resource-group "$(az network dns zone list --query "[?name=='saponrhel.org'].resourceGroup" -o tsv)" \
   --template-file bicep/domain-records.bicep \
   --parameters \
-  domainZoneName=${DOMAIN} \
+  domainZoneName="${DOMAIN}" \
   recordName='api' \
-  ipv4Address=${API_IP}
+  ipv4Address="${API_IP}"
 
 az deployment group create \
-  --resource-group $(az network dns zone list --query "[?name=='saponrhel.org'].resourceGroup" -o tsv) \
+  --resource-group "$(az network dns zone list --query "[?name=='saponrhel.org'].resourceGroup" -o tsv)" \
   --template-file bicep/domain-records.bicep \
   --parameters \
-  domainZoneName=${DOMAIN} \
+  domainZoneName="${DOMAIN}" \
   recordName='*.apps' \
-  ipv4Address=${INGRESS_IP}
+  ipv4Address="${INGRESS_IP}"
 
