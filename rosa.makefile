@@ -19,3 +19,11 @@ rosa-cluster:  ## Create ROSA cluster
 .PHONY: rosa-cluster-status
 rosa-cluster-status:  ## Get ROSA cluster status
 	rosa describe cluster --cluster "${CLUSTER_NAME}"
+
+.PHONY: rosa-cluster-hibernate
+rosa-cluster-hibernate:  ## Hibernate ROSA cluster
+	rosa hibernate cluster --cluster "${CLUSTER_NAME}"
+
+.PHONY: rosa-cluster-resume
+rosa-cluster-resume:  ## Resume ROSA cluster
+	rosa resume cluster --cluster "${CLUSTER_NAME}"
