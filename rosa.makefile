@@ -28,6 +28,10 @@ rosa-cluster-hibernate:  ## Hibernate ROSA cluster
 rosa-cluster-resume:  ## Resume ROSA cluster
 	rosa resume cluster --cluster "${CLUSTER_NAME}"
 
+.PHONY: rosa-cluster-delete
+rosa-cluster-delete:  ## Delete ROSA cluster
+	rosa delete cluster --cluster "${CLUSTER_NAME}"
+
 .PHONY: rosa-cluster-admin
 rosa-cluster-admin:  ## Create cluster admin
 	@rosa create admin --cluster ${CLUSTER_NAME} --password ${CLUSTER_ADMIN_PASSWORD} >/dev/null
