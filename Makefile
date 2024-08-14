@@ -20,6 +20,7 @@ CONTRIBUTORS=\
 YEAR=$$(date +%Y)
 
 include bicep.makefile
+include rosa.makefile
 
 .DEFAULT_GOAL := help
 .PHONY: help
