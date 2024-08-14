@@ -33,3 +33,10 @@ rosa-cluster-admin:  ## Create cluster admin
 	@rosa create admin --cluster ${CLUSTER_NAME} --password ${CLUSTER_ADMIN_PASSWORD} >/dev/null
 	$(info cluster admin created)
 
+.PHONY: rosa-cluster-admin-reset
+rosa-cluster-admin-reset:  ## Reset cluster admin password
+	@rosa delete admin --cluster ${CLUSTER_NAME} --yes >/dev/null
+	$(info cluster admin deleted)
+	@rosa create admin --cluster ${CLUSTER_NAME} --password ${CLUSTER_ADMIN_PASSWORD} >/dev/null
+	$(info cluster admin password reset)
+
