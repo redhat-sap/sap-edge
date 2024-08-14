@@ -27,3 +27,9 @@ rosa-cluster-hibernate:  ## Hibernate ROSA cluster
 .PHONY: rosa-cluster-resume
 rosa-cluster-resume:  ## Resume ROSA cluster
 	rosa resume cluster --cluster "${CLUSTER_NAME}"
+
+.PHONY: rosa-cluster-admin
+rosa-cluster-admin:  ## Create cluster admin
+	@rosa create admin --cluster ${CLUSTER_NAME} --password ${CLUSTER_ADMIN_PASSWORD} >/dev/null
+	$(info cluster admin created)
+
