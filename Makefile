@@ -20,6 +20,7 @@ CONTRIBUTORS=\
 YEAR=$$(date +%Y)
 
 include bicep.makefile
+include rosa.makefile
 
 .PHONY: .venv/bin/activate
 .venv/bin/activate:  # Create python virtual environment
