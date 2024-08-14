@@ -40,3 +40,6 @@ rosa-cluster-admin-reset:  ## Reset cluster admin password
 	@rosa create admin --cluster ${CLUSTER_NAME} --password ${CLUSTER_ADMIN_PASSWORD} >/dev/null
 	$(info cluster admin password reset)
 
+.PHONY: rosa-cluster-oc-login
+rosa-cluster-oc-login:  ## OC cli login to existing cluster (cluster-admin should already exist)
+	@rosa describe admin --cluster=${CLUSTER_NAME} | grep -v 'INFO'
