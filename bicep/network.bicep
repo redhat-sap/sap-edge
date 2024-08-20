@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-param vnetName string = 'aro-sapeic-vnet'
+param vnetName string = '${resourceGroup().name}-vnet'
 param masterSubnetName string = 'master'
 param workerSubnetName string = 'worker'
 

@@ -7,7 +7,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 DOMAIN=""
-ARO_NAME=""
+ARO_CLUSTER_NAME=""
 ARO_RESOURCE_GROUP=""
 
 print_help() {
@@ -28,7 +28,7 @@ while (( "$#" )); do
       shift 2
       ;;
     --aro-name)
-      ARO_NAME="$2"
+      ARO_CLUSTER_NAME="$2"
       shift 2
       ;;
     --aro-resource-group)
@@ -41,7 +41,7 @@ while (( "$#" )); do
   esac
 done
 
-if [ -z "$DOMAIN" ] || [ -z "$ARO_NAME" ] || [ -z "$ARO_RESOURCE_GROUP" ]; then
+if [ -z "$DOMAIN" ] || [ -z "$ARO_CLUSTER_NAME" ] || [ -z "$ARO_RESOURCE_GROUP" ]; then
   echo "Error: Missing argument"
   print_help
 fi
