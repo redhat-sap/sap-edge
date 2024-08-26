@@ -16,7 +16,7 @@ external resources.
 Additional domains can be given as arguments. If a domain is prefixed with '!', it will be
 excluded from the list. IOW, it will be proxied.
 
-If a (longer wildcard) domain is matched by a(nother) wildcard domain, it is excluded from the
+If a (longer wildcard) domain is matched by a (another) wildcard domain, it is excluded from the
 output.
 
 Requirements:
