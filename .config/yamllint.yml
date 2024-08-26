@@ -6,7 +6,8 @@
 
 ---
 extends: default
-ignore: []
+ignore:
+  - node_modules
 
 yaml-files:
   - '*.yaml'
