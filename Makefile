@@ -9,6 +9,20 @@ ifneq (,$(wildcard ./.env))
     export
 endif
 
+defined = $(strip $(filter-out undefined,$(flavor $1)))
+
+required-environment-variables = \
+  $(eval .required-environment-variables :=) \
+  $(foreach V,$(sort $1), \
+    $(if $(call defined,$V),,$(eval .required-environment-variables += $V)) \
+   ) \
+  $(if $(strip ${.required-environment-variables}), \
+    $(foreach V,${.required-environment-variables}, \
+      $(info Variable is not defined but required: $$$V) \
+     ) \
+    $(error Not all required variables are defined) \
+   )
+
 PYTHON?=python3.10
 export PYTHON
 TOX?=tox
