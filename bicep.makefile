@@ -45,7 +45,7 @@ resource-group:  ## Create resource group
 
 .PHONY: service-principal
 .ONESHELL:
-service-principal:  ## Create sevice principal for ARO deployment
+service-principal:  ## Create service principal for ARO deployment
 	$(call required-environment-variables,ARO_RESOURCE_GROUP)
 	az ad sp create-for-rbac \
 		--name "aro-service-principal" \
