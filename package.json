@@ -1,0 +1,11 @@
+{
+  "name": "sap-edge",
+  "version": "1.0.0",
+  "scripts": {
+    "cspell": "cspell ** --no-progress --show-suggestions --show-context --config .config/cspell.yml",
+    "cspell:addwords": "cspell ** --no-progress --words-only --unique --config .config/cspell.yml"
+  },
+  "dependencies": {
+    "cspell": "^8.13.1"
+  }
+}
