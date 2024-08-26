@@ -1,0 +1,19 @@
+---
+version: "0.2"
+language: en
+words: []
+flagWords: []
+dictionaries:
+  - sap-edge
+dictionaryDefinitions:
+  - name: sap-edge
+    path: ./cspell-words.txt
+ignorePaths:
+  - .env
+  - node_modules/**
+  - .git/**
+  - .vscode/**
+  - .github/**
+  - .idea/**
+  - .venv/**
+  - .tox/**
