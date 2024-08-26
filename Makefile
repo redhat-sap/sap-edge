@@ -25,6 +25,8 @@ required-environment-variables = \
 
 PYTHON?=python3.10
 export PYTHON
+NPM?=npm
+export NPM
 TOX?=tox
 export TOX
 COPYRIGHT="SAP edge team"
@@ -81,3 +83,14 @@ lint-bicep:  ## Run bicep lint
 	az bicep lint --file bicep/aro.bicep
 	az bicep lint --file bicep/empty.bicep
 	az bicep lint --file bicep/domain-records.bicep
+
+node_modules:  # Install node modules
+	$(NPM) install
+
+.PHONY: cspell
+cspell: node_modules  ## Run cspell
+	$(NPM) run cspell
+
+.PHONY: cspell-addwords
+cspell-addwords: node_modules  ## Run cspell
+	@$(NPM) run --silent cspell:addwords >> .config/cspell-words.txt
