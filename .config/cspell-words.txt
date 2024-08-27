@@ -42,3 +42,4 @@ getline
 TMPARGS
 getopt
 unrecognised
+kubeconfig
