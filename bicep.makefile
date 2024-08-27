@@ -18,7 +18,7 @@ aro-deploy: domain-zone-exists network-deploy  ## Deploy ARO
 		--parameters \
 		clusterName=${ARO_CLUSTER_NAME} \
 		pullSecret=${PULL_SECRET} \
-		domain=${ARO_DOMAIN} \
+		domain="${ARO_CLUSTER_NAME}.${ARO_DOMAIN}" \
 		version=${ARO_VERSION} \
 		servicePrincipalClientId=${CLIENT_ID} \
 		servicePrincipalClientSecret=${CLIENT_SECRET}

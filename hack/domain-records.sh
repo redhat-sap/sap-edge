@@ -66,7 +66,7 @@ az deployment group create \
   --template-file bicep/domain-records.bicep \
   --parameters \
   domainZoneName="${DOMAIN}" \
-  recordName='api' \
+  recordName="api.${ARO_CLUSTER_NAME}" \
   ipv4Address="${API_IP}"
 
 az deployment group create \
@@ -74,6 +74,6 @@ az deployment group create \
   --template-file bicep/domain-records.bicep \
   --parameters \
   domainZoneName="${DOMAIN}" \
-  recordName='*.apps' \
+  recordName="*.apps.${ARO_CLUSTER_NAME}" \
   ipv4Address="${INGRESS_IP}"
 
