@@ -5,11 +5,6 @@ ARO_CLUSTER_NAME?=aro-sapeic
 ARO_DOMAIN?=saponrhel.org
 ARO_VERSION?=4.14.16
 
-.PHONY: aro-remove
-aro-remove:  ## Remove ARO
-	$(call required-environment-variables,ARO_RESOURCE_GROUP)
-	az deployment group create --resource-group ${ARO_RESOURCE_GROUP} --template-file bicep/empty.bicep --mode Complete
-
 .PHONY: aro-deploy
 aro-deploy: domain-zone-exists network-deploy  ## Deploy ARO
 	$(call required-environment-variables,ARO_RESOURCE_GROUP ARO_CLUSTER_NAME ARO_DOMAIN ARO_VERSION CLIENT_ID CLIENT_SECRET)
