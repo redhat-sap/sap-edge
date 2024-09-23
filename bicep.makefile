@@ -90,3 +90,8 @@ resource-group-delete:  ## Delete the Azure resource group
 aro-delete:  ## Delete the ARO cluster
 	$(call required-environment-variables,ARO_RESOURCE_GROUP ARO_CLUSTER_NAME)
 	az aro delete --name ${ARO_CLUSTER_NAME} --resource-group ${ARO_RESOURCE_GROUP} --yes --no-wait
+
+.PHONY: aro-delete-resources
+aro-delete-resources:  ## Delete all resources in the ARO resource group
+	$(call required-environment-variables,ARO_RESOURCE_GROUP)
+	az resource delete --resource-group ${ARO_RESOURCE_GROUP} --ids $$(az resource list --resource-group ${ARO_RESOURCE_GROUP} --query "[].id" -o tsv)
