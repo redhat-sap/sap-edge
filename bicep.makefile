@@ -81,7 +81,7 @@ oc-login:  ## Login with oc to existing ARO cluster
 		-u "$(shell az aro list-credentials --name ${ARO_CLUSTER_NAME} --resource-group ${ARO_RESOURCE_GROUP} --query 'kubeadminUsername' -o tsv)" \
 		-p "$(shell az aro list-credentials --name ${ARO_CLUSTER_NAME} --resource-group ${ARO_RESOURCE_GROUP} --query 'kubeadminPassword' -o tsv)"
 
-.PHONY: resource-group-delete
+.PHONY: aro-resource-group-delete
 resource-group-delete:  ## Delete the Azure resource group
 	$(call required-environment-variables,ARO_RESOURCE_GROUP)
 	az group delete --name ${ARO_RESOURCE_GROUP} --yes --no-wait
