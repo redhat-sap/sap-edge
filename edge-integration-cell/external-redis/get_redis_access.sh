@@ -27,7 +27,8 @@ port=$(echo "$secret_data" | jq -r '.data["port"]' | base64 --decode)
 service_name=$(echo "$secret_data" | jq -r '.data["service_name"]' | base64 --decode)
 
 
-service_name_with_ns="${service_name}.${namespace}.svc"
+service_name_with_ns="${service_name}.${namespace}.svc."
+redis_server_name="rec.${namespace}.svc.cluster.local"
 
 # Check if any of the values are empty
 if [[ -z "$password" || -z "$port" || -z "$service_name" ]]; then
@@ -45,4 +46,4 @@ echo "External Redis Password: $password"
 echo "External Redis Sentinel Username: [leave me blank]"
 echo "External Redis Sentinel Password: [leave me blank]"
 echo "External Redis TLS Certificate content saved to external_redis_tls_certificate.pem"
-echo "External Redis Server Name: [leave me blank]"
+echo "External Redis Server Name: $redis_server_name"
