@@ -158,7 +158,7 @@ After running the above script, you will get the access details of Redis like th
 - External Redis Sentinel Username: `[leave me blank]`
 - External Redis Sentinel Password: `[leave me blank]`
 - External Redis TLS Certificate content saved to `external_redis_tls_certificate.pem`
-- External Redis Server Name: `[leave me blank]`
+- External Redis Server Name: `rec.sap-eic-external-redis.svc.cluster.local`
 
 ## Cleanup Redis
 
