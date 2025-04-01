@@ -10,7 +10,7 @@ postgres_csv=""
 namespace="sap-eic-external-postgres"
 
 while [ -z "$postgres_csv" ]; do
-    postgres_csv=$(kubectl get subscription crunchy-postgres-operator -n $namespace -o json | jq -r '.status.currentCSV')
+    postgres_csv=$(kubectl get subscription.operators.coreos.com crunchy-postgres-operator -n $namespace -o json | jq -r '.status.currentCSV')
     if [ -z "$postgres_csv" ]; then
         echo "No Postgres CSV found. Retrying..."
         sleep 5  # Adjust the sleep time as needed
