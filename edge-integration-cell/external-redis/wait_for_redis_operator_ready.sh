@@ -9,7 +9,7 @@
 redis_csv=""
 
 while [ -z "$redis_csv" ]; do
-    redis_csv=$(kubectl get subscription redis-enterprise-operator-cert -n sap-eic-external-redis -o json | jq -r '.status.currentCSV')
+    redis_csv=$(kubectl get subscription.operators.coreos.com redis-enterprise-operator-cert -n sap-eic-external-redis -o json | jq -r '.status.currentCSV')
     if [ -z "$redis_csv" ]; then
         echo "No Redis CSV found. Retrying..."
         sleep 5  # Adjust the sleep time as needed
