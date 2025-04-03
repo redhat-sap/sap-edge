@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sap-edge-parent
+  namespace: openshift-gitops
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/redhat-sap/sap-edge.git
+    targetRevision: main
+    path: edge-integration-cell/argocd-apps
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: openshift-gitops
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      syncOptions:
+        - CreateNamespace=true

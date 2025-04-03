@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: 2024 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+resources:
+  - operatorgroup.yaml
+  - subscription.yaml
+  - security_context_constraint.yaml

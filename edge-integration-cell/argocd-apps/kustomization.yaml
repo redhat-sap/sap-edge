@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+resources:
+  - postgres-operator-app.yaml
+  - external-postgres-app.yaml
+  - external-redis-operator-app.yaml
+  - external-redis-app.yaml

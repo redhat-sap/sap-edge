@@ -10,6 +10,9 @@ SPDX-License-Identifier: Apache-2.0
 
 This repository provides scripts and procedures for setting up test validation external services for SAP EIC on the OpenShift Container Platform (OCP). The services covered include PostgreSQL and Redis. This guide will help you install and configure these services, as well as perform cleanup after validation.
 
+> **Note:** These services may be optional for a proof of concept (PoC) setup.  
+> If you don’t enable or configure the external Postgres and Redis during the SAP Edge Integration Cell (EIC) installation, EIC will automatically deploy self-contained Postgres and Redis pods within its own service namespace.
+
 **Important Notice**
 
 Please be aware that this repository is intended **for testing purposes only**. The configurations and scripts provided are designed to assist in test validation scenarios and are not recommended for production use.
@@ -23,6 +26,13 @@ Red Hat does not provide support for the Postgres/Redis services configured thro
 - **Redis**: Support for this solution is provided directly by the Redis Labs team, as detailed in [Appendix 1 of the Redis Enterprise Software Subscription Agreement](https://redislabs.com/wp-content/uploads/2019/11/redis-enterprise-software-subscription-agreement.pdf). The agreement categorizes support services into Support Services, Customer Success Services, and Consulting Services, offering assistance from basic troubleshooting to advanced consultancy and ongoing optimization tailored to diverse customer needs.
 
 For comprehensive support, please contact [Crunchy Data](https://www.crunchydata.com/contact) and [Redis Labs](https://redis.io/meeting/) directly.
+
+**Operations**
+
+For operational guidance on Crunchy Postgres and Redis, refer to the official documentation:
+
+- [Redis on Kubernetes](https://redis.io/docs/latest/operate/kubernetes/)
+- [Crunchy Postgres Operator Quickstart](https://access.crunchydata.com/documentation/postgres-operator/latest/quickstart)
 
 ## Prerequisites
 
@@ -54,11 +64,11 @@ The following steps will install the Crunchy Postgres Operator and use its featu
     ```
 3. Apply the OperatorGroup configuration:
     ```bash
-    oc apply -f sap-edge/edge-integration-cell/external-postgres/operatorgroup.yaml
+    oc apply -f sap-edge/edge-integration-cell/postgres-operator/operatorgroup.yaml
     ```
 4. Apply the Subscription configuration:
     ```bash
-    oc apply -f sap-edge/edge-integration-cell/external-postgres/subscription.yaml
+    oc apply -f sap-edge/edge-integration-cell/postgres-operator/subscription.yaml
     ```
 5. Wait for the Postgres operator to be ready:
     ```bash
@@ -123,20 +133,20 @@ The following steps will install the Redis Enterprise Operator and use its featu
     ```
 3. Apply the OperatorGroup configuration:
     ```bash
-    oc apply -f sap-edge/edge-integration-cell/external-redis/operatorgroup.yaml
+    oc apply -f sap-edge/edge-integration-cell/redis-operator/operatorgroup.yaml
     ```
 4. Apply the Subscription configuration:
     ```bash
-    oc apply -f sap-edge/edge-integration-cell/external-redis/subscription.yaml
+    oc apply -f sap-edge/edge-integration-cell/redis-operator/subscription.yaml
     ```
 5. Apply the Security Context Constraint (SCC):
-   - For OpenShift versions earlier than 4.16, use:
-    ```bash
-    oc apply -f sap-edge/edge-integration-cell/external-redis/security_context_constraint_v2.yaml
-    ```
    - For OpenShift versions 4.16 and later, use
     ```bash
-    oc apply -f sap-edge/edge-integration-cell/external-redis/security_context_constraint.yaml
+    oc apply -f sap-edge/edge-integration-cell/redis-operator/security_context_constraint.yaml
+    ```
+   - For OpenShift versions earlier than 4.16, use:
+    ```bash
+    oc apply -f sap-edge/edge-integration-cell/redis-operator/security_context_constraint_v2.yaml
     ```
 6. Wait for the Redis operator to be ready:
     ```bash
@@ -174,6 +184,11 @@ After running the above script, you will get the access details of Redis like th
 - External Redis TLS Certificate content saved to `external_redis_tls_certificate.pem`
 - External Redis Server Name: `rec.sap-eic-external-redis.svc.cluster.local`
 
+Alternatively, you can run the following script to retrieve access details for both Redis and Postgres:
+```bash
+bash sap-edge/edge-integration-cell/get_all_access.sh
+```
+
 ## Cleanup Redis
 
 To clean up the Redis instance:
@@ -190,6 +205,49 @@ oc delete scc redis-enterprise-scc-v2
 oc delete scc redis-enterprise-scc
 oc delete namespace sap-eic-external-redis
 ````
+
+## 🚀 Argo CD GitOps Setup
+
+This project supports automated deployment of external **Postgres** and **Redis** services using **Argo CD** and a GitOps workflow.
+
+**Requirements**
+* OpenShift cluster
+* OpenShift GitOps Operator
+* Access to this Git repository
+
+### 📁 Folder Structure
+
+Argo CD uses an **App of Apps** model located in:
+
+edge-integration-cell/argocd-apps/
+
+
+This folder defines four Argo CD Applications:
+
+| Application Name             | Purpose                            | Sync Wave |
+|-----------------------------|------------------------------------|-----------|
+| `postgres-operator`         | Installs Crunchy Postgres Operator | 0         |
+| `external-postgres`         | Deploys PostgresCluster CR         | 1         |
+| `external-redis-operator`   | Installs Redis Enterprise Operator | 0         |
+| `external-redis`            | Deploys RedisCluster CRs           | 1         |
+
+Each application includes a **sync wave annotation** to ensure the operator is deployed before its related custom resources.
+
+---
+
+### 🔧 Deploying with Argo CD
+
+1. Make sure Argo CD is installed in your cluster (e.g., via OpenShift GitOps).
+2. Create a **parent Argo CD Application** pointing to the `argocd-apps` folder:
+
+```bash
+kubectl apply -f sap-edge/edge-integration-cell/sap-eic-external-services-app.yaml
+```
+
+3. Argo CD will:
+* Install the Postgres and Redis operators
+* Wait for them to be ready
+* Deploy the respective PostgresCluster and RedisEnterpriseCluster, RedisDB custom resources
 
 # License
 
