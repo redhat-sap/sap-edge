@@ -28,7 +28,7 @@ spec:
         failures=()
         for path in "${ENDPOINTS[@]}"; do
         echo "GET https://${HOST}${path}"
-        if ! curl --fail --silent --insecure --show-error -H "Authorization: Basic ${AUTH_KEY}" \
+        if ! curl --fail --insecure --show-error -H "Authorization: Basic ${AUTH_KEY}" \
           "https://${HOST}${path}" ; then
           failures+=("${path}")
         fi
