@@ -1,0 +1,35 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: endpoint-tests
+spec:
+  params:
+    - name: clusterName
+      type: string
+    - name: authSecret
+      type: string
+  workspaces:
+    - name: basic-auth          # to mount the secret
+  steps:
+    - name: test-endpoints
+      image: curlimages/curl:7.85.0
+      env:
+        - name: AUTH_KEY
+          valueFrom:
+            secretKeyRef:
+              name: $(params.authSecret)
+              key: auth_key        # key inside the Secret
+      script: |
+        #!/usr/bin/env bash
+        set -e
+        CLUSTER="$(params.clusterName)"
+        if [[ "${CLUSTER}" == *.* ]]; then
+          HOST="${CLUSTER}"
+        else
+          HOST="eic.apps.${CLUSTER}.ocp.vslen"
+        fi
+        ENDPOINTS=(/http/test1 /http/testelster /slvredis /httpbinipfilter)
+        for p in "${ENDPOINTS[@]}"; do
+          echo "⇒ curl https://${HOST}${p}"
+          curl --insecure -H "Authorization: Basic ${AUTH_KEY}" "https://${HOST}${p}" --dump-header -
+        done

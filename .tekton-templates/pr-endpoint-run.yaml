@@ -1,0 +1,19 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: endpoint-tests-
+  annotations:
+    pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
+    pipelinesascode.tekton.dev/on-target-branch: "[main]"
+spec:
+  pipelineRef:
+    name: endpoint-test-pipeline
+  params:
+    - name: clusterName   # ✏️ to be edited in each PR
+      value: "<replace-me>"
+    - name: authSecret    # ✏️ reference an existing secret
+      value: "endpoint-auth"
+  workspaces:
+    - name: basic-auth
+      secret:
+        secretName: $(params.authSecret)

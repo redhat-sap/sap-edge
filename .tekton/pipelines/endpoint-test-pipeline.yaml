@@ -1,0 +1,22 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: endpoint-test-pipeline
+spec:
+  params:
+    - name: clusterName
+    - name: authSecret
+  workspaces:
+    - name: basic-auth
+  tasks:
+    - name: endpoint-tests
+      taskRef:
+        name: endpoint-tests
+      params:
+        - name: clusterName
+          value: $(params.clusterName)
+        - name: authSecret
+          value: $(params.authSecret)
+      workspaces:
+        - name: basic-auth
+          workspace: basic-auth
