@@ -13,6 +13,8 @@ spec:
       value: "leimen"
     - name: authSecret    # ✏️ reference an existing secret
       value: "endpoint-auth"
+    - name: ingressIp
+      value: "192.168.99.38"
   workspaces:
     - name: basic-auth
       secret:

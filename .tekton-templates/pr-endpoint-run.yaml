@@ -13,6 +13,8 @@ spec:
       value: "<replace-me>"
     - name: authSecret    # ✏️ reference an existing secret
       value: "endpoint-auth"
+    - name: ingressIp     # ✏️ to be edited in each PR
+      value: "<replace-me>"
   workspaces:
     - name: basic-auth
       secret:

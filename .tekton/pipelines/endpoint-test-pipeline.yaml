@@ -17,6 +17,8 @@ spec:
           value: $(params.clusterName)
         - name: authSecret
           value: $(params.authSecret)
+        - name: ingressIp
+          value: $(params.ingressIp)
       workspaces:
         - name: basic-auth
           workspace: basic-auth

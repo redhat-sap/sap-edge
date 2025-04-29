@@ -8,6 +8,8 @@ spec:
       type: string
     - name: authSecret
       type: string
+    - name: ingressIp
+      type: string
   workspaces:
     - name: basic-auth          # to mount the secret
   steps:
@@ -19,6 +21,8 @@ spec:
             secretKeyRef:
               name: $(params.authSecret)
               key: auth_key        # key inside the Secret
+        - name: INGRESS_IP                             # expose param to script
+          value: $(params.ingressIp)
       script: |
         #!/usr/bin/env bash
         set -uo pipefail
@@ -29,7 +33,7 @@ spec:
         for path in "${ENDPOINTS[@]}"; do
         echo "GET https://${HOST}${path}"
         if ! curl --fail --insecure --show-error -H "Authorization: Basic ${AUTH_KEY}" \
-          "https://${HOST}${path}" ; then
+          "https://${HOST}${path}" --dump-header - --resolve "${HOST}:443:${INGRESS_IP}"; then
           failures+=("${path}")
         fi
         done
