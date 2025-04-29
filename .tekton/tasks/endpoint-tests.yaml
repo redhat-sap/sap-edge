@@ -12,7 +12,7 @@ spec:
     - name: basic-auth          # to mount the secret
   steps:
     - name: test-endpoints
-      image: curlimages/curl:7.85.0
+      image: registry.access.redhat.com/ubi9/ubi
       env:
         - name: AUTH_KEY
           valueFrom:
@@ -31,5 +31,5 @@ spec:
         ENDPOINTS=(/http/test1 /http/testelster /slvredis /httpbinipfilter)
         for p in "${ENDPOINTS[@]}"; do
           echo "⇒ curl https://${HOST}${p}"
-          curl --insecure -H "Authorization: Basic ${AUTH_KEY}" "https://${HOST}${p}" --dump-header -
+          curl --fail --insecure -H "Authorization: Basic ${AUTH_KEY}" "https://${HOST}${p}" --dump-header -
         done
