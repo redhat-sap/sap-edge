@@ -21,15 +21,19 @@ spec:
               key: auth_key        # key inside the Secret
       script: |
         #!/usr/bin/env bash
-        set -e
+        set -uo pipefail
         CLUSTER="$(params.clusterName)"
-        if [[ "${CLUSTER}" == *.* ]]; then
-          HOST="${CLUSTER}"
-        else
-          HOST="eic.apps.${CLUSTER}.ocp.vslen"
-        fi
+        HOST="eic.apps.${CLUSTER}.ocp.vslen"
         ENDPOINTS=(/http/test1 /http/testelster /slvredis /httpbinipfilter)
-        for p in "${ENDPOINTS[@]}"; do
-          echo "⇒ curl https://${HOST}${p}"
-          curl --fail --insecure -H "Authorization: Basic ${AUTH_KEY}" "https://${HOST}${p}" --dump-header -
+        failures=()
+        for path in "${ENDPOINTS[@]}"; do
+        echo "GET https://${HOST}${path}"
+        if ! curl --fail --silent --insecure --show-error -H "Authorization: Basic ${AUTH_KEY}" \
+          "https://${HOST}${path}" ; then
+          failures+=("${path}")
+        fi
         done
+        if ((${#failures[@]})); then
+        echo "Failed endpoints: ${failures[*]}"
+        exit 1
+        fi
