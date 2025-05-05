@@ -24,7 +24,7 @@ spec:
       workingDir: $(workspaces.source.path)
       env:
         - name: AUTH_KEY
-          valueFrom: {secretKeyRef:{name: $(params.authSecret), key: auth_key}}
+          valueFrom: { secretKeyRef: { name: $(params.authSecret), key: auth_key } }
         - name: CLUSTER
           value: $(params.clusterName)
         - name: INGRESS_IP
