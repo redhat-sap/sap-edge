@@ -34,8 +34,6 @@ spec:
       workspaces:
         - name: output
           workspace: source
-        - name: basic-auth
-          workspace: basic-auth
     - name: endpoint-tests
       runAfter: [fetch-repository]
       taskRef: { name: endpoint-tests }
