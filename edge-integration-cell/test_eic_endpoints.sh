@@ -38,12 +38,12 @@ for path in "${ENDPOINTS[@]}"; do
   echo "======== Send New Request to https://${HOST}${path} ========"
   if ! curl --fail --insecure --show-error --request GET \
             -H "Authorization: Basic ${AUTH_KEY}" \
-            "https://${HOST}${path}" \
+            --url "https://${HOST}${path}" \
             --dump-header - \
             --resolve "${HOST}:443:${INGRESS_IP}"; then
     failures+=("$path")
   fi
-  sleep 5
+  sleep 1
 done
 
 
