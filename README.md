@@ -263,11 +263,28 @@ oc apply -f sap-edge/edge-integration-cell/sap-eic-external-services-app.yaml
 * Wait for them to be ready
 * Deploy the respective PostgresCluster and RedisEnterpriseCluster, RedisDB custom resources
 
-### Running cluster-specific endpoint tests
+### Running Cluster-Specific Endpoint Tests
 
-1. Copy `.tekton-templates/pr-endpoint-run.yaml` to `.tekton/pr-endpoint-run.yaml`
-2. Edit `clusterName` and `authSecret`
-3. Push → the pipeline runs automatically on your PR
+1. Copy the pipeline template:
+
+   ```bash
+   cp .tekton-templates/pr-endpoint-run.yaml .tekton/pr-endpoint-run.yaml
+   ```
+
+2. Edit the following fields in the copied file:
+   - `clusterName`: Name of the target cluster
+   - `authSecret`: Authentication secret (example command below for creating the secret)
+   - `ingressIp`: External ingress IP of the cluster
+
+   Example to create the auth secret:
+
+   ```bash
+   oc create secret generic endpoint-auth \
+     --type=Opaque \
+     --from-literal=auth_key="QW5RPQ=="
+   ```
+
+3. Commit and push the changes — the pipeline will trigger automatically on your PR.
 
 # License
 

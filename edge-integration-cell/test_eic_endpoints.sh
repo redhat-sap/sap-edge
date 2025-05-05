@@ -11,7 +11,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 set -euo pipefail
-set -x
 
 if [[ ${1:-} == "-h" || ${1:-} == "--help" ]]; then
   echo "Usage: $0 [clustername] [auth_key] [ingress_ip]"
