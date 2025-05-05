@@ -32,5 +32,5 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
-        microdnf -y install make git >/dev/null 2>&1     # ensure make is present
+        dnf -y install make git     # ensure make is present
         make test-endpoints
