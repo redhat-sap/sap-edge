@@ -86,7 +86,6 @@ install-bicep:
 .PHONY: lint-bicep
 lint-bicep: install-bicep ## Run bicep lint
 	az bicep lint --file bicep/aro.bicep
-	az bicep lint --file bicep/empty.bicep
 	az bicep lint --file bicep/domain-records.bicep
 
 node_modules:  # Install node modules
