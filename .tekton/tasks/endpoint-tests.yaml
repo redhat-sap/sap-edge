@@ -17,33 +17,21 @@ spec:
     - name: ingressIp
       type: string
   workspaces:
-    - name: basic-auth          # to mount the secret
+    - name: source        # code from git-clone
+    - name: basic-auth
   steps:
-    - name: test-endpoints
-      image: registry.access.redhat.com/ubi9/ubi
+    - name: run-tests
+      image: registry.access.redhat.com/ubi9/ubi      # has bash
+      workingDir: $(workspaces.source.path)
       env:
         - name: AUTH_KEY
-          valueFrom:
-            secretKeyRef:
-              name: $(params.authSecret)
-              key: auth_key        # key inside the Secret
-        - name: INGRESS_IP                             # expose param to script
+          valueFrom: { secretKeyRef: { name: $(params.authSecret), key: auth_key } }
+        - name: CLUSTER
+          value: $(params.clusterName)
+        - name: INGRESS_IP
           value: $(params.ingressIp)
       script: |
         #!/usr/bin/env bash
-        set -uo pipefail
-        CLUSTER="$(params.clusterName)"
-        HOST="eic.apps.${CLUSTER}.ocp.vslen"
-        ENDPOINTS=(/http/test1 /http/testelster /slvredis /httpbinipfilter)
-        failures=()
-        for path in "${ENDPOINTS[@]}"; do
-        echo "GET https://${HOST}${path}"
-        if ! curl --fail --insecure --show-error -H "Authorization: Basic ${AUTH_KEY}" \
-          "https://${HOST}${path}" --dump-header - --resolve "${HOST}:443:${INGRESS_IP}"; then
-          failures+=("${path}")
-        fi
-        done
-        if ((${#failures[@]})); then
-        echo "Failed endpoints: ${failures[*]}"
-        exit 1
-        fi
+        set -euo pipefail
+        microdnf -y install make git >/dev/null 2>&1     # ensure make is present
+        make test-endpoints

@@ -11,10 +11,15 @@ metadata:
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
+    pipelinesascode.tekton.dev/task: "git-clone"
 spec:
   pipelineRef:
     name: endpoint-test-pipeline
   params:
+    - name: repoUrl
+      value: "{{ repo_url }}"     # PaC fills with PR repo URL
+    - name: revision
+      value: "{{ revision }}"     # PaC fills with PR repo URL
     - name: clusterName   # ✏️ to be edited in each PR
       value: "<replace-me>"
     - name: authSecret    # ✏️ reference an existing secret

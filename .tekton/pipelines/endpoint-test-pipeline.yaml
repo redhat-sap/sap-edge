@@ -10,14 +10,35 @@ metadata:
   name: endpoint-test-pipeline
 spec:
   params:
+    - name: repoUrl
+      type: string
+    - name: revision
+      type: string
     - name: clusterName
+      type: string
     - name: authSecret
+      type: string
+    - name: ingressIp
+      type: string
   workspaces:
+    - name: source
     - name: basic-auth
   tasks:
+    - name: fetch-repository
+      taskRef: { name: git-clone }
+      params:
+        - name: url
+          value: $(params.repoUrl)
+        - name: revision
+          value: $(params.revision)
+      workspaces:
+        - name: output
+          workspace: source
+        - name: basic-auth
+          workspace: basic-auth
     - name: endpoint-tests
-      taskRef:
-        name: endpoint-tests
+      runAfter: [fetch-repository]
+      taskRef: { name: endpoint-tests }
       params:
         - name: clusterName
           value: $(params.clusterName)
@@ -26,5 +47,7 @@ spec:
         - name: ingressIp
           value: $(params.ingressIp)
       workspaces:
+        - name: source
+          workspace: source
         - name: basic-auth
           workspace: basic-auth

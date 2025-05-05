@@ -5,47 +5,48 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Usage message
-if [[ "$1" == "-h" || "$1" == "--help" ]]; then
-  echo "Usage: $0 [clustername] [auth_key]"
-  echo "Example: $0 walldorf c2ItZTAzZ..."
-  echo "You can also export AUTH_KEY as an environment variable."
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+# SPDX-License-Identifier: Apache-2.0
+
+set -euo pipefail
+
+if [[ ${1:-} == "-h" || ${1:-} == "--help" ]]; then
+  echo "Usage: $0 [clustername] [auth_key] [ingress_ip]"
+  echo "Example: $0 walldorf c2ItZTAzZ... 192.168.99.35"
+  echo "You can also export AUTH_KEY and INGRESS_IP as environment variables."
   exit 0
 fi
 
-# Inputs
 CLUSTER_NAME="${1:-walldorf}"
-AUTH_KEY="${2:-$AUTH_KEY}"
+AUTH_KEY="${2:-${AUTH_KEY:-}}"
+INGRESS_IP="${3:-${INGRESS_IP:-}}"
 
-if [[ -z "$AUTH_KEY" ]]; then
-  echo "❌ Error: No auth key provided. Pass as second argument or set AUTH_KEY env var."
+[[ -z $AUTH_KEY   ]] && { echo "❌ No AUTH_KEY provided";   exit 1; }
+[[ -z $INGRESS_IP ]] && { echo "❌ No INGRESS_IP provided"; exit 1; }
+
+
+HOST="eic.apps.${CLUSTER_NAME}.ocp.vslen"
+ENDPOINTS=(/http/test1 /http/testelster /slvredis /httpbinipfilter)
+echo "Cluster: $CLUSTER_NAME  •  Host: $HOST"
+
+
+failures=()
+for path in "${ENDPOINTS[@]}"; do
+  echo "GET https://${HOST}${path}"
+  if ! curl --fail --insecure --show-error \
+            -H "Authorization: Basic ${AUTH_KEY}" \
+            "https://${HOST}${path}" \
+            --dump-header - \
+            --resolve "${HOST}:443:${INGRESS_IP}"; then
+    failures+=("$path")
+  fi
+done
+
+
+if ((${#failures[@]})); then
+  echo "❌ Failed endpoints: ${failures[*]}"
   exit 1
 fi
-
-# Domain construction
-APP_DOMAIN="apps.${CLUSTER_NAME}.ocp.vslen"
-HOST="eic.${APP_DOMAIN}"
-AUTH_HEADER="Authorization: Basic ${AUTH_KEY}"
-
-# List of endpoints
-ENDPOINTS=(
-  "/http/test1"
-  "/http/testelster"
-  "/slvredis"
-  "/httpbinipfilter"
-)
-
-echo "Using clustername: $CLUSTER_NAME"
-echo "Using domain: ${HOST}"
-echo "Using auth key: ${AUTH_KEY:0:5}...[REDACTED]"
-
-# Run curl for each endpoint
-for path in "${ENDPOINTS[@]}"; do
-  echo "Testing endpoint: $path"
-  curl --insecure --request GET \
-    --url "https://${HOST}${path}" \
-    --header "${AUTH_HEADER}" \
-    --dump-header -
-  echo -e "\n-----------------------------\n"
-  sleep 1
-done
+echo "✅ All endpoints succeeded"
