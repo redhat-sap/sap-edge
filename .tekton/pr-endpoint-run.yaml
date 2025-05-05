@@ -30,3 +30,10 @@ spec:
     - name: basic-auth
       secret:
         secretName: $(params.authSecret)
+    - name: source
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 1Gi
