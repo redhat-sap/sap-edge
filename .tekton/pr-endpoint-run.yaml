@@ -27,9 +27,6 @@ spec:
     - name: ingressIp
       value: "192.168.99.38"
   workspaces:
-    - name: basic-auth
-      secret:
-        secretName: $(params.authSecret)
     - name: source
       volumeClaimTemplate:
         spec:

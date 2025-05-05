@@ -27,9 +27,6 @@ spec:
     - name: ingressIp     # ✏️ to be edited in each PR
       value: "<replace-me>"
   workspaces:
-    - name: basic-auth
-      secret:
-        secretName: $(params.authSecret)
     - name: source
       volumeClaimTemplate:
         spec:
