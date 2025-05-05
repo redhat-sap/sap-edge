@@ -22,7 +22,6 @@ spec:
       type: string
   workspaces:
     - name: source
-    - name: basic-auth
   tasks:
     - name: fetch-repository
       taskRef: { name: git-clone }

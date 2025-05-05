@@ -18,7 +18,6 @@ spec:
       type: string
   workspaces:
     - name: source        # code from git-clone
-    - name: basic-auth
   steps:
     - name: run-tests
       image: registry.access.redhat.com/ubi9/ubi      # has bash
