@@ -34,7 +34,7 @@ echo "Cluster: $CLUSTER_NAME  •  Host: $HOST"
 
 failures=()
 for path in "${ENDPOINTS[@]}"; do
-  echo "GET https://${HOST}${path}"
+  echo "======== Send New Request to https://${HOST}${path} ========"
   if ! curl --fail --insecure --show-error \
             -H "Authorization: Basic ${AUTH_KEY}" \
             "https://${HOST}${path}" \
@@ -42,6 +42,7 @@ for path in "${ENDPOINTS[@]}"; do
             --resolve "${HOST}:443:${INGRESS_IP}"; then
     failures+=("$path")
   fi
+  sleep 1
 done
 
 

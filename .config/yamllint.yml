@@ -8,6 +8,7 @@
 extends: default
 ignore:
   - node_modules
+  - .tekton
 
 yaml-files:
   - '*.yaml'
