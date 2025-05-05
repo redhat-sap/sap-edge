@@ -28,21 +28,21 @@ INGRESS_IP="${3:-${INGRESS_IP:-}}"
 
 
 HOST="eic.apps.${CLUSTER_NAME}.ocp.vslen"
-ENDPOINTS=(/http/test1 /http/testelster /slvredis /httpbinipfilter)
+ENDPOINTS=(/slvredis /httpbinipfilter /http/test1 /http/testelster)
 echo "Cluster: $CLUSTER_NAME  •  Host: $HOST"
 
 
 failures=()
 for path in "${ENDPOINTS[@]}"; do
   echo "======== Send New Request to https://${HOST}${path} ========"
-  if ! curl --fail --insecure --show-error \
+  if ! curl --fail --insecure --show-error --request GET \
             -H "Authorization: Basic ${AUTH_KEY}" \
             "https://${HOST}${path}" \
             --dump-header - \
             --resolve "${HOST}:443:${INGRESS_IP}"; then
     failures+=("$path")
   fi
-  sleep 1
+  sleep 5
 done
 
 
