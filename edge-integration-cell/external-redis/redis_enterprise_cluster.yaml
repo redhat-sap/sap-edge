@@ -15,7 +15,7 @@ metadata:
 spec:
   bootstrapperImageSpec:
     repository: registry.connect.redhat.com/redislabs/redis-enterprise-operator
-  nodes: 1
+  nodes: 3
   persistentSpec:
     enabled: true
   redisEnterpriseImageSpec:
