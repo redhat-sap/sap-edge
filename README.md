@@ -10,7 +10,7 @@ SPDX-License-Identifier: Apache-2.0
 
 This repository provides scripts and procedures for setting up test validation external services for SAP EIC on the OpenShift Container Platform (OCP). The services covered include PostgreSQL and Redis. This guide will help you install and configure these services, as well as perform cleanup after validation.
 
-> **Note:** These services may be optional for a proof of concept (PoC) setup.  
+> **Note:** These services may be optional for a proof of concept (PoC) setup.
 > If you don’t enable or configure the external Postgres and Redis during the SAP Edge Integration Cell (EIC) installation, EIC will automatically deploy self-contained Postgres and Redis pods within its own service namespace.
 
 **Important Notice**
@@ -237,11 +237,11 @@ Each application includes a **sync wave annotation** to ensure the operator is d
 
 ### 🔧 Deploying with Argo CD
 
-1. Make sure Argo CD is installed in your cluster (e.g., via OpenShift GitOps).
+1. Make sure Argo CD is installed in your cluster (e.g., via 'Red Hat OpenShift GitOps' Operator).
 2. Create a **parent Argo CD Application** pointing to the `argocd-apps` folder:
 
 ```bash
-kubectl apply -f sap-edge/edge-integration-cell/sap-eic-external-services-app.yaml
+oc apply -f sap-edge/edge-integration-cell/sap-eic-external-services-app.yaml
 ```
 
 3. Apply the [Security Context Constraint (SCC)](https://redis.io/docs/latest/operate/kubernetes/deployment/openshift/openshift-cli/#install-security-context-constraint) for the redis deployment:
