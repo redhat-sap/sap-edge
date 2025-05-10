@@ -265,6 +265,10 @@ oc apply -f sap-edge/edge-integration-cell/sap-eic-external-services-app.yaml
 
 ### Running Cluster-Specific Endpoint Tests
 
+You can run endpoint tests in two ways:
+
+#### Option 1: CI/CD via Tekton
+
 1. Copy the pipeline template:
 
    ```bash
@@ -285,6 +289,26 @@ oc apply -f sap-edge/edge-integration-cell/sap-eic-external-services-app.yaml
    ```
 
 3. Commit and push the changes — the pipeline will trigger automatically on your PR.
+
+#### Option 2: Run Locally
+
+To run the same tests locally (outside the CI/CD pipeline), set the required environment variables and execute the `make test-endpoint` command:
+
+```bash
+export CLUSTER_NAME=<your-cluster-name>
+export AUTH_KEY=<your-auth-key>
+export INGRESS_IP=<your-ingress-ip>
+
+make test-endpoint
+```
+
+**Environment Variables:**
+
+* CLUSTER_NAME: Name of the target cluster
+* AUTH_KEY: Authentication key (as used in the Tekton secret)
+* INGRESS_IP: External ingress IP of the cluster
+
+_**Note**: Ensure your test script is configured to read these environment variables. If not, some modifications may be necessary._
 
 # License
 
