@@ -28,7 +28,7 @@ INGRESS_IP="${3:-${INGRESS_IP:-}}"
 
 
 HOST="eic.apps.${CLUSTER_NAME}.ocp.vslen"
-ENDPOINTS=(/slvredis /httpbinipfilter /http/test1 /http/testelster)
+ENDPOINTS=(/httpbinipfilter /http/test1 /http/testelster) # /slvredis
 echo "Cluster: $CLUSTER_NAME  •  Host: $HOST"
 
 
