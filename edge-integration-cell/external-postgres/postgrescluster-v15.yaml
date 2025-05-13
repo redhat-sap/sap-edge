@@ -30,6 +30,7 @@ spec:
       options: 'SUPERUSER'
   backups:
     pgbackrest:
+      image: registry.connect.redhat.com/crunchydata/crunchy-pgbackrest:ubi8-15.12-0
       global:
         repo1-retention-full: "1"
         repo1-retention-full-type: count
