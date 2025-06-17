@@ -20,8 +20,8 @@ spec:
       value: "{{ repo_url }}"
     - name: revision
       value: "{{ revision }}"
-    - name: clusterName
-      value: "hockenheim"
+    - name: host
+      value: "eic.apps.hockenheim.ocp.vslen"
     - name: authSecret
       value: "endpoint-auth"
     - name: ingressIp

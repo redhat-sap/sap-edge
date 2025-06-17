@@ -20,11 +20,13 @@ spec:
       value: "{{ repo_url }}"     # PaC fills with PR repo URL
     - name: revision
       value: "{{ revision }}"     # PaC fills with PR repo URL
-    - name: clusterName   # ✏️ to be edited in each PR
+    - name: host   # ✏️ to be edited in each PR
       value: "<replace-me>"
     - name: authSecret    # ✏️ reference an existing secret
       value: "endpoint-auth"
     - name: ingressIp     # ✏️ to be edited in each PR
+      value: "<replace-me>"
+    - name: publicDns     # ✏️ to be edited in each PR
       value: "<replace-me>"
   workspaces:
     - name: source

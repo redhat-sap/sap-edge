@@ -10,12 +10,20 @@ metadata:
   name: endpoint-tests
 spec:
   params:
-    - name: clusterName
+    - name: host
       type: string
+      description: The full hostname to test.
     - name: authSecret
       type: string
+      description: The name of the secret containing the auth key.
     - name: ingressIp
       type: string
+      description: The Ingress IP for internal resolution.
+      default: ""
+    - name: publicDns
+      type: string
+      description: Set to "true" to use public DNS instead of --resolve.
+      default: "false"
   workspaces:
     - name: source        # code from git-clone
   steps:
@@ -25,8 +33,6 @@ spec:
       env:
         - name: AUTH_KEY
           valueFrom: { secretKeyRef: { name: $(params.authSecret), key: auth_key } }
-        - name: CLUSTER
-          value: $(params.clusterName)
         - name: INGRESS_IP
           value: $(params.ingressIp)
       script: |

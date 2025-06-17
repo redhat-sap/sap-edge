@@ -9,9 +9,10 @@ param domain string
 @secure()
 param pullSecret string = ''
 @allowed([
-    '4.16.30'
+    '4.16.39'
     '4.15.35'
     '4.14.38'
+    '4.17.27'
 ])
 param version string
 param servicePrincipalClientId string

@@ -14,12 +14,20 @@ spec:
       type: string
     - name: revision
       type: string
-    - name: clusterName
+    - name: host
       type: string
+      description: The full hostname to test.
     - name: authSecret
       type: string
+      description: The name of the secret containing the auth key.
     - name: ingressIp
       type: string
+      description: The Ingress IP for internal resolution. Not needed if publicDns is true.
+      default: ""
+    - name: publicDns
+      type: string
+      description: Set to "true" to use public DNS instead of --resolve.
+      default: "false"
   workspaces:
     - name: source
   tasks:
@@ -37,12 +45,14 @@ spec:
       runAfter: [fetch-repository]
       taskRef: { name: endpoint-tests }
       params:
-        - name: clusterName
-          value: $(params.clusterName)
+        - name: host
+          value: $(params.host)
         - name: authSecret
           value: $(params.authSecret)
         - name: ingressIp
           value: $(params.ingressIp)
+        - name: publicDns
+          value: $(params.publicDns)
       workspaces:
         - name: source
           workspace: source
