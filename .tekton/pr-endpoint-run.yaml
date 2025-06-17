@@ -21,11 +21,11 @@ spec:
     - name: revision
       value: "{{ revision }}"
     - name: host
-      value: "eic.apps.hockenheim.ocp.vslen"
+      value: "eic.apps.bruhl.ocp.vslen"
     - name: authSecret
       value: "endpoint-auth"
     - name: ingressIp
-      value: "192.168.99.105"
+      value: "192.168.99.65"
   workspaces:
     - name: source
       volumeClaimTemplate:
