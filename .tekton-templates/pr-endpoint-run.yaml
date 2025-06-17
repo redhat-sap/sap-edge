@@ -26,7 +26,7 @@ spec:
       value: "endpoint-auth"
     - name: ingressIP     # ✏️ to be edited in each PR
       value: "<replace-me>"
-    - name: publicDNS     # ✏️ to be edited in each PR
+    - name: publicDNS     # ✏️ to be edited in each PR if the eic endpoint is publicly accessible
       value: "<replace-me>"
   workspaces:
     - name: source

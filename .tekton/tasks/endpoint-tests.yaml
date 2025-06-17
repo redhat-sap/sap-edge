@@ -12,33 +12,47 @@ spec:
   params:
     - name: host
       type: string
-      description: The full hostname to test.
     - name: authSecret
       type: string
-      description: The name of the secret containing the auth key.
     - name: ingressIP
       type: string
-      description: The Ingress IP for internal resolution.
       default: ""
     - name: publicDNS
       type: string
-      description: Set to "true" to use public DNS instead of --resolve.
       default: "false"
+    - name: endpointPath
+      type: string
+      description: The single endpoint path to test (e.g. /http/test1)
   workspaces:
-    - name: source        # code from git-clone
+    - name: source
   steps:
-    - name: run-tests
-      image: registry.access.redhat.com/ubi9/ubi      # has bash
+    - name: run-single-test
+      image: registry.access.redhat.com/ubi9/ubi-minimal # Smaller image is sufficient
       workingDir: $(workspaces.source.path)
       env:
         - name: AUTH_KEY
           valueFrom: { secretKeyRef: { name: $(params.authSecret), key: auth_key } }
         - name: INGRESS_IP
           value: $(params.ingressIP)
-        - name: HOST
-          value: $(params.host)
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
-        dnf -y install make >/dev/null 2>&1   # ensure make is present
-        make test-endpoints
+
+        # Assuming the script is in the root of the repo, adjust if needed
+        TEST_SCRIPT="./edge-integration-cell/test_eic_endpoints.sh"
+
+        SCRIPT_ARGS=("--host" "$(params.host)")
+
+        if [[ "$(params.publicDNS)" == "true" ]]; then
+          SCRIPT_ARGS+=("--public-dns")
+        fi
+
+        if [[ ! -f "$TEST_SCRIPT" ]]; then
+          echo "❌ Test script not found at $TEST_SCRIPT"
+          exit 1
+        fi
+        chmod +x "$TEST_SCRIPT"
+
+        # Pass the endpointPath as the final argument
+        echo "▶️ Testing endpoint: $(params.endpointPath)"
+        $TEST_SCRIPT "${SCRIPT_ARGS[@]}" "$(params.endpointPath)"
