@@ -65,7 +65,7 @@ if ! $USE_PUBLIC_DNS && [[ -z "$INGRESS_IP" ]]; then
 fi
 
 # --- Main Execution ---
-ENDPOINTS=(/httpbinipfilter /http/test1 /http/testelster)
+ENDPOINTS=(/httpbinipfilter /http/test1 /http/testelster /slvredis)
 echo "--------------------------------------------------"
 echo "Target Host:  $HOST"
 
