@@ -16,11 +16,11 @@ spec:
     - name: authSecret
       type: string
       description: The name of the secret containing the auth key.
-    - name: ingressIp
+    - name: ingressIP
       type: string
       description: The Ingress IP for internal resolution.
       default: ""
-    - name: publicDns
+    - name: publicDNS
       type: string
       description: Set to "true" to use public DNS instead of --resolve.
       default: "false"
@@ -34,7 +34,9 @@ spec:
         - name: AUTH_KEY
           valueFrom: { secretKeyRef: { name: $(params.authSecret), key: auth_key } }
         - name: INGRESS_IP
-          value: $(params.ingressIp)
+          value: $(params.ingressIP)
+        - name: HOST
+          value: $(params.host)
       script: |
         #!/usr/bin/env bash
         set -euo pipefail

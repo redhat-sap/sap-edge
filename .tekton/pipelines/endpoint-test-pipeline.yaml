@@ -20,11 +20,11 @@ spec:
     - name: authSecret
       type: string
       description: The name of the secret containing the auth key.
-    - name: ingressIp
+    - name: ingressIP
       type: string
       description: The Ingress IP for internal resolution. Not needed if publicDns is true.
       default: ""
-    - name: publicDns
+    - name: publicDNS
       type: string
       description: Set to "true" to use public DNS instead of --resolve.
       default: "false"
@@ -49,10 +49,10 @@ spec:
           value: $(params.host)
         - name: authSecret
           value: $(params.authSecret)
-        - name: ingressIp
-          value: $(params.ingressIp)
-        - name: publicDns
-          value: $(params.publicDns)
+        - name: ingressIP
+          value: $(params.ingressIP)
+        - name: publicDNS
+          value: $(params.publicDNS)
       workspaces:
         - name: source
           workspace: source

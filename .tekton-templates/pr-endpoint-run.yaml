@@ -24,9 +24,9 @@ spec:
       value: "<replace-me>"
     - name: authSecret    # ✏️ reference an existing secret
       value: "endpoint-auth"
-    - name: ingressIp     # ✏️ to be edited in each PR
+    - name: ingressIP     # ✏️ to be edited in each PR
       value: "<replace-me>"
-    - name: publicDns     # ✏️ to be edited in each PR
+    - name: publicDNS     # ✏️ to be edited in each PR
       value: "<replace-me>"
   workspaces:
     - name: source

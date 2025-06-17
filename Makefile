@@ -101,4 +101,4 @@ cspell-addwords: node_modules  ## Run cspell
 
 .PHONY: test-endpoints
 test-endpoints:
-	@./edge-integration-cell/test_eic_endpoints.sh "$(CLUSTER)" "$$AUTH_KEY" "$(INGRESS_IP)"
+	@./edge-integration-cell/test_eic_endpoints.sh  --host "$(HOST)" --auth-key "$$AUTH_KEY" --ingress-ip "$(INGRESS_IP)"

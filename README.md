@@ -276,9 +276,10 @@ You can run endpoint tests in two ways:
    ```
 
 2. Edit the following fields in the copied file:
-   - `clusterName`: Name of the target cluster
+   - `host`: The full hostname of the SAP EIC endpoint to test.
    - `authSecret`: Authentication secret (example command below for creating the secret)
-   - `ingressIp`: External ingress IP of the cluster
+   - `ingressIP`: External ingress IP of the cluster
+   - `publicDNS`: Whether using public DNS for resolution. For external hosts.
 
    Example to create the auth secret:
 

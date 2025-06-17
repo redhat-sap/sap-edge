@@ -24,7 +24,7 @@ spec:
       value: "eic.apps.bruhl.ocp.vslen"
     - name: authSecret
       value: "endpoint-auth"
-    - name: ingressIp
+    - name: ingressIP
       value: "192.168.99.65"
   workspaces:
     - name: source

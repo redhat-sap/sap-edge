@@ -31,11 +31,11 @@ Example (Internal Host using --resolve):
 Example (External Host using Public DNS):
   $0 --host "my.external.host.com" --auth-key "c2ItZ..." --public-dns
 EOF
-  exit 0
+  exit 1
 }
 
 # --- Argument Parsing ---
-HOST=""
+HOST="${HOST:-}"
 AUTH_KEY="${AUTH_KEY:-}"
 INGRESS_IP="${INGRESS_IP:-}"
 USE_PUBLIC_DNS=false
