@@ -36,7 +36,7 @@ echo "--- Triggering requests to activate rate limit for ${ENDPOINT_PATH} ---"
 
 # Fire 6 requests quickly to ensure the limit (more than 5) is hit.
 # These are "warm-up" requests; we don't check their results.
-for i in {1..6}; do
+for i in {1..10}; do
     echo "Sending warm-up request #$i..."
     curl --silent --output /dev/null --insecure --request GET \
         -H "Authorization: Basic ${AUTH_KEY}" \
