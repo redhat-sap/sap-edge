@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: rate-limit-test
+spec:
+  description: >-
+    This task tests an endpoint for a 429 rate limit exceeded error
+    by calling it multiple times in quick succession.
+  params:
+    - name: host
+      type: string
+    - name: authSecret
+      type: string
+    - name: ingressIP
+      type: string
+      default: ""
+    - name: endpointPath
+      type: string
+  workspaces:
+    - name: source
+  steps:
+    - name: run-rate-limit-test
+      image: registry.access.redhat.com/ubi9/ubi-minimal
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: AUTH_KEY
+          valueFrom: { secretKeyRef: { name: $(params.authSecret), key: auth_key } }
+        - name: INGRESS_IP
+          value: $(params.ingressIP)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        # Path to the new test script
+        TEST_SCRIPT="./edge-integration-cell/rate-limit-test.sh"
+
+        if [[ ! -f "$TEST_SCRIPT" ]]; then
+          echo "❌ Test script not found at $TEST_SCRIPT"
+          exit 1
+        fi
+        chmod +x "$TEST_SCRIPT"
+
+        echo "▶️ Running rate limit test for endpoint: $(params.endpointPath)"
+        $TEST_SCRIPT --host "$(params.host)" "$(params.endpointPath)"

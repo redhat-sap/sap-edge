@@ -109,3 +109,19 @@ spec:
       workspaces:
         - name: source
           workspace: source
+
+    - name: test-ratelimit-slvredis
+      runAfter: [ test-slvredis ]
+      taskRef: { name: rate-limit-test }
+      params:
+        - name: endpointPath
+          value: /slvredis
+        - name: host
+          value: $(params.host)
+        - name: authSecret
+          value: $(params.authSecret)
+        - name: ingressIP
+          value: $(params.ingressIP)
+      workspaces:
+        - name: source
+          workspace: source
