@@ -37,19 +37,19 @@ spec:
         - name: output
           workspace: source
 
-#    - name: test-httpbinipfilter
-#      runAfter: [fetch-repository]
-#      taskRef: { name: endpoint-tests }
-#      params:
-#        - name: endpointPath
-#          value: /httpbinipfilter
-#        - name: clusterInfoSecretName
-#          value: $(params.clusterInfoSecretName)
-#        - name: publicDNS
-#          value: $(params.publicDNS)
-#      workspaces:
-#        - name: source
-#          workspace: source
+    - name: test-httpbinipfilter
+      runAfter: [fetch-repository]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /httpbinipfilter
+        - name: clusterInfoSecretName
+          value: $(params.clusterInfoSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+      workspaces:
+        - name: source
+          workspace: source
 
     - name: test-http-test1
       runAfter: [fetch-repository]
@@ -109,7 +109,7 @@ spec:
 
     - name: update-jira-ticket
       runAfter:
-#        - test-httpbinipfilter
+        - test-httpbinipfilter
         - test-http-test1
         - test-http-testelster
         - test-slvredis
@@ -132,8 +132,9 @@ spec:
             * *Revision:* $(params.revision)
             * *Target Cluster Secret:* $(params.clusterInfoSecretName)
 
-            *Executed Tests:*
+            *Executed Tests:* 
             * test-http-test1
             * test-http-testelster
+            * test-httpbinipfilter
             * test-slvredis
             * test-ratelimit-slvredis
