@@ -30,11 +30,6 @@ spec:
             secretKeyRef:
               name: $(params.jiraSecretName)
               key: serverURL
-        - name: JIRA_USERNAME
-          valueFrom:
-            secretKeyRef:
-              name: $(params.jiraSecretName)
-              key: username
         - name: JIRA_API_TOKEN
           valueFrom:
             secretKeyRef:
