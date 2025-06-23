@@ -292,10 +292,21 @@ stringData:
   host: "eic.apps.bruhl.ocp.vslen"
   # The ingress IP for internal resolution. Leave empty if using publicDNS.
   ingressIP: "192.168.99.65"
+```
+
+*Note: The authentication key for the gateway is managed in a separate secret, referenced by the `eicAuthSecret` parameter in your `PipelineRun`.*
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  # The name you will use for the 'eicAuthSecret' parameter
+  name: eic-auth-key
+type: Opaque
+stringData:
    # The auth key to access the SAP EIC ingress gateway.
   authKey: "EIC AUTH KEY"
 ```
-*Note: The authentication key for the gateway is managed in a separate secret, referenced by the `authSecret` parameter in your `PipelineRun`.*
+
 
 **To apply the secret, run:**
 ```bash
