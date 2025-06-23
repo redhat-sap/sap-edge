@@ -10,7 +10,9 @@ metadata:
   name: endpoint-tests
 spec:
   params:
-    - name: clusterInfoSecretName
+    - name: clusterConfigMapName
+      type: string
+    - name: eicAuthSecretName
       type: string
     - name: publicDNS
       type: string
@@ -26,11 +28,11 @@ spec:
       workingDir: $(workspaces.source.path)
       env:
         - name: HOST
-          valueFrom: { secretKeyRef: { name: $(params.clusterInfoSecretName), key: host } }
+          valueFrom: { configMapKeyRef: { name: $(params.clusterConfigMapName), key: host } }
         - name: INGRESS_IP
-          valueFrom: { secretKeyRef: { name: $(params.clusterInfoSecretName), key: ingressIP } }
+          valueFrom: { configMapKeyRef: { name: $(params.clusterConfigMapName), key: ingressIP } }
         - name: AUTH_KEY
-          valueFrom: { secretKeyRef: { name: $(params.clusterInfoSecretName), key: authKey } }
+          valueFrom: { secretKeyRef: { name: $(params.eicAuthSecretName), key: authKey } }
       script: |
         #!/usr/bin/env bash
         set -euo pipefail

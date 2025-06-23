@@ -279,38 +279,38 @@ Before the pipeline can run, the OpenShift project where your pipeline executes 
 
 This secret holds the configuration for the specific cluster environment you are targeting.
 
-**Example `cluster-info-secret.yaml`:**
+**Example `cluster-info-configmap.yaml`:**
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+   # The name we will use for our new 'clusterConfigMapName' parameter
+   name: cluster-config-bruhl
+data:
+   # The target hostname (non-sensitive)
+   host: "eic.apps.bruhl.ocp.vslen"
+   # The ingress IP for internal resolution (non-sensitive)
+   ingressIP: "192.168.99.65"
+```
+
+The authentication key for the gateway is managed in a separate secret, referenced by the `eicAuthSecretName` parameter in your `PipelineRun`.*
+**Example `endpoint-auth-bruhl.yaml`:**
 ```yaml
 apiVersion: v1
 kind: Secret
 metadata:
-  # The name you will use for the 'clusterInfoSecretName' parameter
-  name: cluster-info-bruhl
+   # The name we will use for our new 'eicAuthSecretName' parameter
+   name: endpoint-auth-bruhl
 type: Opaque
 stringData:
-  # The target hostname
-  host: "eic.apps.bruhl.ocp.vslen"
-  # The ingress IP for internal resolution. Leave empty if using publicDNS.
-  ingressIP: "192.168.99.65"
+   # The auth key to the gateway (sensitive)
+   authKey: "your-super-secret-auth-key"
 ```
-
-*Note: The authentication key for the gateway is managed in a separate secret, referenced by the `eicAuthSecret` parameter in your `PipelineRun`.*
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  # The name you will use for the 'eicAuthSecret' parameter
-  name: eic-auth-key
-type: Opaque
-stringData:
-   # The auth key to access the SAP EIC ingress gateway.
-  authKey: "EIC AUTH KEY"
-```
-
 
 **To apply the secret, run:**
 ```bash
-kubectl apply -f cluster-info-secret.yaml -n your-project-namespace
+oc apply -f cluster-config-bruhl.yaml -n your-project-namespace
+oc apply -f endpoint-auth-bruhl.yaml -n your-project-namespace
 ```
 
 ##### 2. Jira Integration Secret
@@ -328,8 +328,6 @@ type: Opaque
 stringData:
   # The base URL of your Jira instance (e.g., https://your-org.atlassian.net)
   serverURL: "https://your-jira-instance.com"
-  # The email of the user to authenticate as
-  username: "your-email@example.com"
   # Your Jira API token (NEVER use your password)
   apiToken: "your-super-secret-api-token"
 ```

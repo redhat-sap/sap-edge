@@ -20,12 +20,14 @@ spec:
       value: "{{ repo_url }}"
     - name: revision
       value: "{{ revision }}"
-    - name: clusterInfoSecretName
+    - name: clusterConfigMapName
       value: "cluster-info-bruhl"
+    - name: eicAuthSecretName
+      value: "azure-tenant-auth-secret"
     - name: publicDNS
       value: "false"
     - name: jiraSecretName
-      value: "jira-secret"
+      value: "jira-secret-mj"
     - name: jiraIssueKey
       value: "SAPOCP-1586"
   workspaces:
