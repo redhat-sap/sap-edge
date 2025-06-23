@@ -21,13 +21,13 @@ spec:
     - name: revision
       value: "{{ revision }}"
     - name: clusterInfoSecretName
-      value: "cluster-info-rosa"
+      value: "cluster-info-ketsch"
     - name: publicDNS
       value: "false"
     - name: jiraSecretName
       value: "jira-secret"
     - name: jiraIssueKey
-      value: "SAPOCP-1591"
+      value: "SAPOCP-1587"
   workspaces:
     - name: source
       volumeClaimTemplate:
