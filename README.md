@@ -275,9 +275,9 @@ This guide explains how to configure and run the automated endpoint test pipelin
 
 Before the pipeline can run, the OpenShift project where your pipeline executes must contain the necessary secrets. If they do not exist, you will need to create them.
 
-##### 1. Cluster Information Secret
+##### 1. Cluster Information ConfigMap and EIC Auth Secret
 
-This secret holds the configuration for the specific cluster environment you are targeting.
+This configmap holds the configuration for the specific cluster environment you are targeting.
 
 **Example `cluster-info-configmap.yaml`:**
 ```yaml
@@ -348,14 +348,15 @@ First, copy the pipeline run template into the `.tekton` directory. This file de
 cp .tekton-templates/pr-endpoint-run-bruhl.yaml .tekton/pr-endpoint-run-bruhl.yaml
 ```
 
-Next, open the newly created `.tekton/pr-endpoint-run.yaml` file and edit the following parameters in the `params` section:
+Next, open the newly created `.tekton/pr-endpoint-run.yaml` file and edit the following parameters in the `params` section: 
 
-| Parameter               | Description                                                                                             | Example Value               |
-| ----------------------- | ------------------------------------------------------------------------------------------------------- | --------------------------- |
-| `clusterInfoSecretName` | **(Required)** The name of the Kubernetes Secret containing the `host` and `ingressIP` for your target.    | `"cluster-info-bruhl"`      |
-| `publicDNS`             | Set to `"true"` to disable `--resolve` and use public DNS. Set to `"false"` for internal resolution. | `"false"`                   |
-| `jiraSecretName`        | The name of the Kubernetes Secret containing your Jira `serverURL`, `username`, and `apiToken`.         | `"jira-credentials"`        |
-| `jiraIssueKey`          | The Jira ticket key to update with the pipeline results (e.g., PROJ-123).                               | `"PROJ-456"`                |
+| Parameter              | Description                                                                                                   | Example Value          |
+|------------------------|---------------------------------------------------------------------------------------------------------------|------------------------|
+| `clusterConfigMapName` | **(Required)** The name of the Kubernetes ConfigMap containing the `host` and `ingressIP` for your target.    | `"cluster-info-bruhl"` |
+| `eicAuthSecretName`    | **(Required)** The name of the Kubernetes Secret containing the authToken for SAP EIC gateway authentication. | `"auth-secret"`        |
+| `publicDNS`            | Set to `"true"` to disable `--resolve` and use public DNS. Set to `"false"` for internal resolution.          | `"false"`              |
+| `jiraSecretName`       | The name of the Kubernetes Secret containing your Jira `serverURL`, and `apiToken`.                           | `"jira-credentials"`   |
+| `jiraIssueKey`         | The Jira ticket key to update with the pipeline results (e.g., PROJ-123).                                     | `"PROJ-456"`           |
 
 ##### Step 2: Trigger the Pipeline
 
