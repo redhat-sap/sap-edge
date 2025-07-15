@@ -21,7 +21,7 @@ spec:
     - name: revision
       value: "{{ revision }}"
     - name: clusterConfigMapName
-      value: "cluster-info-leimen"
+      value: "cluster-info-hockenheim"
     - name: eicAuthSecretName
       value: "eic-auth-secret"
     - name: publicDNS
@@ -29,7 +29,7 @@ spec:
     - name: jiraSecretName
       value: "jira-secret-mj"
     - name: jiraIssueKey
-      value: "SAPOCP-1542"
+      value: "SAPOCP-1609"
   workspaces:
     - name: source
       volumeClaimTemplate:
