@@ -7,7 +7,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: endpoint-tests-bruhl-
+  generateName: endpoint-tests-hockenheim-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
