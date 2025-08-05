@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+# SPDX-FileContributor: Kirill Satarin (@kksat)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+name: Auto-approve Validation PRs
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - synchronize
+      - reopened
+    branches:
+      - main
+
+permissions:
+  pull-requests: write
+
+jobs:
+  auto-approve:
+    runs-on: ubuntu-latest
+
+    if: >-
+      startsWith(github.event.pull_request.title, '[Validation]') &&
+      contains(fromJSON('["mjiao", "kksat", "RishabhKodes"]'), github.event.pull_request.user.login)
+
+    steps:
+      - name: Approve Pull Request
+        run: gh pr review --approve "$PR_URL"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
