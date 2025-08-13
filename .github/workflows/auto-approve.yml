@@ -132,7 +132,8 @@ jobs:
               FILE_CONTENT=$(git show HEAD:$file 2>/dev/null || echo "")
             fi
 
-            if [[ -n "$FILE_CONTENT" ]] && echo "$FILE_CONTENT" | grep -i "kind:\s*PipelineRun" > /dev/null; then
+            # Check if the file's main resource is a PipelineRun (not just contains one)
+            if [[ -n "$FILE_CONTENT" ]] && echo "$FILE_CONTENT" | grep -E "^kind:\s*PipelineRun\s*$" > /dev/null; then
               FILES_WITH_PIPELINERUN="$FILES_WITH_PIPELINERUN $file"
             fi
           done
@@ -156,25 +157,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
 
-      - name: Comment on non-compliant PR
-        if: >-
-          startsWith(github.event.pull_request.title, '[Validation]') &&
-          contains(fromJSON('["mjiao", "kksat", "RishabhKodes"]'), github.event.pull_request.user.login) &&
-          (steps.check-tekton-folder.outputs.tekton_only == 'false' || steps.check-pipelinerun.outputs.has_pipelinerun == 'false')
-        run: |
-          COMMENT="❌ Auto-approval failed. This PR must:
-
-          - Only modify files in the \`.tekton\` folder
-          - Only modify files that contain \`PipelineRun\` resources
-
-          Current status:
-          - Files in .tekton folder only: ${{ steps.check-tekton-folder.outputs.tekton_only }}
-          - Files contain PipelineRun: ${{ steps.check-pipelinerun.outputs.has_pipelinerun }}"
-
-          gh pr comment "$PR_URL" --body "$COMMENT"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
 
       - name: Validate PR requirements
         run: |
