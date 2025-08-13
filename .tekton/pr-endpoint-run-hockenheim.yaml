@@ -29,7 +29,7 @@ spec:
     - name: jiraSecretName
       value: "jira-secret-mj"
     - name: jiraIssueKey
-      value: "SAPOCP-1609"
+      value: "SAPOCP-1638"
   workspaces:
     - name: source
       volumeClaimTemplate:

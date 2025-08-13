@@ -28,8 +28,76 @@ jobs:
       contains(fromJSON('["mjiao", "kksat", "RishabhKodes"]'), github.event.pull_request.user.login)
 
     steps:
+      - name: Check if changes are only in .tekton folder
+        id: check-tekton-folder
+        run: |
+          # Get list of modified files
+          FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
+
+          # Check if all files are in .tekton folder
+          NON_TEKTON_FILES=""
+          for file in $FILES; do
+            if [[ ! "$file" =~ ^\.tekton/ ]]; then
+              NON_TEKTON_FILES="$NON_TEKTON_FILES $file"
+            fi
+          done
+
+          if [[ -n "$NON_TEKTON_FILES" ]]; then
+            echo "Found files outside .tekton folder: $NON_TEKTON_FILES"
+            echo "tekton_only=false" >> $GITHUB_OUTPUT
+          else
+            echo "All files are in .tekton folder"
+            echo "tekton_only=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check if files contain pipelinerun
+        id: check-pipelinerun
+        run: |
+          # Get list of modified files in .tekton folder
+          TEKTON_FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep '^\.tekton/')
+
+          if [[ -z "$TEKTON_FILES" ]]; then
+            echo "No files found in .tekton folder"
+            echo "has_pipelinerun=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Check each file for pipelinerun content
+          FILES_WITH_PIPELINERUN=""
+          for file in $TEKTON_FILES; do
+            if git show ${{ github.event.pull_request.head.sha }}:$file | grep -i "kind:\s*PipelineRun" > /dev/null; then
+              FILES_WITH_PIPELINERUN="$FILES_WITH_PIPELINERUN $file"
+            fi
+          done
+
+          if [[ -n "$FILES_WITH_PIPELINERUN" ]]; then
+            echo "Files containing PipelineRun: $FILES_WITH_PIPELINERUN"
+            echo "has_pipelinerun=true" >> $GITHUB_OUTPUT
+          else
+            echo "No files contain PipelineRun"
+            echo "has_pipelinerun=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Approve Pull Request
+        if: steps.check-tekton-folder.outputs.tekton_only == 'true' && steps.check-pipelinerun.outputs.has_pipelinerun == 'true'
         run: gh pr review --approve "$PR_URL"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+
+      - name: Comment on non-compliant PR
+        if: steps.check-tekton-folder.outputs.tekton_only == 'false' || steps.check-pipelinerun.outputs.has_pipelinerun == 'false'
+        run: |
+          COMMENT="❌ Auto-approval failed. This PR must:
+
+          - Only modify files in the \`.tekton\` folder
+          - Only modify files that contain \`PipelineRun\` resources
+
+          Current status:
+          - Files in .tekton folder only: ${{ steps.check-tekton-folder.outputs.tekton_only }}
+          - Files contain PipelineRun: ${{ steps.check-pipelinerun.outputs.has_pipelinerun }}"
+
+          gh pr comment "$PR_URL" --body "$COMMENT"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}

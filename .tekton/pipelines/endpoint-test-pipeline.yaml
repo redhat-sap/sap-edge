@@ -25,6 +25,10 @@ spec:
       type: string
     - name: jiraIssueKey
       type: string
+    - name: extraInfo
+      type: string
+      default: ""
+      description: "Extra information to include in the Jira ticket comment"
   workspaces:
     - name: source
   tasks:
@@ -143,6 +147,7 @@ spec:
             * *Repository:* $(params.repoUrl)
             * *Revision:* $(params.revision)
             * *Target Cluster ConfigMap:* $(params.clusterConfigMapName)
+            ${{ if ne(params.extraInfo, "") }}* *Extra Info:* $(params.extraInfo)${{ end }}
 
             *Executed Tests:* 
             * test-http-test1
