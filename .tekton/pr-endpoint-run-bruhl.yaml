@@ -31,7 +31,7 @@ spec:
     - name: jiraIssueKey
       value: "SAPOCP-1639"
     - name: extraInfo
-      value: "Current EIC version 8.33.3"
+      value: "Current EIC version 8.33.3 \n OpenShift version is 4.19"
   workspaces:
     - name: source
       volumeClaimTemplate:
