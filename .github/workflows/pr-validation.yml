@@ -1,11 +1,10 @@
 # SPDX-FileCopyrightText: 2025 SAP edge team
 # SPDX-FileContributor: Manjun Jiao (@mjiao)
-# SPDX-FileContributor: Kirill Satarin (@kksat)
 #
 # SPDX-License-Identifier: Apache-2.0
 
 ---
-name: Auto-approve Validation PRs
+name: PR Validation
 
 on:
   pull_request_target:
@@ -16,13 +15,10 @@ on:
     branches:
       - main
 
-permissions:
-  pull-requests: write
-
 jobs:
-  auto-approve:
+  validate-pr:
     runs-on: ubuntu-latest
-
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -78,37 +74,6 @@ jobs:
             echo "No files contain PipelineRun"
             echo "has_pipelinerun=false" >> $GITHUB_OUTPUT
           fi
-
-      - name: Auto-approve if conditions met
-        if: >-
-          startsWith(github.event.pull_request.title, '[Validation]') &&
-          contains(fromJSON('["mjiao", "kksat", "RishabhKodes"]'), github.event.pull_request.user.login) &&
-          steps.check-tekton-folder.outputs.tekton_only == 'true' &&
-          steps.check-pipelinerun.outputs.has_pipelinerun == 'true'
-        run: gh pr review --approve "$PR_URL"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-
-      - name: Comment on non-compliant PR
-        if: >-
-          startsWith(github.event.pull_request.title, '[Validation]') &&
-          contains(fromJSON('["mjiao", "kksat", "RishabhKodes"]'), github.event.pull_request.user.login) &&
-          (steps.check-tekton-folder.outputs.tekton_only == 'false' || steps.check-pipelinerun.outputs.has_pipelinerun == 'false')
-        run: |
-          COMMENT="❌ Auto-approval failed. This PR must:
-          
-          - Only modify files in the \`.tekton\` folder
-          - Only modify files that contain \`PipelineRun\` resources
-          
-          Current status:
-          - Files in .tekton folder only: ${{ steps.check-tekton-folder.outputs.tekton_only }}
-          - Files contain PipelineRun: ${{ steps.check-pipelinerun.outputs.has_pipelinerun }}"
-          
-          gh pr comment "$PR_URL" --body "$COMMENT"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
 
       - name: Validate PR requirements
         run: |
