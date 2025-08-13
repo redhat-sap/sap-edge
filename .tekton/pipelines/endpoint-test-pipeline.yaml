@@ -147,7 +147,7 @@ spec:
             * *Repository:* $(params.repoUrl)
             * *Revision:* $(params.revision)
             * *Target Cluster ConfigMap:* $(params.clusterConfigMapName)
-            ${{ if ne(params.extraInfo, "") }}* *Extra Info:* $(params.extraInfo)${{ end }}
+            * *Extra Info:* $(params.extraInfo)
 
             *Executed Tests:* 
             * test-http-test1
