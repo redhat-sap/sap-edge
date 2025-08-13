@@ -7,7 +7,7 @@
 ---
 name: Auto-approve Validation PRs
 
-on:
+"on":
   pull_request_target:
     types:
       - opened
@@ -32,33 +32,42 @@ jobs:
       - name: Check if changes are only in .tekton folder
         id: check-tekton-folder
         run: |
-          # Get list of modified files using a more robust approach
-          if [[ -n "${{ github.event.pull_request.base.sha }}" && -n "${{ github.event.pull_request.head.sha }}" ]]; then
-            # Use git diff if both SHAs are available
-            FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} 2>/dev/null || echo "")
+          # Get list of modified files using GitHub API approach
+          FILES=""
+          # First try using git merge-base to find the common ancestor
+          if [[ -n "${{ github.event.pull_request.base.ref }}" ]]; then
+            echo "Fetching base branch: ${{ github.event.pull_request.base.ref }}"
+            git fetch origin ${{ github.event.pull_request.base.ref }}:refs/remotes/origin/${{ github.event.pull_request.base.ref }} 2>/dev/null || true
+            # Try to find merge base and get diff
+            MERGE_BASE=$(git merge-base HEAD origin/${{ github.event.pull_request.base.ref }} 2>/dev/null || echo "")
+            if [[ -n "$MERGE_BASE" ]]; then
+              FILES=$(git diff --name-only $MERGE_BASE HEAD 2>/dev/null || echo "")
+              echo "Using merge-base approach: $MERGE_BASE"
+            fi
           fi
-          
-          # Fallback: if git diff failed or no files found, check current changes
+
+          # Fallback: if merge-base failed, try with origin/main
           if [[ -z "$FILES" ]]; then
-            echo "Git diff failed, checking current changes..."
+            echo "Merge-base failed, trying origin/main..."
+            git fetch origin main:refs/remotes/origin/main 2>/dev/null || true
+            FILES=$(git diff --name-only origin/main HEAD 2>/dev/null || echo "")
+          fi
+
+          # Final fallback: check recent commits
+          if [[ -z "$FILES" ]]; then
+            echo "All previous methods failed, checking recent commits..."
             FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
           fi
-          
-          # If still no files, check staged changes
-          if [[ -z "$FILES" ]]; then
-            echo "No diff found, checking staged changes..."
-            FILES=$(git diff --cached --name-only 2>/dev/null || echo "")
-          fi
-          
+
           # If no files found at all, assume no changes
           if [[ -z "$FILES" ]]; then
             echo "No files found to check"
             echo "tekton_only=true" >> $GITHUB_OUTPUT
             exit 0
           fi
-          
+
           echo "Files to check: $FILES"
-          
+
           # Check if all files are in .tekton folder
           NON_TEKTON_FILES=""
           for file in $FILES; do
@@ -66,7 +75,7 @@ jobs:
               NON_TEKTON_FILES="$NON_TEKTON_FILES $file"
             fi
           done
-          
+
           if [[ -n "$NON_TEKTON_FILES" ]]; then
             echo "Found files outside .tekton folder: $NON_TEKTON_FILES"
             echo "tekton_only=false" >> $GITHUB_OUTPUT
@@ -78,32 +87,37 @@ jobs:
       - name: Check if files contain pipelinerun
         id: check-pipelinerun
         run: |
-          # Get list of modified files using a more robust approach
-          if [[ -n "${{ github.event.pull_request.base.sha }}" && -n "${{ github.event.pull_request.head.sha }}" ]]; then
-            # Use git diff if both SHAs are available
-            TEKTON_FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} 2>/dev/null | grep '^\.tekton/' || echo "")
+          # Get list of modified .tekton files using same approach as previous step
+          TEKTON_FILES=""
+          # First try using git merge-base to find the common ancestor
+          if [[ -n "${{ github.event.pull_request.base.ref }}" ]]; then
+            MERGE_BASE=$(git merge-base HEAD origin/${{ github.event.pull_request.base.ref }} 2>/dev/null || echo "")
+            if [[ -n "$MERGE_BASE" ]]; then
+              TEKTON_FILES=$(git diff --name-only $MERGE_BASE HEAD 2>/dev/null | grep '^\.tekton/' || echo "")
+              echo "Using merge-base approach for .tekton files"
+            fi
           fi
-          
-          # Fallback: if git diff failed or no files found, check current changes
+
+          # Fallback: if merge-base failed, try with origin/main
           if [[ -z "$TEKTON_FILES" ]]; then
-            echo "Git diff failed, checking current changes..."
+            echo "Merge-base failed, trying origin/main for .tekton files..."
+            TEKTON_FILES=$(git diff --name-only origin/main HEAD 2>/dev/null | grep '^\.tekton/' || echo "")
+          fi
+
+          # Final fallback: check recent commits
+          if [[ -z "$TEKTON_FILES" ]]; then
+            echo "All previous methods failed, checking recent commits for .tekton files..."
             TEKTON_FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null | grep '^\.tekton/' || echo "")
           fi
-          
-          # If still no files, check staged changes
-          if [[ -z "$TEKTON_FILES" ]]; then
-            echo "No diff found, checking staged changes..."
-            TEKTON_FILES=$(git diff --cached --name-only 2>/dev/null | grep '^\.tekton/' || echo "")
-          fi
-          
+
           if [[ -z "$TEKTON_FILES" ]]; then
             echo "No files found in .tekton folder"
             echo "has_pipelinerun=false" >> $GITHUB_OUTPUT
             exit 0
           fi
-          
+
           echo "Tekton files to check: $TEKTON_FILES"
-          
+
           # Check each file for pipelinerun content
           FILES_WITH_PIPELINERUN=""
           for file in $TEKTON_FILES; do
@@ -116,12 +130,12 @@ jobs:
             else
               FILE_CONTENT=$(git show HEAD:$file 2>/dev/null || echo "")
             fi
-            
+
             if [[ -n "$FILE_CONTENT" ]] && echo "$FILE_CONTENT" | grep -i "kind:\s*PipelineRun" > /dev/null; then
               FILES_WITH_PIPELINERUN="$FILES_WITH_PIPELINERUN $file"
             fi
           done
-          
+
           if [[ -n "$FILES_WITH_PIPELINERUN" ]]; then
             echo "Files containing PipelineRun: $FILES_WITH_PIPELINERUN"
             echo "has_pipelinerun=true" >> $GITHUB_OUTPUT

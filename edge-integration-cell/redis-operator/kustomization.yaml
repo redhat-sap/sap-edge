@@ -8,4 +8,4 @@ resources:
   - operatorgroup.yaml
   - subscription.yaml
   - security_context_constraint_v2.yaml  # NOTE: This field can be enabled only if your Argo CD service account has been granted the necessary
-                                         # privileges to manage Security Context Constraints (SCC).
+  # privileges to manage Security Context Constraints (SCC).
