@@ -32,9 +32,33 @@ jobs:
       - name: Check if changes are only in .tekton folder
         id: check-tekton-folder
         run: |
-          # Get list of modified files
-          FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
-
+          # Get list of modified files using a more robust approach
+          if [[ -n "${{ github.event.pull_request.base.sha }}" && -n "${{ github.event.pull_request.head.sha }}" ]]; then
+            # Use git diff if both SHAs are available
+            FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} 2>/dev/null || echo "")
+          fi
+          
+          # Fallback: if git diff failed or no files found, check current changes
+          if [[ -z "$FILES" ]]; then
+            echo "Git diff failed, checking current changes..."
+            FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+          fi
+          
+          # If still no files, check staged changes
+          if [[ -z "$FILES" ]]; then
+            echo "No diff found, checking staged changes..."
+            FILES=$(git diff --cached --name-only 2>/dev/null || echo "")
+          fi
+          
+          # If no files found at all, assume no changes
+          if [[ -z "$FILES" ]]; then
+            echo "No files found to check"
+            echo "tekton_only=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "Files to check: $FILES"
+          
           # Check if all files are in .tekton folder
           NON_TEKTON_FILES=""
           for file in $FILES; do
@@ -42,7 +66,7 @@ jobs:
               NON_TEKTON_FILES="$NON_TEKTON_FILES $file"
             fi
           done
-
+          
           if [[ -n "$NON_TEKTON_FILES" ]]; then
             echo "Found files outside .tekton folder: $NON_TEKTON_FILES"
             echo "tekton_only=false" >> $GITHUB_OUTPUT
@@ -54,23 +78,50 @@ jobs:
       - name: Check if files contain pipelinerun
         id: check-pipelinerun
         run: |
-          # Get list of modified files in .tekton folder
-          TEKTON_FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} | grep '^\.tekton/')
-
+          # Get list of modified files using a more robust approach
+          if [[ -n "${{ github.event.pull_request.base.sha }}" && -n "${{ github.event.pull_request.head.sha }}" ]]; then
+            # Use git diff if both SHAs are available
+            TEKTON_FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }} 2>/dev/null | grep '^\.tekton/' || echo "")
+          fi
+          
+          # Fallback: if git diff failed or no files found, check current changes
+          if [[ -z "$TEKTON_FILES" ]]; then
+            echo "Git diff failed, checking current changes..."
+            TEKTON_FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null | grep '^\.tekton/' || echo "")
+          fi
+          
+          # If still no files, check staged changes
+          if [[ -z "$TEKTON_FILES" ]]; then
+            echo "No diff found, checking staged changes..."
+            TEKTON_FILES=$(git diff --cached --name-only 2>/dev/null | grep '^\.tekton/' || echo "")
+          fi
+          
           if [[ -z "$TEKTON_FILES" ]]; then
             echo "No files found in .tekton folder"
             echo "has_pipelinerun=false" >> $GITHUB_OUTPUT
             exit 0
           fi
-
+          
+          echo "Tekton files to check: $TEKTON_FILES"
+          
           # Check each file for pipelinerun content
           FILES_WITH_PIPELINERUN=""
           for file in $TEKTON_FILES; do
-            if git show ${{ github.event.pull_request.head.sha }}:$file | grep -i "kind:\s*PipelineRun" > /dev/null; then
+            # Try to get file content using different methods
+            FILE_CONTENT=""
+            if [[ -f "$file" ]]; then
+              FILE_CONTENT=$(cat "$file")
+            elif [[ -n "${{ github.event.pull_request.head.sha }}" ]]; then
+              FILE_CONTENT=$(git show ${{ github.event.pull_request.head.sha }}:$file 2>/dev/null || echo "")
+            else
+              FILE_CONTENT=$(git show HEAD:$file 2>/dev/null || echo "")
+            fi
+            
+            if [[ -n "$FILE_CONTENT" ]] && echo "$FILE_CONTENT" | grep -i "kind:\s*PipelineRun" > /dev/null; then
               FILES_WITH_PIPELINERUN="$FILES_WITH_PIPELINERUN $file"
             fi
           done
-
+          
           if [[ -n "$FILES_WITH_PIPELINERUN" ]]; then
             echo "Files containing PipelineRun: $FILES_WITH_PIPELINERUN"
             echo "has_pipelinerun=true" >> $GITHUB_OUTPUT
