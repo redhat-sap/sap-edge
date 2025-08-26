@@ -1,0 +1,77 @@
+# SPDX-FileCopyrightText: 2024 SAP edge team
+# SPDX-License-Identifier: Apache-2.0
+
+# Example Terraform variables file for ROSA HCP deployment
+# Copy this file to terraform.tfvars and update with your values
+
+# Required Variables
+rosa_token   = "your-rosa-token-here"      # Get from: https://console.redhat.com/openshift/token
+cluster_name = "sapeic-cluster"            # Name for your ROSA HCP cluster
+aws_region   = "eu-central-1"              # AWS region for deployment
+
+# Cluster Configuration
+rosa_version        = "4.14.24"            # OpenShift version (check available versions with: rosa list versions)
+channel_group       = "stable"             # Version channel: stable, candidate, fast, or nightly
+worker_replicas     = 3                    # Number of worker nodes
+worker_machine_type = "m5.xlarge"          # AWS instance type for workers
+
+# Network Configuration
+create_vpc = true                          # Set to false if using existing VPC/subnets
+# If create_vpc is false, provide existing subnet IDs:
+# existing_subnet_ids = ["subnet-xxx", "subnet-yyy", "subnet-zzz"]
+# availability_zones = ["eu-central-1a", "eu-central-1b", "eu-central-1c"]
+
+# VPC Configuration (when create_vpc = true)
+vpc_name               = "rosa-sapeic-vpc"
+vpc_cidr               = "10.0.0.0/16"
+public_subnet_1_cidr   = "10.0.0.0/24"
+public_subnet_2_cidr   = "10.0.1.0/24"
+public_subnet_3_cidr   = "10.0.4.0/24"
+private_subnet_1_cidr  = "10.0.2.0/24"
+private_subnet_2_cidr  = "10.0.3.0/24"
+private_subnet_3_cidr  = "10.0.5.0/24"
+
+# Domain Configuration (optional)
+domain_name = ""                           # Your Route53 domain (e.g., "example.com")
+
+# Cluster Access
+private_cluster   = false                  # Set to true for private cluster
+create_admin_user = true                   # Create cluster-admin user
+admin_username    = "kubeadmin"            # Admin username
+admin_password    = ""                     # Leave empty for auto-generated password
+
+# Autoscaling Configuration (optional)
+enable_autoscaling = false                 # Enable worker node autoscaling
+min_replicas       = 2                     # Minimum workers when autoscaling
+max_replicas       = 10                    # Maximum workers when autoscaling
+
+# Security Configuration (optional)
+kms_key_arn = ""                          # ARN of KMS key for EBS encryption
+
+# IAM Configuration
+create_account_roles  = true               # Create account-wide IAM roles
+create_oidc           = true               # Create OIDC provider
+create_operator_roles = true               # Create operator IAM roles
+# Custom prefixes (optional - defaults to cluster_name-based prefixes)
+# account_role_prefix  = "my-account"
+# operator_role_prefix = "my-operator"
+
+# Additional Tags (optional)
+additional_tags = {
+  Project     = "SAP-EIC"
+  Owner       = "your-team"
+  Environment = "production"
+}
+
+# Advanced Configuration
+wait_for_cluster = true                    # Wait for cluster to be ready
+environment_tag  = "rosa"                  # Environment tag for resources
+
+# EFS Configuration (optional)
+enable_efs                       = false   # Enable EFS creation and configuration
+# efs_performance_mode           = "generalPurpose"  # Performance mode: generalPurpose or maxIO
+# efs_throughput_mode            = "elastic"         # Throughput mode: bursting, provisioned, or elastic
+# efs_provisioned_throughput     = 100               # MiB/s (only when throughput_mode = "provisioned")
+# efs_kms_key_arn               = ""                 # KMS key ARN for EFS encryption (uses AWS managed key if not set)
+# efs_transition_to_ia          = "AFTER_30_DAYS"    # Lifecycle policy for IA transition
+# efs_transition_to_primary_storage_class = "AFTER_1_ACCESS"  # Transition back to primary storage
