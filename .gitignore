@@ -10,3 +10,4 @@
 node_modules
 kubeconfig
 rosa/terraform/.terraform
+rosa/terraform/terraform.tfvars
