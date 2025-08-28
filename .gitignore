@@ -9,3 +9,4 @@
 .env
 node_modules
 kubeconfig
+rosa/terraform/.terraform
