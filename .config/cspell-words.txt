@@ -56,3 +56,10 @@ mktemp
 bruhl
 subshell
 configmap
+tfvars
+envsubst
+hostnames
+rhcs
+Rishabh
+Bhandari
+Kodes
