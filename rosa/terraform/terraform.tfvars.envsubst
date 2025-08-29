@@ -20,17 +20,16 @@ private_subnet_3_cidr  = "10.0.5.0/24"
 
 domain_name = "$DOMAIN_NAME"
 
-# Cluster Access
-private_cluster   = false                  # Set to true for private cluster
-create_admin_user = true                   # Create cluster-admin user
+private_cluster   = false
+create_admin_user = true
 
-# Autoscaling Configuration (optional)
-enable_autoscaling = false                 # Enable worker node autoscaling
-min_replicas       = 2                     # Minimum workers when autoscaling
-max_replicas       = 10                    # Maximum workers when autoscaling
+enable_autoscaling = false
+min_replicas       = 2
+max_replicas       = 3
 
-# Security Configuration (optional)
-kms_key_arn = ""                          # ARN of KMS key for EBS encryption
+create_account_roles  = true
+create_oidc           = true
+create_operator_roles = true
 
 wait_for_cluster = true
 environment_tag  = "rosa"
