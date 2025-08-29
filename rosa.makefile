@@ -75,7 +75,7 @@ rosa/terraform/terraform.tfvars:  ## Create terraform variables file
 	
 .PHONY: rosa-terraform-plan
 .ONESHELL:
-rosa-terraform-plan: rosa/terraform/terraform.tfvars  ## Run terraform plan with terraform.tfvars
+rosa-terraform-plan: rosa-terraform-init rosa/terraform/terraform.tfvars  ## Run terraform plan with terraform.tfvars
 	$(call check-tfvars)
 	$(call required-environment-variables,KUBEADMIN_ADMIN_PASSWORD KUBEADMIN_ADMIN_USERNAME)
 	$(call required-environment-variables,TF_VARS_admin_username TF_VARS_admin_password)
