@@ -4,6 +4,10 @@ AWS_REGION?=eu-central-1
 TF_VARS_admin_username?=${KUBEADMIN_ADMIN_USERNAME}
 TF_VARS_admin_password?=${KUBEADMIN_ADMIN_PASSWORD}
 
+TERRAFORM_DIRECTORY=./rosa/terraform
+TERRAFORM=terraform
+TERRAFORM_OPTIONS=-backend-config=./backend.config
+
 .PHONY: rosa-login
 rosa-login:  ## Login using ROSA token
 	$(call required-environment-variables,ROSA_TOKEN)
@@ -61,11 +65,17 @@ rosa-cluster-oc-login:  ## OC cli login to existing cluster (cluster-admin shoul
 	$(call required-environment-variables,ROSA_TOKEN CLUSTER_NAME)
 	@rosa describe admin --cluster=${CLUSTER_NAME} | grep -v 'INFO'
 
+.PHONY: $(TERRAFORM_DIRECTORY)/backend.config
+$(TERRAFORM_DIRECTORY)/backend.config:  ## Generate terraform backend configuration
+	$(call required-environment-variables,TERRAFORM_BACKEND_S3_BUCKET TERRAFORM_BACKEND_S3_KEY) 
+	$(call required-environment-variables,TERRAFORM_BACKEND_S3_AWS_REGION TERRAFORM_BACKEND_S3_DYNAMODB_TABLE) 
+	envsubst < $(TERRAFORM_DIRECTORY)/backend.config.envsubst > $(TERRAFORM_DIRECTORY)/backend.config
+
 .ONESHELL:
 .PHONY: rosa-terraform-init
-rosa-terraform-init:  ## Initialize Terraform in rosa/terraform directory
-	(cd rosa/terraform
-	terraform init)
+rosa-terraform-init: $(TERRAFORM_DIRECTORY)/backend.config  ## Initialize Terraform in rosa/terraform directory
+	cd ${TERRAFORM_DIRECTORY}
+	$(TERRAFORM) init $(TERRAFORM_OPTIONS)
 
 .PHONY: rosa/terraform/terraform.tfvars
 .ONESHELL:
@@ -79,5 +89,5 @@ rosa-terraform-plan: rosa-terraform-init rosa/terraform/terraform.tfvars  ## Run
 	$(call check-tfvars)
 	$(call required-environment-variables,KUBEADMIN_ADMIN_PASSWORD KUBEADMIN_ADMIN_USERNAME)
 	$(call required-environment-variables,TF_VARS_admin_username TF_VARS_admin_password)
-	(cd rosa/terraform
-	terraform plan -var-file=terraform.tfvars)
+	cd $(TERRAFORM_DIRECTORY)
+	$(TERRAFORM) plan -var-file=terraform.tfvars
