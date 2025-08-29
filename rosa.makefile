@@ -67,3 +67,17 @@ rosa-terraform-init:  ## Initialize Terraform in rosa/terraform directory
 	(cd rosa/terraform
 	terraform init)
 
+.PHONY: rosa/terraform/terraform.tfvars
+.ONESHELL:
+rosa/terraform/terraform.tfvars:  ## Create terraform variables file
+	$(call required-environment-variables,CLUSTER_NAME ROSA_VERSION AWS_REGION) 
+	envsubst < rosa/terraform/terraform.tfvars.envsubst > rosa/terraform/terraform.tfvars
+	
+.PHONY: rosa-terraform-plan
+.ONESHELL:
+rosa-terraform-plan: rosa/terraform/terraform.tfvars  ## Run terraform plan with terraform.tfvars
+	$(call check-tfvars)
+	$(call required-environment-variables,KUBEADMIN_ADMIN_PASSWORD KUBEADMIN_ADMIN_USERNAME)
+	$(call required-environment-variables,TF_VARS_admin_username TF_VARS_admin_password)
+	(cd rosa/terraform
+	terraform plan -var-file=terraform.tfvars)

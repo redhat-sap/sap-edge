@@ -1,0 +1,36 @@
+# Required Variables
+cluster_name = "$CLUSTER_NAME"
+aws_region   = "$AWS_REGION"
+
+# Cluster Configuration
+rosa_version        = "$ROSA_VERSION"
+channel_group       = "stable"
+worker_replicas     = 9
+worker_machine_type = "m5.xlarge"
+
+create_vpc = true
+vpc_name               = "rosa-$CLUSTER_NAME-vpc"
+vpc_cidr               = "10.0.0.0/16"
+public_subnet_1_cidr   = "10.0.0.0/24"
+public_subnet_2_cidr   = "10.0.1.0/24"
+public_subnet_3_cidr   = "10.0.4.0/24"
+private_subnet_1_cidr  = "10.0.2.0/24"
+private_subnet_2_cidr  = "10.0.3.0/24"
+private_subnet_3_cidr  = "10.0.5.0/24"
+
+domain_name = "$DOMAIN_NAME"
+
+# Cluster Access
+private_cluster   = false                  # Set to true for private cluster
+create_admin_user = true                   # Create cluster-admin user
+
+# Autoscaling Configuration (optional)
+enable_autoscaling = false                 # Enable worker node autoscaling
+min_replicas       = 2                     # Minimum workers when autoscaling
+max_replicas       = 10                    # Maximum workers when autoscaling
+
+# Security Configuration (optional)
+kms_key_arn = ""                          # ARN of KMS key for EBS encryption
+
+wait_for_cluster = true
+environment_tag  = "rosa"
