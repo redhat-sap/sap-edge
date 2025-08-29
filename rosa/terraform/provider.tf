@@ -31,6 +31,3 @@ provider "aws" {
 provider "rhcs" {
   url = "https://api.openshift.com"
 }
-
-# Data source for current AWS account ID
-data "aws_caller_identity" "current" {}
