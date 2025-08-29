@@ -55,7 +55,7 @@ yamllint: .venv/bin/activate ## Run yamllint
 	. .venv/bin/activate && $(TOX) -e yamllint
 
 .PHONY: lint
-lint: yamllint shellcheck reuse lint-bicep cspell  # Run linting for the repo
+lint: yamllint shellcheck reuse lint-bicep tflint cspell  # Run linting for the repo
 
 .PHONY: shellcheck
 shellcheck: .venv/bin/activate  ## Run shell check analysis
@@ -102,3 +102,7 @@ cspell-addwords: node_modules  ## Run cspell
 .PHONY: test-endpoints
 test-endpoints:
 	@./edge-integration-cell/test_eic_endpoints.sh  --host "$(HOST)" --auth-key "$$AUTH_KEY" --ingress-ip "$(INGRESS_IP)"
+
+.PHONY: tflint
+tflint:  ## Run tflint
+	@cd rosa/terraform && tflint
