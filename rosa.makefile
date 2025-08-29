@@ -56,3 +56,10 @@ rosa-cluster-admin-reset:  ## Reset cluster admin password
 rosa-cluster-oc-login:  ## OC cli login to existing cluster (cluster-admin should already exist)
 	$(call required-environment-variables,ROSA_TOKEN CLUSTER_NAME)
 	@rosa describe admin --cluster=${CLUSTER_NAME} | grep -v 'INFO'
+
+.ONESHELL:
+.PHONY: rosa-terraform-init
+rosa-terraform-init:  ## Initialize Terraform in rosa/terraform directory
+	(cd rosa/terraform
+	terraform init)
+
