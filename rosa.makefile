@@ -1,4 +1,8 @@
-CLUSTER_NAME?=sapeic
+CLUSTER_NAME?=sapeic-cluster
+ROSA_VERSION?=4.14.0
+AWS_REGION?=eu-central-1
+TF_VARS_admin_username?=${KUBEADMIN_ADMIN_USERNAME}
+TF_VARS_admin_password?=${KUBEADMIN_ADMIN_PASSWORD}
 
 .PHONY: rosa-login
 rosa-login:  ## Login using ROSA token
