@@ -51,8 +51,8 @@ Set these variables in `.env` file or as environment variables:
 CLUSTER_NAME="your-cluster-name"
 AWS_REGION="your-aws-region"
 VPC_NAME="your-vpc-name"
-TF_VARS_admin_username="kubeadmin"
-TF_VARS_admin_password=""
+TF_VAR_admin_username="kubeadmin"
+TF_VAR_admin_password=""
 TERRAFORM_BACKEND_S3_BUCKET=
 TERRAFORM_BACKEND_S3_KEY=
 TERRAFORM_BACKEND_S3_AWS_REGION=
