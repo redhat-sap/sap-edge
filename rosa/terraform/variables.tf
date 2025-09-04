@@ -10,11 +10,6 @@ variable "aws_region" {
   type        = string
 }
 
-variable "cluster_name" {
-  description = "Name of the ROSA cluster"
-  type        = string
-}
-
 variable "vpc_name" {
   description = "Name of the VPC"
   type        = string
