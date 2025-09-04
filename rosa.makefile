@@ -78,11 +78,11 @@ rosa-terraform-init: $(TERRAFORM_DIRECTORY)/backend.config  ## Initialize Terraf
 .PHONY: rosa-terraform-plan
 .ONESHELL:
 rosa-terraform-plan: rosa-terraform-init  ## Run terraform plan with terraform.tfvars
-	$(call required-environment-variables,TF_VARS_admin_password TF_VARS_admin_username)
+	$(call required-environment-variables,TF_VAR_admin_password TF_VAR_admin_username)
 	$(call required-environment-variables,CLUSTER_NAME ROSA_VERSION AWS_REGION) 
-	export TF_VARS_cluster_name="${CLUSTER_NAME}"
-	export TF_VARS_rosa_version="${ROSA_VERSION}"
-	export TF_VARS_aws_region="${AWS_REGION}"
-	export TF_VARS_vpc_name="${CLUSTER_NAME}-vpc"
 	cd $(TERRAFORM_DIRECTORY)
+	export TF_VAR_cluster_name="${CLUSTER_NAME}"
+	export TF_VAR_rosa_version="${ROSA_VERSION}"
+	export TF_VAR_aws_region="${AWS_REGION}"
+	export TF_VAR_vpc_name="${CLUSTER_NAME}-vpc"
 	$(TERRAFORM) plan
