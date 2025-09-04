@@ -1,4 +1,8 @@
 # SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Kirill Satarin (@kksat)
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+# SPDX-FileContributor: Rishabh Bhandari (@RishabhKodes)
+
 # SPDX-License-Identifier: Apache-2.0
 
 terraform {
@@ -28,11 +32,7 @@ provider "aws" {
   region = var.aws_region
 
   default_tags {
-    tags = {
-      Project     = "ROSA"
-      Environment = var.environment_tag
-      ManagedBy   = "Terraform"
-    }
+    tags = var.tags
   }
 }
 
