@@ -3,7 +3,7 @@ ROSA_VERSION?=4.14.0
 AWS_REGION?=eu-central-1
 
 TERRAFORM_DIRECTORY=./rosa/terraform
-TERRAFORM=terraform
+TERRAFORM?=terraform
 TERRAFORM_OPTIONS=-backend-config=./backend.config
 
 .PHONY: rosa-login
