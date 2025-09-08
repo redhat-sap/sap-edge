@@ -15,6 +15,16 @@ variable "vpc_name" {
   type        = string
 }
 
+variable "cluster_name" {
+  description = "Name of the cluster"
+  type        = string
+}
+
+variable "rosa_version" {
+  type        = string
+  description = "ROSA openshift version"
+}
+
 variable "tags" {
   default = {
     Terraform   = "true"
