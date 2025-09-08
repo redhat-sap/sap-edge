@@ -86,3 +86,15 @@ rosa-terraform-plan: rosa-terraform-init  ## Run terraform plan with terraform.t
 	export TF_VAR_aws_region="${AWS_REGION}"
 	export TF_VAR_vpc_name="${CLUSTER_NAME}-vpc"
 	$(TERRAFORM) plan
+
+.PHONY: tflint
+tflint:  ## Run tflint
+	@cd rosa/terraform && tflint
+
+.PHONY: tfsec
+tfsec:  ## Run tfsec
+	@cd rosa/terraform && tfsec . --exclude-path .terraform
+
+.PHONY: checkov
+checkov:  ## Run tfsec
+	checkov --directory rosa/terraform

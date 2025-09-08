@@ -102,14 +102,3 @@ cspell-addwords: node_modules  ## Run cspell
 .PHONY: test-endpoints
 test-endpoints:
 	@./edge-integration-cell/test_eic_endpoints.sh  --host "$(HOST)" --auth-key "$$AUTH_KEY" --ingress-ip "$(INGRESS_IP)"
-
-.PHONY: tflint
-tflint:  ## Run tflint
-	@cd rosa/terraform && tflint
-
-.PHONY: tfsec
-tfsec:  ## Run tfsec
-
-.PHONY: checkov
-checkov:  ## Run checkov
-	checkov --directory rosa/terraform
