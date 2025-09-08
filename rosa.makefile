@@ -89,12 +89,12 @@ rosa-terraform-plan: rosa-terraform-init  ## Run terraform plan with terraform.t
 
 .PHONY: tflint
 tflint:  ## Run tflint
-	@cd rosa/terraform && tflint
+	@cd $(TERRAFORM_DIRECTORY) && tflint
 
 .PHONY: tfsec
 tfsec:  ## Run tfsec
-	@cd rosa/terraform && tfsec . --exclude-path .terraform
+	@cd $(TERRAFORM_DIRECTORY) && tfsec . --exclude-path .terraform
 
 .PHONY: checkov
 checkov:  ## Run tfsec
-	checkov --directory rosa/terraform
+	@checkov --directory $(TERRAFORM_DIRECTORY)
