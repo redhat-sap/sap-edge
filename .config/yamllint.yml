@@ -9,10 +9,11 @@ extends: default
 ignore:
   - node_modules
   - .tekton
+  - rosa/terraform/.terraform
 
 yaml-files:
-  - '*.yaml'
-  - '*.yml'
+  - "*.yaml"
+  - "*.yml"
 
 rules:
   line-length:
