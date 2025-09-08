@@ -109,4 +109,7 @@ tflint:  ## Run tflint
 
 .PHONY: tfsec
 tfsec:  ## Run tfsec
-	@cd rosa/terraform && tfsec . --exclude-path .terraform
+
+.PHONY: checkov
+checkov:  ## Run checkov
+	checkov --directory rosa/terraform
