@@ -106,3 +106,7 @@ test-endpoints:
 .PHONY: tflint
 tflint:  ## Run tflint
 	@cd rosa/terraform && tflint
+
+.PHONY: tfsec
+tfsec:  ## Run tfsec
+	@cd rosa/terraform && tfsec . --exclude-path .terraform
