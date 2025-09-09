@@ -23,6 +23,7 @@ jobs:
       - name: Install development dependencies
         run: |
           pipx install bindep
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
           bindep -l newline dev | xargs brew install
 
       - name: Run lint
