@@ -1,4 +1,7 @@
-oc
 jq
 git
-rosa
+openshift-cli
+rosa-cli
+tfsec [dev]
+checkov [dev]
+tflint [dev]
