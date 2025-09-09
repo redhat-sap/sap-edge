@@ -20,9 +20,10 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - uses: terraform-linters/setup-tflint@v5.0.0
-        with:
-          tflint_version: v0.59.1
+      - name: Install development dependencies
+        run: |
+          pipx install bindep
+          bindep -l newline dev | xargs brew install
 
       - name: Run lint
         run: make lint
