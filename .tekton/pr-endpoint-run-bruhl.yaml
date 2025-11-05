@@ -7,11 +7,10 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: endpoint-tests-hockenheim-
+  generateName: endpoint-tests-bruhl-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
-    pipelinesascode.tekton.dev/task: "git-clone"
 spec:
   pipelineRef:
     name: endpoint-test-pipeline
@@ -31,7 +30,7 @@ spec:
     - name: jiraIssueKey
       value: "SAPOCP-1715"
     - name: extraInfo
-      value: "Current EIC version 8.36.8 \n OpenShift version is 4.20 \n further test the EIC"
+      value: "Current EIC version 8.36.8 \n OpenShift version is 4.20 \n further test the EIC."
   workspaces:
     - name: source
       volumeClaimTemplate:
