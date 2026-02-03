@@ -216,8 +216,11 @@ spec:
           services:
             - service: APIServer
               servicePublishingStrategy:
-                type: NodePort
+                type: LoadBalancer
             - service: OAuthServer
+              servicePublishingStrategy:
+                type: Route
+            - service: OIDC
               servicePublishingStrategy:
                 type: Route
             - service: Konnectivity
