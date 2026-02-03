@@ -9,8 +9,9 @@ kind: PipelineRun
 metadata:
   generateName: hcp-kubevirt-validation-
   annotations:
-    pipelinesascode.tekton.dev/on-event: "[pull_request]"
+    pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
+    pipelinesascode.tekton.dev/task: "[./.tekton/tasks/git-clone.yaml]"
 spec:
   pipelineRef:
     name: hcp-kubevirt-validation-pipeline
