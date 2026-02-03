@@ -15,14 +15,7 @@ metadata:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
     pipelinesascode.tekton.dev/pipeline: "[./.tekton/pipelines/hcp-kubevirt-validation-pipeline.yaml]"
-    pipelinesascode.tekton.dev/task: >-
-      [./.tekton/tasks/git-clone.yaml,
-       ./.tekton/tasks/hcp-create-hosted-cluster-task.yaml,
-       ./.tekton/tasks/hcp-wait-cluster-ready-task.yaml,
-       ./.tekton/tasks/hcp-deploy-postgres-task.yaml,
-       ./.tekton/tasks/hcp-deploy-redis-task.yaml,
-       ./.tekton/tasks/hcp-teardown-task.yaml,
-       ./.tekton/tasks/jira-add-comment-custom-task.yaml]
+    pipelinesascode.tekton.dev/task: "[./.tekton/tasks/git-clone.yaml, ./.tekton/tasks/hcp-create-hosted-cluster-task.yaml, ./.tekton/tasks/hcp-wait-cluster-ready-task.yaml, ./.tekton/tasks/hcp-deploy-postgres-task.yaml, ./.tekton/tasks/hcp-deploy-redis-task.yaml, ./.tekton/tasks/hcp-teardown-task.yaml, ./.tekton/tasks/jira-add-comment-custom-task.yaml]"
 spec:
   pipelineRef:
     name: hcp-kubevirt-validation-pipeline
