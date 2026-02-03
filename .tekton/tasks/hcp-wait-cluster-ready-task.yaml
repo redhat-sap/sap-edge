@@ -238,7 +238,7 @@ spec:
 
         echo ""
         echo "📋 Hosted cluster namespaces:"
-        oc get namespaces | head -20
+        oc get namespaces | head -20 || true
 
         echo ""
         echo "=========================================="
