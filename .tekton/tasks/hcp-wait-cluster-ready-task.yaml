@@ -1,0 +1,221 @@
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: hcp-wait-cluster-ready
+spec:
+  description: Wait for Hosted Cluster to be available and extract kubeconfig
+  params:
+    - name: hostedClusterName
+      type: string
+      description: "Name of the hosted cluster"
+    - name: hostedClusterNamespace
+      type: string
+      description: "Namespace for HostedCluster resources"
+      default: "clusters"
+    - name: timeoutMinutes
+      type: string
+      description: "Timeout in minutes to wait for cluster readiness"
+      default: "45"
+  workspaces:
+    - name: source
+  results:
+    - name: kubeconfig-path
+      description: "Path to the extracted kubeconfig file"
+    - name: api-url
+      description: "API URL of the hosted cluster"
+    - name: console-url
+      description: "Console URL of the hosted cluster"
+  steps:
+    - name: wait-for-cluster
+      image: registry.access.redhat.com/ubi9/ubi
+      timeout: "60m"
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        # Parameters
+        CLUSTER_NAME="$(params.hostedClusterName)"
+        CLUSTER_NS="$(params.hostedClusterNamespace)"
+        TIMEOUT_MINUTES="$(params.timeoutMinutes)"
+        TIMEOUT_SECONDS=$((TIMEOUT_MINUTES * 60))
+
+        echo "=========================================="
+        echo "HCP Wait Cluster Ready Task"
+        echo "=========================================="
+        echo "Cluster Name: ${CLUSTER_NAME}"
+        echo "Namespace: ${CLUSTER_NS}"
+        echo "Timeout: ${TIMEOUT_MINUTES} minutes"
+        echo "=========================================="
+
+        # Install required tools
+        echo "📦 Installing required packages..."
+        dnf install -y jq > /dev/null 2>&1
+
+        echo "📦 Installing OpenShift CLI..."
+        curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz | tar xz
+        mv oc kubectl /usr/local/bin/
+        oc version --client
+
+        # Verify HostedCluster exists
+        echo "🔍 Verifying HostedCluster exists..."
+        if ! oc get hostedcluster "${CLUSTER_NAME}" -n "${CLUSTER_NS}" > /dev/null 2>&1; then
+          echo "❌ HostedCluster '${CLUSTER_NAME}' not found in namespace '${CLUSTER_NS}'"
+          exit 1
+        fi
+        echo "✅ HostedCluster found"
+
+        # Wait for HostedCluster to be available
+        echo "⏳ Waiting for HostedCluster to be available..."
+        START_TIME=$(date +%s)
+
+        while true; do
+          CURRENT_TIME=$(date +%s)
+          ELAPSED=$((CURRENT_TIME - START_TIME))
+
+          if [[ ${ELAPSED} -ge ${TIMEOUT_SECONDS} ]]; then
+            echo "❌ Timeout reached after ${TIMEOUT_MINUTES} minutes"
+            echo ""
+            echo "📋 Current HostedCluster status:"
+            oc get hostedcluster "${CLUSTER_NAME}" -n "${CLUSTER_NS}" -o yaml
+            echo ""
+            echo "📋 HostedCluster conditions:"
+            oc get hostedcluster "${CLUSTER_NAME}" -n "${CLUSTER_NS}" -o jsonpath='{.status.conditions}' | jq .
+            exit 1
+          fi
+
+          # Get cluster availability status
+          AVAILABLE=$(oc get hostedcluster "${CLUSTER_NAME}" -n "${CLUSTER_NS}" \
+            -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || echo "Unknown")
+
+          # Get progress message
+          PROGRESS=$(oc get hostedcluster "${CLUSTER_NAME}" -n "${CLUSTER_NS}" \
+            -o jsonpath='{.status.conditions[?(@.type=="Progressing")].message}' 2>/dev/null || echo "Unknown")
+
+          # Get degraded status
+          DEGRADED=$(oc get hostedcluster "${CLUSTER_NAME}" -n "${CLUSTER_NS}" \
+            -o jsonpath='{.status.conditions[?(@.type=="Degraded")].status}' 2>/dev/null || echo "Unknown")
+
+          # Calculate elapsed time in human readable format
+          ELAPSED_MIN=$((ELAPSED / 60))
+          ELAPSED_SEC=$((ELAPSED % 60))
+
+          echo "⏳ [${ELAPSED_MIN}m${ELAPSED_SEC}s] Available=${AVAILABLE} | Degraded=${DEGRADED}"
+          echo "   Progress: ${PROGRESS:0:100}..."
+
+          if [[ "${AVAILABLE}" == "True" ]]; then
+            echo ""
+            echo "✅ HostedCluster is available!"
+            break
+          fi
+
+          if [[ "${DEGRADED}" == "True" ]]; then
+            echo "⚠️  Cluster is degraded, but continuing to wait..."
+          fi
+
+          sleep 30
+        done
+
+        # Wait for NodePool workers to be ready
+        echo ""
+        echo "⏳ Waiting for NodePool workers to be ready..."
+        NODEPOOL_NAME="${CLUSTER_NAME}-workers"
+
+        while true; do
+          CURRENT_TIME=$(date +%s)
+          ELAPSED=$((CURRENT_TIME - START_TIME))
+
+          if [[ ${ELAPSED} -ge ${TIMEOUT_SECONDS} ]]; then
+            echo "❌ Timeout reached waiting for NodePool workers"
+            oc get nodepool "${NODEPOOL_NAME}" -n "${CLUSTER_NS}" -o yaml
+            exit 1
+          fi
+
+          READY_REPLICAS=$(oc get nodepool "${NODEPOOL_NAME}" -n "${CLUSTER_NS}" \
+            -o jsonpath='{.status.replicas}' 2>/dev/null || echo "0")
+          EXPECTED_REPLICAS=$(oc get nodepool "${NODEPOOL_NAME}" -n "${CLUSTER_NS}" \
+            -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "0")
+
+          ELAPSED_MIN=$((ELAPSED / 60))
+          ELAPSED_SEC=$((ELAPSED % 60))
+
+          echo "⏳ [${ELAPSED_MIN}m${ELAPSED_SEC}s] NodePool: ${READY_REPLICAS}/${EXPECTED_REPLICAS} workers ready"
+
+          if [[ "${READY_REPLICAS}" == "${EXPECTED_REPLICAS}" ]] && [[ "${READY_REPLICAS}" != "0" ]]; then
+            echo ""
+            echo "✅ All NodePool workers are ready!"
+            break
+          fi
+
+          sleep 30
+        done
+
+        # Extract kubeconfig
+        echo ""
+        echo "🔐 Extracting kubeconfig from secret..."
+        KUBECONFIG_SECRET="${CLUSTER_NAME}-admin-kubeconfig"
+        KUBECONFIG_PATH="$(workspaces.source.path)/hosted-kubeconfig"
+
+        if ! oc get secret "${KUBECONFIG_SECRET}" -n "${CLUSTER_NS}" > /dev/null 2>&1; then
+          echo "❌ Kubeconfig secret '${KUBECONFIG_SECRET}' not found"
+          exit 1
+        fi
+
+        oc get secret "${KUBECONFIG_SECRET}" -n "${CLUSTER_NS}" \
+          -o jsonpath='{.data.kubeconfig}' | base64 -d > "${KUBECONFIG_PATH}"
+
+        chmod 600 "${KUBECONFIG_PATH}"
+        echo "✅ Kubeconfig saved to: ${KUBECONFIG_PATH}"
+
+        # Get API URL
+        API_HOST=$(oc get hostedcluster "${CLUSTER_NAME}" -n "${CLUSTER_NS}" \
+          -o jsonpath='{.status.controlPlaneEndpoint.host}' 2>/dev/null || echo "")
+        API_PORT=$(oc get hostedcluster "${CLUSTER_NAME}" -n "${CLUSTER_NS}" \
+          -o jsonpath='{.status.controlPlaneEndpoint.port}' 2>/dev/null || echo "6443")
+
+        if [[ -n "${API_HOST}" ]]; then
+          API_URL="https://${API_HOST}:${API_PORT}"
+        else
+          API_URL="unknown"
+        fi
+
+        # Get console URL (if available)
+        CONSOLE_URL=$(oc get hostedcluster "${CLUSTER_NAME}" -n "${CLUSTER_NS}" \
+          -o jsonpath='{.status.oauthCallbackURLTemplate}' 2>/dev/null || echo "")
+        CONSOLE_URL=${CONSOLE_URL%/oauth2callback/*}
+        if [[ -z "${CONSOLE_URL}" ]]; then
+          CONSOLE_URL="pending"
+        fi
+
+        # Write results
+        echo "${KUBECONFIG_PATH}" > $(results.kubeconfig-path.path)
+        echo "${API_URL}" > $(results.api-url.path)
+        echo "${CONSOLE_URL}" > $(results.console-url.path)
+
+        # Verify access to hosted cluster
+        echo ""
+        echo "🔍 Verifying access to hosted cluster..."
+        export KUBECONFIG="${KUBECONFIG_PATH}"
+
+        echo ""
+        echo "📋 Hosted cluster nodes:"
+        oc get nodes -o wide
+
+        echo ""
+        echo "📋 Hosted cluster namespaces:"
+        oc get namespaces | head -20
+
+        echo ""
+        echo "=========================================="
+        echo "✅ Hosted cluster is ready and accessible!"
+        echo "=========================================="
+        echo "API URL: ${API_URL}"
+        echo "Console URL: ${CONSOLE_URL}"
+        echo "Kubeconfig: ${KUBECONFIG_PATH}"
+        echo "=========================================="

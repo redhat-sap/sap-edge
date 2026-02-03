@@ -1,0 +1,160 @@
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: hcp-deploy-redis
+spec:
+  description: Deploy Redis Enterprise on the hosted cluster
+  params:
+    - name: hostedClusterName
+      type: string
+      description: "Name of the hosted cluster"
+    - name: hostedClusterNamespace
+      type: string
+      description: "Namespace for HostedCluster resources"
+      default: "clusters"
+    - name: redisNamespace
+      type: string
+      description: "Namespace for Redis deployment on hosted cluster"
+      default: "sap-eic-external-redis"
+    - name: redisClusterType
+      type: string
+      description: "Redis cluster type: standard or ha"
+      default: "standard"
+    - name: skipWait
+      type: string
+      description: "Skip waiting for Redis readiness"
+      default: "false"
+  workspaces:
+    - name: source
+  results:
+    - name: redis-host
+      description: "Redis service host"
+    - name: redis-port
+      description: "Redis service port"
+    - name: redis-database
+      description: "Redis database name"
+  steps:
+    - name: deploy-redis
+      image: registry.access.redhat.com/ubi9/ubi
+      timeout: "30m"
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        # Parameters
+        CLUSTER_NAME="$(params.hostedClusterName)"
+        CLUSTER_NS="$(params.hostedClusterNamespace)"
+        REDIS_NAMESPACE="$(params.redisNamespace)"
+        REDIS_TYPE="$(params.redisClusterType)"
+        SKIP_WAIT="$(params.skipWait)"
+
+        echo "=========================================="
+        echo "HCP Deploy Redis Task"
+        echo "=========================================="
+        echo "Hosted Cluster: ${CLUSTER_NAME}"
+        echo "Cluster Namespace: ${CLUSTER_NS}"
+        echo "Redis Namespace: ${REDIS_NAMESPACE}"
+        echo "Redis Cluster Type: ${REDIS_TYPE}"
+        echo "Skip Wait: ${SKIP_WAIT}"
+        echo "=========================================="
+
+        # Install required tools
+        echo "📦 Installing required packages..."
+        dnf install -y jq > /dev/null 2>&1
+
+        echo "📦 Installing OpenShift CLI..."
+        curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz | tar xz
+        mv oc kubectl /usr/local/bin/
+        oc version --client
+
+        # Extract kubeconfig for hosted cluster
+        echo "🔐 Extracting kubeconfig for hosted cluster..."
+        KUBECONFIG_SECRET="${CLUSTER_NAME}-admin-kubeconfig"
+
+        if ! oc get secret "${KUBECONFIG_SECRET}" -n "${CLUSTER_NS}" > /dev/null 2>&1; then
+          echo "❌ Kubeconfig secret '${KUBECONFIG_SECRET}' not found in namespace '${CLUSTER_NS}'"
+          exit 1
+        fi
+
+        HOSTED_KUBECONFIG="/tmp/hosted-kubeconfig"
+        oc get secret "${KUBECONFIG_SECRET}" -n "${CLUSTER_NS}" \
+          -o jsonpath='{.data.kubeconfig}' | base64 -d > "${HOSTED_KUBECONFIG}"
+        chmod 600 "${HOSTED_KUBECONFIG}"
+
+        # Set KUBECONFIG to hosted cluster
+        export KUBECONFIG="${HOSTED_KUBECONFIG}"
+
+        echo "🔍 Verifying access to hosted cluster..."
+        oc get nodes
+        echo "✅ Successfully connected to hosted cluster"
+
+        # Verify the deploy_redis.sh script exists
+        DEPLOY_SCRIPT="$(workspaces.source.path)/edge-integration-cell/deploy_redis.sh"
+        if [[ ! -f "${DEPLOY_SCRIPT}" ]]; then
+          echo "❌ Deploy script not found: ${DEPLOY_SCRIPT}"
+          exit 1
+        fi
+        chmod +x "${DEPLOY_SCRIPT}"
+
+        # Run the Redis deployment script
+        echo ""
+        echo "📕 Deploying Redis Enterprise on hosted cluster..."
+        echo "----------------------------------------"
+
+        cd "$(workspaces.source.path)/edge-integration-cell"
+
+        DEPLOY_ARGS=("-n" "${REDIS_NAMESPACE}" "--type" "${REDIS_TYPE}" "-f")
+        if [[ "${SKIP_WAIT}" == "true" ]]; then
+          DEPLOY_ARGS+=("--skip-wait")
+        fi
+
+        bash deploy_redis.sh "${DEPLOY_ARGS[@]}"
+
+        echo "----------------------------------------"
+        echo ""
+
+        # Get Redis access details
+        echo "📋 Getting Redis access details..."
+
+        # Wait a moment for services to be created
+        sleep 5
+
+        # Get the Redis database service
+        REDIS_DB_NAME="redb"
+        REDIS_HOST="${REDIS_DB_NAME}.${REDIS_NAMESPACE}.svc.cluster.local"
+        REDIS_PORT="443"
+
+        # Write results
+        echo "${REDIS_HOST}" > $(results.redis-host.path)
+        echo "${REDIS_PORT}" > $(results.redis-port.path)
+        echo "${REDIS_DB_NAME}" > $(results.redis-database.path)
+
+        # Display connection info
+        echo ""
+        echo "=========================================="
+        echo "✅ Redis Enterprise deployed successfully!"
+        echo "=========================================="
+        echo "Host: ${REDIS_HOST}"
+        echo "Port: ${REDIS_PORT}"
+        echo "Database: ${REDIS_DB_NAME}"
+        echo "Namespace: ${REDIS_NAMESPACE}"
+        echo ""
+        echo "📋 Redis pods:"
+        oc get pods -n "${REDIS_NAMESPACE}" -o wide
+        echo ""
+        echo "📋 Redis services:"
+        oc get svc -n "${REDIS_NAMESPACE}"
+        echo ""
+        echo "📋 RedisEnterpriseCluster status:"
+        oc get redisenterprisecluster -n "${REDIS_NAMESPACE}" -o wide 2>/dev/null || echo "REC resource not found"
+        echo ""
+        echo "📋 RedisEnterpriseDatabase status:"
+        oc get redisenterprisedatabase -n "${REDIS_NAMESPACE}" -o wide 2>/dev/null || echo "REDB resource not found"
+        echo "=========================================="

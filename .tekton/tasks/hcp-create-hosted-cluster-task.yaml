@@ -1,0 +1,322 @@
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: hcp-create-hosted-cluster
+spec:
+  description: Create a Hosted Cluster and NodePool using MCE with KubeVirt platform
+  params:
+    - name: hostedClusterName
+      type: string
+      description: "Name of the hosted cluster"
+    - name: hostedClusterNamespace
+      type: string
+      description: "Namespace for HostedCluster resources"
+      default: "clusters"
+    - name: releaseImage
+      type: string
+      description: "OCP release image for the hosted cluster"
+      default: "quay.io/openshift-release-dev/ocp-release:4.15.0-x86_64"
+    - name: nodePoolReplicas
+      type: string
+      description: "Number of worker nodes"
+      default: "3"
+    - name: nodePoolCpuCores
+      type: string
+      description: "vCPU cores per worker node"
+      default: "16"
+    - name: nodePoolMemoryGB
+      type: string
+      description: "RAM in GB per worker node"
+      default: "32"
+    - name: rootDiskSizeGB
+      type: string
+      description: "Root disk size in GB per worker node"
+      default: "120"
+    - name: pullSecretName
+      type: string
+      description: "Name of the Kubernetes Secret containing Red Hat pull secret"
+      default: "redhat-pull-secret"
+    - name: etcdStorageClass
+      type: string
+      description: "Storage class for etcd PVCs (leave empty for default)"
+      default: ""
+    - name: networkType
+      type: string
+      description: "Network type for the hosted cluster"
+      default: "OVNKubernetes"
+  workspaces:
+    - name: source
+  results:
+    - name: infra-id
+      description: "Infrastructure ID of the hosted cluster"
+    - name: hosted-cluster-namespace
+      description: "Namespace where the hosted cluster resources are created"
+  steps:
+    - name: create-hosted-cluster
+      image: registry.access.redhat.com/ubi9/ubi
+      timeout: "30m"
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        # Parameters
+        CLUSTER_NAME="$(params.hostedClusterName)"
+        CLUSTER_NS="$(params.hostedClusterNamespace)"
+        RELEASE_IMAGE="$(params.releaseImage)"
+        NODE_POOL_REPLICAS="$(params.nodePoolReplicas)"
+        NODE_POOL_CPU_CORES="$(params.nodePoolCpuCores)"
+        NODE_POOL_MEMORY_GB="$(params.nodePoolMemoryGB)"
+        ROOT_DISK_SIZE_GB="$(params.rootDiskSizeGB)"
+        PULL_SECRET_NAME="$(params.pullSecretName)"
+        ETCD_STORAGE_CLASS="$(params.etcdStorageClass)"
+        NETWORK_TYPE="$(params.networkType)"
+
+        echo "=========================================="
+        echo "HCP Create Hosted Cluster Task"
+        echo "=========================================="
+        echo "Cluster Name: ${CLUSTER_NAME}"
+        echo "Namespace: ${CLUSTER_NS}"
+        echo "Release Image: ${RELEASE_IMAGE}"
+        echo "Node Pool Replicas: ${NODE_POOL_REPLICAS}"
+        echo "Node Pool CPU Cores: ${NODE_POOL_CPU_CORES}"
+        echo "Node Pool Memory (GB): ${NODE_POOL_MEMORY_GB}"
+        echo "Root Disk Size (GB): ${ROOT_DISK_SIZE_GB}"
+        echo "=========================================="
+
+        # Install required tools
+        echo "📦 Installing required packages..."
+        dnf install -y jq > /dev/null 2>&1
+
+        echo "📦 Installing OpenShift CLI..."
+        curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz | tar xz
+        mv oc kubectl /usr/local/bin/
+        oc version --client
+
+        # Validate MCE/HyperShift installation
+        echo "🔍 Validating MCE/HyperShift installation..."
+        if ! oc get crd hostedclusters.hypershift.openshift.io > /dev/null 2>&1; then
+          echo "❌ HostedCluster CRD not found. MCE/HyperShift may not be installed."
+          echo "   Please ensure Multicluster Engine is installed with HyperShift enabled."
+          exit 1
+        fi
+        echo "✅ MCE/HyperShift CRDs found"
+
+        # Validate KubeVirt installation
+        echo "🔍 Validating KubeVirt installation..."
+        if ! oc get crd virtualmachines.kubevirt.io > /dev/null 2>&1; then
+          echo "❌ VirtualMachine CRD not found. OpenShift Virtualization may not be installed."
+          exit 1
+        fi
+        echo "✅ KubeVirt CRDs found"
+
+        # Check if pull secret exists
+        echo "🔍 Checking pull secret..."
+        if ! oc get secret "${PULL_SECRET_NAME}" > /dev/null 2>&1; then
+          echo "❌ Pull secret '${PULL_SECRET_NAME}' not found in current namespace"
+          echo "   Please create the pull secret with Red Hat registry credentials"
+          exit 1
+        fi
+        echo "✅ Pull secret found"
+
+        # Create namespace if not exists
+        echo "📁 Creating namespace: ${CLUSTER_NS}..."
+        oc create namespace "${CLUSTER_NS}" --dry-run=client -o yaml | oc apply -f -
+
+        # Copy pull secret to cluster namespace if needed
+        echo "🔐 Ensuring pull secret exists in ${CLUSTER_NS}..."
+        if ! oc get secret "${PULL_SECRET_NAME}" -n "${CLUSTER_NS}" > /dev/null 2>&1; then
+          oc get secret "${PULL_SECRET_NAME}" -o yaml | \
+            sed "s/namespace: .*/namespace: ${CLUSTER_NS}/" | \
+            oc apply -f -
+        fi
+
+        # Generate Infrastructure ID
+        INFRA_ID=$(echo "${CLUSTER_NAME}" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]-' | cut -c1-27)
+        echo "🔧 Generated Infrastructure ID: ${INFRA_ID}"
+
+        # Check if HostedCluster already exists
+        if oc get hostedcluster "${CLUSTER_NAME}" -n "${CLUSTER_NS}" > /dev/null 2>&1; then
+          echo "ℹ️  HostedCluster '${CLUSTER_NAME}' already exists in namespace '${CLUSTER_NS}'"
+          echo "   Checking current status..."
+          oc get hostedcluster "${CLUSTER_NAME}" -n "${CLUSTER_NS}" -o wide
+          echo "${INFRA_ID}" > $(results.infra-id.path)
+          echo "${CLUSTER_NS}" > $(results.hosted-cluster-namespace.path)
+          exit 0
+        fi
+
+        # Build storage class configuration for etcd
+        ETCD_STORAGE_CONFIG=""
+        if [[ -n "${ETCD_STORAGE_CLASS}" ]]; then
+          ETCD_STORAGE_CONFIG="storageClassName: ${ETCD_STORAGE_CLASS}"
+        fi
+
+        # Create HostedCluster CR
+        echo "🚀 Creating HostedCluster: ${CLUSTER_NAME}..."
+        cat <<EOF | oc apply -f -
+        apiVersion: hypershift.openshift.io/v1beta1
+        kind: HostedCluster
+        metadata:
+          name: ${CLUSTER_NAME}
+          namespace: ${CLUSTER_NS}
+          labels:
+            app.kubernetes.io/managed-by: tekton
+            app.kubernetes.io/part-of: sap-edge
+        spec:
+          release:
+            image: ${RELEASE_IMAGE}
+          pullSecret:
+            name: ${PULL_SECRET_NAME}
+          infraID: ${INFRA_ID}
+          platform:
+            type: KubeVirt
+            kubevirt:
+              baseDomainPassthrough: true
+          networking:
+            clusterNetwork:
+              - cidr: 10.132.0.0/14
+            serviceNetwork:
+              - cidr: 172.31.0.0/16
+            networkType: ${NETWORK_TYPE}
+          services:
+            - service: APIServer
+              servicePublishingStrategy:
+                type: NodePort
+            - service: OAuthServer
+              servicePublishingStrategy:
+                type: Route
+            - service: Konnectivity
+              servicePublishingStrategy:
+                type: Route
+            - service: Ignition
+              servicePublishingStrategy:
+                type: Route
+          etcd:
+            managementType: Managed
+            managed:
+              storage:
+                type: PersistentVolume
+                persistentVolume:
+                  size: 8Gi
+                  ${ETCD_STORAGE_CONFIG}
+          fips: false
+          controllerAvailabilityPolicy: SingleReplica
+          infrastructureAvailabilityPolicy: SingleReplica
+        EOF
+
+        echo "✅ HostedCluster CR created"
+
+        # Build storage class for root volume
+        ROOT_STORAGE_CONFIG=""
+        if [[ -n "${ETCD_STORAGE_CLASS}" ]]; then
+          ROOT_STORAGE_CONFIG="storageClass: ${ETCD_STORAGE_CLASS}"
+        fi
+
+        # Create NodePool CR
+        echo "🖥️  Creating NodePool with ${NODE_POOL_REPLICAS} workers..."
+        cat <<EOF | oc apply -f -
+        apiVersion: hypershift.openshift.io/v1beta1
+        kind: NodePool
+        metadata:
+          name: ${CLUSTER_NAME}-workers
+          namespace: ${CLUSTER_NS}
+          labels:
+            app.kubernetes.io/managed-by: tekton
+            app.kubernetes.io/part-of: sap-edge
+        spec:
+          clusterName: ${CLUSTER_NAME}
+          replicas: ${NODE_POOL_REPLICAS}
+          management:
+            autoRepair: false
+            upgradeType: Replace
+          platform:
+            type: KubeVirt
+            kubevirt:
+              compute:
+                cores: ${NODE_POOL_CPU_CORES}
+                memory: "${NODE_POOL_MEMORY_GB}Gi"
+              rootVolume:
+                persistent:
+                  size: "${ROOT_DISK_SIZE_GB}Gi"
+                  ${ROOT_STORAGE_CONFIG}
+              attachDefaultNetwork: true
+          release:
+            image: ${RELEASE_IMAGE}
+        EOF
+
+        echo "✅ NodePool CR created"
+
+        # Configure additional trust bundle so hosted cluster trusts hub cluster's ingress
+        # This is needed for the hosted cluster to trust hub services like Quay registry
+        echo ""
+        echo "🔐 Configuring additional trust bundle for hosted cluster..."
+        echo "   This allows the hosted cluster to trust hub cluster's ingress routes (e.g., Quay registry)"
+
+        # Extract the hub cluster's ingress CA certificate
+        INGRESS_CA_CERT=$(oc get secret router-ca -n openshift-ingress-operator -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d || true)
+
+        if [[ -z "${INGRESS_CA_CERT}" ]]; then
+          echo "⚠️  Could not extract ingress CA certificate from router-ca secret"
+          echo "   Trying alternative: ingress-operator-signer secret..."
+          INGRESS_CA_CERT=$(oc get secret ingress-operator-signer -n openshift-ingress-operator -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d || true)
+        fi
+
+        if [[ -n "${INGRESS_CA_CERT}" ]]; then
+          echo "✅ Hub cluster ingress CA certificate extracted"
+
+          # Create ConfigMap with the CA bundle in the hosted cluster namespace
+          echo "📦 Creating CA bundle ConfigMap in ${CLUSTER_NS}..."
+          cat <<EOF | oc apply -f -
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: hub-ingress-ca-bundle
+          namespace: ${CLUSTER_NS}
+          labels:
+            app.kubernetes.io/managed-by: tekton
+            app.kubernetes.io/part-of: sap-edge
+        data:
+          ca-bundle.crt: |
+        $(echo "${INGRESS_CA_CERT}" | sed 's/^/    /')
+        EOF
+
+          echo "✅ CA bundle ConfigMap created"
+
+          # Patch the HostedCluster to use the additional trust bundle
+          echo "🔧 Patching HostedCluster with additional trust bundle..."
+          oc patch hostedcluster "${CLUSTER_NAME}" -n "${CLUSTER_NS}" --type='merge' --patch='
+        spec:
+          additionalTrustBundle:
+            name: hub-ingress-ca-bundle
+        '
+
+          echo "✅ HostedCluster configured to trust hub cluster's ingress certificates"
+        else
+          echo "⚠️  Could not extract hub cluster ingress CA certificate"
+          echo "   The hosted cluster may not trust hub cluster's ingress routes (e.g., Quay)"
+          echo "   You can manually configure this later if needed"
+        fi
+
+        # Save results
+        echo "${INFRA_ID}" > $(results.infra-id.path)
+        echo "${CLUSTER_NS}" > $(results.hosted-cluster-namespace.path)
+
+        # Display created resources
+        echo ""
+        echo "📋 Resources created:"
+        echo "----------------------------------------"
+        oc get hostedcluster,nodepool -n "${CLUSTER_NS}" -o wide
+        echo ""
+        echo "📋 CA Bundle ConfigMap:"
+        oc get configmap hub-ingress-ca-bundle -n "${CLUSTER_NS}" 2>/dev/null || echo "No CA bundle ConfigMap found"
+        echo "----------------------------------------"
+        echo ""
+        echo "✅ HostedCluster and NodePool created successfully!"
+        echo "   Hosted cluster configured to trust hub cluster's ingress certificates"
+        echo "   Next step: Wait for the cluster to become available"

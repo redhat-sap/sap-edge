@@ -1,0 +1,312 @@
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: hcp-kubevirt-validation-pipeline
+  annotations:
+    description: "HCP KubeVirt validation pipeline: creates hosted cluster with MCE/HyperShift on KubeVirt, deploys PostgreSQL and Redis, and validates deployment"
+spec:
+  params:
+    - name: repoUrl
+      type: string
+      description: "Git repository URL"
+    - name: revision
+      type: string
+      description: "Git revision (branch/tag/commit)"
+      default: "main"
+    - name: hostedClusterName
+      type: string
+      description: "Name of the hosted cluster"
+    - name: hostedClusterNamespace
+      type: string
+      description: "Namespace for HostedCluster resources"
+      default: "clusters"
+    - name: releaseImage
+      type: string
+      description: "OCP release image for the hosted cluster"
+      default: "quay.io/openshift-release-dev/ocp-release:4.15.0-x86_64"
+    - name: nodePoolReplicas
+      type: string
+      description: "Number of worker nodes"
+      default: "3"
+    - name: nodePoolCpuCores
+      type: string
+      description: "vCPU cores per worker node"
+      default: "16"
+    - name: nodePoolMemoryGB
+      type: string
+      description: "RAM in GB per worker node"
+      default: "32"
+    - name: rootDiskSizeGB
+      type: string
+      description: "Root disk size in GB per worker node"
+      default: "120"
+    - name: pullSecretName
+      type: string
+      description: "Name of the Kubernetes Secret containing Red Hat pull secret"
+      default: "redhat-pull-secret"
+    - name: etcdStorageClass
+      type: string
+      description: "Storage class for etcd PVCs (leave empty for default)"
+      default: ""
+    - name: postgresVersion
+      type: string
+      description: "PostgreSQL version (v15/v16/v17)"
+      default: "v15"
+    - name: redisClusterType
+      type: string
+      description: "Redis cluster type (standard/ha)"
+      default: "standard"
+    - name: jiraSecretName
+      type: string
+      description: "Name of the Kubernetes Secret containing Jira credentials"
+      default: ""
+    - name: jiraIssueKey
+      type: string
+      description: "Jira issue key to update with deployment results"
+      default: ""
+    - name: skipTeardown
+      type: string
+      description: "Skip the teardown step at the end"
+      default: "false"
+  workspaces:
+    - name: source
+
+  tasks:
+    # Step 1: Clone repository
+    - name: fetch-repository
+      taskRef: { name: git-clone }
+      params:
+        - name: url
+          value: $(params.repoUrl)
+        - name: revision
+          value: $(params.revision)
+      workspaces:
+        - name: output
+          workspace: source
+
+    # Step 2: Create HostedCluster and NodePool
+    - name: create-hosted-cluster
+      runAfter: [fetch-repository]
+      taskRef: { name: hcp-create-hosted-cluster }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: releaseImage
+          value: $(params.releaseImage)
+        - name: nodePoolReplicas
+          value: $(params.nodePoolReplicas)
+        - name: nodePoolCpuCores
+          value: $(params.nodePoolCpuCores)
+        - name: nodePoolMemoryGB
+          value: $(params.nodePoolMemoryGB)
+        - name: rootDiskSizeGB
+          value: $(params.rootDiskSizeGB)
+        - name: pullSecretName
+          value: $(params.pullSecretName)
+        - name: etcdStorageClass
+          value: $(params.etcdStorageClass)
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 3: Wait for cluster to be ready
+    - name: wait-cluster-ready
+      runAfter: [create-hosted-cluster]
+      taskRef: { name: hcp-wait-cluster-ready }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: timeoutMinutes
+          value: "45"
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 4: Deploy PostgreSQL on hosted cluster (parallel with Redis)
+    - name: deploy-postgres
+      runAfter: [wait-cluster-ready]
+      taskRef: { name: hcp-deploy-postgres }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: postgresVersion
+          value: $(params.postgresVersion)
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 5: Deploy Redis on hosted cluster (parallel with PostgreSQL)
+    - name: deploy-redis
+      runAfter: [wait-cluster-ready]
+      taskRef: { name: hcp-deploy-redis }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: redisClusterType
+          value: $(params.redisClusterType)
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 6: Update Jira with deployment status
+    - name: update-jira-deployment-status
+      runAfter: [deploy-postgres, deploy-redis]
+      when:
+        - input: "$(params.jiraIssueKey)"
+          operator: notin
+          values: [""]
+      taskRef:
+        name: jira-add-comment-custom
+      params:
+        - name: jiraSecretName
+          value: $(params.jiraSecretName)
+        - name: jiraIssueKey
+          value: $(params.jiraIssueKey)
+        - name: comment
+          value: |
+            h2. HCP KubeVirt Deployment Completed
+
+            *Hosted Cluster Configuration:*
+            * *Cluster Name:* $(params.hostedClusterName)
+            * *Namespace:* $(params.hostedClusterNamespace)
+            * *Release Image:* $(params.releaseImage)
+            * *Worker Nodes:* $(params.nodePoolReplicas) x ($(params.nodePoolCpuCores) vCPU, $(params.nodePoolMemoryGB)GB RAM)
+            * *Root Disk:* $(params.rootDiskSizeGB)GB per node
+
+            *Deployment Status:*
+            * Repository cloned: OK
+            * HostedCluster created: OK
+            * NodePool created: OK
+            * Cluster available: OK
+            * PostgreSQL $(params.postgresVersion) deployed: OK
+            * Redis $(params.redisClusterType) deployed: OK
+
+            *Infrastructure:*
+            * MCE Hosted Control Plane with KubeVirt
+            * 3 KubeVirt worker VMs
+            * Crunchy PostgreSQL Operator
+            * Redis Enterprise Operator
+
+            *Pipeline Details:*
+            * *Repository:* $(params.repoUrl)
+            * *Revision:* $(params.revision)
+
+            Waiting for validation approval...
+
+    # Step 7: Manual approval after deployment
+    - name: manual-approval-post-deployment
+      runAfter: [deploy-postgres, deploy-redis]
+      taskRef:
+        apiVersion: openshift-pipelines.org/v1alpha1
+        kind: ApprovalTask
+      params:
+        - name: approvers
+          value:
+            - mjiao
+            - rbhandar
+            - ksatarin
+        - name: description
+          value: |
+            HCP KubeVirt cluster with PostgreSQL and Redis deployed successfully.
+
+            Cluster: $(params.hostedClusterName)
+            Namespace: $(params.hostedClusterNamespace)
+            Workers: $(params.nodePoolReplicas) x ($(params.nodePoolCpuCores) vCPU, $(params.nodePoolMemoryGB)GB RAM)
+
+            Approve to proceed with final validation or teardown.
+        - name: numberOfApprovalsRequired
+          value: '1'
+        - name: timeout
+          value: '168h'
+
+    # Step 8: Final approval before teardown
+    - name: manual-approval-final
+      runAfter: [manual-approval-post-deployment]
+      taskRef:
+        apiVersion: openshift-pipelines.org/v1alpha1
+        kind: ApprovalTask
+      params:
+        - name: approvers
+          value:
+            - mjiao
+            - rbhandar
+            - ksatarin
+        - name: description
+          value: |
+            HCP KubeVirt validation phase completed.
+
+            Cluster: $(params.hostedClusterName)
+
+            Approve to proceed with cluster teardown.
+            Reject to keep the cluster running (you can manually delete later).
+        - name: numberOfApprovalsRequired
+          value: '1'
+        - name: timeout
+          value: '168h'
+
+    # Step 9: Teardown hosted cluster
+    - name: teardown-hosted-cluster
+      runAfter: [manual-approval-final]
+      when:
+        - input: "$(params.skipTeardown)"
+          operator: in
+          values: ["false"]
+      taskRef: { name: hcp-teardown }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: waitForDeletion
+          value: "true"
+        - name: timeoutMinutes
+          value: "30"
+      workspaces:
+        - name: source
+          workspace: source
+
+  finally:
+    # Update Jira on pipeline completion (success or failure)
+    - name: update-jira-final-status
+      when:
+        - input: "$(params.jiraIssueKey)"
+          operator: notin
+          values: [""]
+      taskRef:
+        name: jira-add-comment-custom
+      params:
+        - name: jiraSecretName
+          value: $(params.jiraSecretName)
+        - name: jiraIssueKey
+          value: $(params.jiraIssueKey)
+        - name: comment
+          value: |
+            h2. HCP KubeVirt Pipeline Completed
+
+            *Hosted Cluster:* $(params.hostedClusterName)
+            *Namespace:* $(params.hostedClusterNamespace)
+            *Release Image:* $(params.releaseImage)
+
+            *Configuration:*
+            * Worker Nodes: $(params.nodePoolReplicas) x ($(params.nodePoolCpuCores) vCPU, $(params.nodePoolMemoryGB)GB RAM)
+            * PostgreSQL Version: $(params.postgresVersion)
+            * Redis Cluster Type: $(params.redisClusterType)
+
+            Pipeline execution completed.
+
+            *Repository:* $(params.repoUrl)
+            *Revision:* $(params.revision)

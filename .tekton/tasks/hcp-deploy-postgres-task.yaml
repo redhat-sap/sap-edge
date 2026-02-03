@@ -1,0 +1,158 @@
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: hcp-deploy-postgres
+spec:
+  description: Deploy PostgreSQL on the hosted cluster using Crunchy Data Operator
+  params:
+    - name: hostedClusterName
+      type: string
+      description: "Name of the hosted cluster"
+    - name: hostedClusterNamespace
+      type: string
+      description: "Namespace for HostedCluster resources"
+      default: "clusters"
+    - name: postgresNamespace
+      type: string
+      description: "Namespace for PostgreSQL deployment on hosted cluster"
+      default: "sap-eic-external-postgres"
+    - name: postgresVersion
+      type: string
+      description: "PostgreSQL version: v15, v16, v17"
+      default: "v15"
+    - name: skipWait
+      type: string
+      description: "Skip waiting for PostgreSQL readiness"
+      default: "false"
+  workspaces:
+    - name: source
+  results:
+    - name: postgres-host
+      description: "PostgreSQL service host"
+    - name: postgres-port
+      description: "PostgreSQL service port"
+    - name: postgres-database
+      description: "PostgreSQL database name"
+  steps:
+    - name: deploy-postgres
+      image: registry.access.redhat.com/ubi9/ubi
+      timeout: "30m"
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        # Parameters
+        CLUSTER_NAME="$(params.hostedClusterName)"
+        CLUSTER_NS="$(params.hostedClusterNamespace)"
+        PG_NAMESPACE="$(params.postgresNamespace)"
+        PG_VERSION="$(params.postgresVersion)"
+        SKIP_WAIT="$(params.skipWait)"
+
+        echo "=========================================="
+        echo "HCP Deploy PostgreSQL Task"
+        echo "=========================================="
+        echo "Hosted Cluster: ${CLUSTER_NAME}"
+        echo "Cluster Namespace: ${CLUSTER_NS}"
+        echo "PostgreSQL Namespace: ${PG_NAMESPACE}"
+        echo "PostgreSQL Version: ${PG_VERSION}"
+        echo "Skip Wait: ${SKIP_WAIT}"
+        echo "=========================================="
+
+        # Install required tools
+        echo "📦 Installing required packages..."
+        dnf install -y jq > /dev/null 2>&1
+
+        echo "📦 Installing OpenShift CLI..."
+        curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz | tar xz
+        mv oc kubectl /usr/local/bin/
+        oc version --client
+
+        # Extract kubeconfig for hosted cluster
+        echo "🔐 Extracting kubeconfig for hosted cluster..."
+        KUBECONFIG_SECRET="${CLUSTER_NAME}-admin-kubeconfig"
+
+        if ! oc get secret "${KUBECONFIG_SECRET}" -n "${CLUSTER_NS}" > /dev/null 2>&1; then
+          echo "❌ Kubeconfig secret '${KUBECONFIG_SECRET}' not found in namespace '${CLUSTER_NS}'"
+          exit 1
+        fi
+
+        HOSTED_KUBECONFIG="/tmp/hosted-kubeconfig"
+        oc get secret "${KUBECONFIG_SECRET}" -n "${CLUSTER_NS}" \
+          -o jsonpath='{.data.kubeconfig}' | base64 -d > "${HOSTED_KUBECONFIG}"
+        chmod 600 "${HOSTED_KUBECONFIG}"
+
+        # Set KUBECONFIG to hosted cluster
+        export KUBECONFIG="${HOSTED_KUBECONFIG}"
+
+        echo "🔍 Verifying access to hosted cluster..."
+        oc get nodes
+        echo "✅ Successfully connected to hosted cluster"
+
+        # Verify the deploy_postgres.sh script exists
+        DEPLOY_SCRIPT="$(workspaces.source.path)/edge-integration-cell/deploy_postgres.sh"
+        if [[ ! -f "${DEPLOY_SCRIPT}" ]]; then
+          echo "❌ Deploy script not found: ${DEPLOY_SCRIPT}"
+          exit 1
+        fi
+        chmod +x "${DEPLOY_SCRIPT}"
+
+        # Run the PostgreSQL deployment script
+        echo ""
+        echo "🐘 Deploying PostgreSQL on hosted cluster..."
+        echo "----------------------------------------"
+
+        cd "$(workspaces.source.path)/edge-integration-cell"
+
+        DEPLOY_ARGS=("-n" "${PG_NAMESPACE}" "-v" "${PG_VERSION}" "-f")
+        if [[ "${SKIP_WAIT}" == "true" ]]; then
+          DEPLOY_ARGS+=("--skip-wait")
+        fi
+
+        bash deploy_postgres.sh "${DEPLOY_ARGS[@]}"
+
+        echo "----------------------------------------"
+        echo ""
+
+        # Get PostgreSQL access details
+        echo "📋 Getting PostgreSQL access details..."
+
+        # Wait a moment for services to be created
+        sleep 5
+
+        # Get the primary service
+        PG_SERVICE=$(oc get svc -n "${PG_NAMESPACE}" \
+          -l postgres-operator.crunchydata.com/cluster=eic,postgres-operator.crunchydata.com/role=primary \
+          -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "eic-primary")
+
+        PG_HOST="${PG_SERVICE}.${PG_NAMESPACE}.svc.cluster.local"
+        PG_PORT="5432"
+        PG_DATABASE="eic"
+
+        # Write results
+        echo "${PG_HOST}" > $(results.postgres-host.path)
+        echo "${PG_PORT}" > $(results.postgres-port.path)
+        echo "${PG_DATABASE}" > $(results.postgres-database.path)
+
+        # Display connection info
+        echo ""
+        echo "=========================================="
+        echo "✅ PostgreSQL deployed successfully!"
+        echo "=========================================="
+        echo "Host: ${PG_HOST}"
+        echo "Port: ${PG_PORT}"
+        echo "Database: ${PG_DATABASE}"
+        echo "Namespace: ${PG_NAMESPACE}"
+        echo ""
+        echo "📋 PostgreSQL pods:"
+        oc get pods -n "${PG_NAMESPACE}" -o wide
+        echo ""
+        echo "📋 PostgreSQL services:"
+        oc get svc -n "${PG_NAMESPACE}"
+        echo "=========================================="

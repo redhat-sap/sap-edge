@@ -1,0 +1,215 @@
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: hcp-teardown
+spec:
+  description: Clean up Hosted Cluster and all associated resources
+  params:
+    - name: hostedClusterName
+      type: string
+      description: "Name of the hosted cluster to delete"
+    - name: hostedClusterNamespace
+      type: string
+      description: "Namespace for HostedCluster resources"
+      default: "clusters"
+    - name: waitForDeletion
+      type: string
+      description: "Wait for complete deletion of resources"
+      default: "true"
+    - name: timeoutMinutes
+      type: string
+      description: "Timeout in minutes to wait for deletion"
+      default: "30"
+    - name: cleanupNamespace
+      type: string
+      description: "Delete the hosted cluster namespace after teardown"
+      default: "false"
+  workspaces:
+    - name: source
+  steps:
+    - name: teardown-cluster
+      image: registry.access.redhat.com/ubi9/ubi
+      timeout: "45m"
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        # Parameters
+        CLUSTER_NAME="$(params.hostedClusterName)"
+        CLUSTER_NS="$(params.hostedClusterNamespace)"
+        WAIT_FOR_DELETION="$(params.waitForDeletion)"
+        TIMEOUT_MINUTES="$(params.timeoutMinutes)"
+        CLEANUP_NAMESPACE="$(params.cleanupNamespace)"
+        TIMEOUT_SECONDS=$((TIMEOUT_MINUTES * 60))
+
+        echo "=========================================="
+        echo "HCP Teardown Task"
+        echo "=========================================="
+        echo "Hosted Cluster: ${CLUSTER_NAME}"
+        echo "Namespace: ${CLUSTER_NS}"
+        echo "Wait for Deletion: ${WAIT_FOR_DELETION}"
+        echo "Timeout: ${TIMEOUT_MINUTES} minutes"
+        echo "Cleanup Namespace: ${CLEANUP_NAMESPACE}"
+        echo "=========================================="
+
+        # Install required tools
+        echo "📦 Installing required packages..."
+        dnf install -y jq > /dev/null 2>&1
+
+        echo "📦 Installing OpenShift CLI..."
+        curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz | tar xz
+        mv oc kubectl /usr/local/bin/
+        oc version --client
+
+        # Check if HostedCluster exists
+        echo "🔍 Checking if HostedCluster exists..."
+        if ! oc get hostedcluster "${CLUSTER_NAME}" -n "${CLUSTER_NS}" > /dev/null 2>&1; then
+          echo "ℹ️  HostedCluster '${CLUSTER_NAME}' does not exist in namespace '${CLUSTER_NS}'"
+          echo "   Nothing to delete."
+          exit 0
+        fi
+
+        echo "📋 Current HostedCluster status:"
+        oc get hostedcluster "${CLUSTER_NAME}" -n "${CLUSTER_NS}" -o wide
+
+        # Delete NodePool first
+        NODEPOOL_NAME="${CLUSTER_NAME}-workers"
+        echo ""
+        echo "🗑️  Deleting NodePool: ${NODEPOOL_NAME}..."
+        if oc get nodepool "${NODEPOOL_NAME}" -n "${CLUSTER_NS}" > /dev/null 2>&1; then
+          oc delete nodepool "${NODEPOOL_NAME}" -n "${CLUSTER_NS}" --wait=false
+          echo "✅ NodePool deletion initiated"
+        else
+          echo "ℹ️  NodePool '${NODEPOOL_NAME}' not found"
+        fi
+
+        # Delete HostedCluster
+        echo ""
+        echo "🗑️  Deleting HostedCluster: ${CLUSTER_NAME}..."
+        oc delete hostedcluster "${CLUSTER_NAME}" -n "${CLUSTER_NS}" --wait=false
+        echo "✅ HostedCluster deletion initiated"
+
+        # Wait for deletion if requested
+        if [[ "${WAIT_FOR_DELETION}" == "true" ]]; then
+          echo ""
+          echo "⏳ Waiting for HostedCluster deletion (timeout: ${TIMEOUT_MINUTES} minutes)..."
+          START_TIME=$(date +%s)
+
+          while true; do
+            CURRENT_TIME=$(date +%s)
+            ELAPSED=$((CURRENT_TIME - START_TIME))
+
+            if [[ ${ELAPSED} -ge ${TIMEOUT_SECONDS} ]]; then
+              echo "⚠️  Timeout reached - cluster may still be deleting in the background"
+              echo ""
+              echo "📋 Remaining resources:"
+              oc get hostedcluster,nodepool -n "${CLUSTER_NS}" 2>/dev/null || echo "No resources found"
+              break
+            fi
+
+            # Check if HostedCluster still exists
+            if ! oc get hostedcluster "${CLUSTER_NAME}" -n "${CLUSTER_NS}" > /dev/null 2>&1; then
+              echo ""
+              echo "✅ HostedCluster '${CLUSTER_NAME}' has been deleted"
+              break
+            fi
+
+            # Get deletion status
+            PHASE=$(oc get hostedcluster "${CLUSTER_NAME}" -n "${CLUSTER_NS}" \
+              -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+
+            ELAPSED_MIN=$((ELAPSED / 60))
+            ELAPSED_SEC=$((ELAPSED % 60))
+
+            echo "⏳ [${ELAPSED_MIN}m${ELAPSED_SEC}s] HostedCluster phase: ${PHASE}"
+
+            sleep 30
+          done
+
+          # Wait for NodePool deletion
+          echo ""
+          echo "⏳ Checking NodePool deletion..."
+          if oc get nodepool "${NODEPOOL_NAME}" -n "${CLUSTER_NS}" > /dev/null 2>&1; then
+            echo "⏳ Waiting for NodePool deletion..."
+            NODEPOOL_START=$(date +%s)
+            while true; do
+              CURRENT_TIME=$(date +%s)
+              ELAPSED=$((CURRENT_TIME - NODEPOOL_START))
+
+              if [[ ${ELAPSED} -ge 300 ]]; then  # 5 minute timeout for nodepool
+                echo "⚠️  NodePool still exists after 5 minutes"
+                break
+              fi
+
+              if ! oc get nodepool "${NODEPOOL_NAME}" -n "${CLUSTER_NS}" > /dev/null 2>&1; then
+                echo "✅ NodePool '${NODEPOOL_NAME}' has been deleted"
+                break
+              fi
+
+              sleep 15
+            done
+          else
+            echo "✅ NodePool already deleted"
+          fi
+        fi
+
+        # Clean up any remaining KubeVirt VMs
+        echo ""
+        echo "🧹 Cleaning up any remaining KubeVirt VMs..."
+        VM_NAMESPACE="${CLUSTER_NS}-${CLUSTER_NAME}"
+        if oc get namespace "${VM_NAMESPACE}" > /dev/null 2>&1; then
+          VM_COUNT=$(oc get vm -n "${VM_NAMESPACE}" --no-headers 2>/dev/null | wc -l || echo "0")
+          if [[ "${VM_COUNT}" -gt 0 ]]; then
+            echo "   Found ${VM_COUNT} VMs in namespace ${VM_NAMESPACE}"
+            oc delete vm --all -n "${VM_NAMESPACE}" --wait=false 2>/dev/null || true
+            echo "   VM deletion initiated"
+          else
+            echo "   No VMs found in ${VM_NAMESPACE}"
+          fi
+        else
+          echo "   VM namespace ${VM_NAMESPACE} does not exist"
+        fi
+
+        # Clean up secrets and configmaps
+        echo ""
+        echo "🧹 Cleaning up related secrets..."
+        for SECRET_SUFFIX in admin-kubeconfig admin-password kubeadmin-password; do
+          SECRET_NAME="${CLUSTER_NAME}-${SECRET_SUFFIX}"
+          if oc get secret "${SECRET_NAME}" -n "${CLUSTER_NS}" > /dev/null 2>&1; then
+            oc delete secret "${SECRET_NAME}" -n "${CLUSTER_NS}" --ignore-not-found=true
+            echo "   Deleted secret: ${SECRET_NAME}"
+          fi
+        done
+
+        # Optionally cleanup namespace
+        if [[ "${CLEANUP_NAMESPACE}" == "true" ]]; then
+          echo ""
+          echo "🧹 Cleaning up namespace: ${CLUSTER_NS}..."
+          # Only delete if it's a cluster-specific namespace (not 'clusters')
+          if [[ "${CLUSTER_NS}" != "clusters" ]]; then
+            oc delete namespace "${CLUSTER_NS}" --wait=false --ignore-not-found=true
+            echo "   Namespace deletion initiated"
+          else
+            echo "   Skipping deletion of shared namespace 'clusters'"
+          fi
+        fi
+
+        # Final status
+        echo ""
+        echo "=========================================="
+        echo "✅ Teardown completed!"
+        echo "=========================================="
+        echo ""
+        echo "📋 Remaining resources in ${CLUSTER_NS}:"
+        oc get hostedcluster,nodepool -n "${CLUSTER_NS}" 2>/dev/null || echo "No HostedCluster/NodePool resources"
+        echo ""
+        echo "📋 Remaining VMs:"
+        oc get vm -A -l hypershift.openshift.io/cluster="${CLUSTER_NAME}" 2>/dev/null || echo "No VMs found"
+        echo "=========================================="
