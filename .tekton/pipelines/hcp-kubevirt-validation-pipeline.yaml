@@ -151,6 +151,8 @@ spec:
           value: $(params.hostedClusterNamespace)
         - name: postgresVersion
           value: $(params.postgresVersion)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
       workspaces:
         - name: source
           workspace: source
@@ -166,6 +168,8 @@ spec:
           value: $(params.hostedClusterNamespace)
         - name: redisClusterType
           value: $(params.redisClusterType)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
       workspaces:
         - name: source
           workspace: source
