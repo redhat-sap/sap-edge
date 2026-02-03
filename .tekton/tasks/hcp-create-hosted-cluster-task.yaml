@@ -50,6 +50,10 @@ spec:
       type: string
       description: "Network type for the hosted cluster"
       default: "OVNKubernetes"
+    - name: hubKubeconfigSecretName
+      type: string
+      description: "Name of the Secret containing kubeconfig for hub cluster (optional, uses in-cluster config if empty)"
+      default: ""
   workspaces:
     - name: source
   results:
@@ -77,6 +81,7 @@ spec:
         PULL_SECRET_NAME="$(params.pullSecretName)"
         ETCD_STORAGE_CLASS="$(params.etcdStorageClass)"
         NETWORK_TYPE="$(params.networkType)"
+        HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
 
         echo "=========================================="
         echo "HCP Create Hosted Cluster Task"
@@ -98,6 +103,30 @@ spec:
         curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz | tar xz
         mv oc kubectl /usr/local/bin/
         oc version --client
+
+        # Configure hub cluster kubeconfig if provided
+        if [[ -n "${HUB_KUBECONFIG_SECRET}" ]]; then
+          echo "🔐 Extracting hub cluster kubeconfig from secret: ${HUB_KUBECONFIG_SECRET}..."
+          HUB_KUBECONFIG="/tmp/hub-kubeconfig"
+          # Try different common key names for kubeconfig in secrets
+          if kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.kubeconfig}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: kubeconfig)"
+          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.config}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: config)"
+          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.value}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: value)"
+          else
+            echo "❌ Failed to extract kubeconfig from secret '${HUB_KUBECONFIG_SECRET}'"
+            echo "   Secret should have kubeconfig data under key 'kubeconfig', 'config', or 'value'"
+            exit 1
+          fi
+          chmod 600 "${HUB_KUBECONFIG}"
+          export KUBECONFIG="${HUB_KUBECONFIG}"
+          echo "✅ Using hub kubeconfig for cluster operations"
+          oc whoami
+        else
+          echo "ℹ️  No hub kubeconfig secret provided, using in-cluster service account"
+        fi
 
         # Validate MCE/HyperShift installation
         echo "🔍 Validating MCE/HyperShift installation..."
