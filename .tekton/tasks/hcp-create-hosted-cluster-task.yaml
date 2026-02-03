@@ -104,6 +104,22 @@ spec:
         mv oc kubectl /usr/local/bin/
         oc version --client
 
+        # Extract pull secret data BEFORE switching kubeconfig (using in-cluster SA)
+        echo "🔐 Extracting pull secret from pipeline namespace..."
+        PULL_SECRET_FILE="/tmp/pull-secret.json"
+        if kubectl get secret "${PULL_SECRET_NAME}" -o jsonpath='{.data.\.dockerconfigjson}' 2>/dev/null | base64 -d > "${PULL_SECRET_FILE}" 2>/dev/null && [[ -s "${PULL_SECRET_FILE}" ]]; then
+          echo "   Found .dockerconfigjson key"
+        elif kubectl get secret "${PULL_SECRET_NAME}" -o jsonpath='{.data.PULL_SECRET}' 2>/dev/null | base64 -d > "${PULL_SECRET_FILE}" 2>/dev/null && [[ -s "${PULL_SECRET_FILE}" ]]; then
+          echo "   Found PULL_SECRET key"
+        elif kubectl get secret "${PULL_SECRET_NAME}" -o jsonpath='{.data.\.dockercfg}' 2>/dev/null | base64 -d > "${PULL_SECRET_FILE}" 2>/dev/null && [[ -s "${PULL_SECRET_FILE}" ]]; then
+          echo "   Found .dockercfg key"
+        else
+          echo "❌ Could not extract pull secret data from '${PULL_SECRET_NAME}'"
+          echo "   Secret should have data under key '.dockerconfigjson', 'PULL_SECRET', or '.dockercfg'"
+          exit 1
+        fi
+        echo "✅ Pull secret extracted to ${PULL_SECRET_FILE}"
+
         # Configure hub cluster kubeconfig if provided
         if [[ -n "${HUB_KUBECONFIG_SECRET}" ]]; then
           echo "🔐 Extracting hub cluster kubeconfig from secret: ${HUB_KUBECONFIG_SECRET}..."
@@ -145,45 +161,18 @@ spec:
         fi
         echo "✅ KubeVirt CRDs found"
 
-        # Check if pull secret exists
-        echo "🔍 Checking pull secret..."
-        if ! oc get secret "${PULL_SECRET_NAME}" > /dev/null 2>&1; then
-          echo "❌ Pull secret '${PULL_SECRET_NAME}' not found in current namespace"
-          echo "   Please create the pull secret with Red Hat registry credentials"
-          exit 1
-        fi
-        echo "✅ Pull secret found"
-
         # Create namespace if not exists
         echo "📁 Creating namespace: ${CLUSTER_NS}..."
         oc create namespace "${CLUSTER_NS}" --dry-run=client -o yaml | oc apply -f -
 
-        # Copy pull secret to cluster namespace if needed (must have .dockerconfigjson key)
+        # Create pull secret in cluster namespace using pre-extracted data
         echo "🔐 Ensuring pull secret exists in ${CLUSTER_NS} with correct format..."
         if ! oc get secret "${PULL_SECRET_NAME}" -n "${CLUSTER_NS}" > /dev/null 2>&1; then
-          # Extract pull secret data - try different common key names
-          PULL_SECRET_DATA=""
-          if oc get secret "${PULL_SECRET_NAME}" -o jsonpath='{.data.\.dockerconfigjson}' 2>/dev/null | base64 -d > /tmp/pull-secret.json 2>/dev/null && [[ -s /tmp/pull-secret.json ]]; then
-            PULL_SECRET_DATA=$(cat /tmp/pull-secret.json)
-            echo "   Found .dockerconfigjson key"
-          elif oc get secret "${PULL_SECRET_NAME}" -o jsonpath='{.data.PULL_SECRET}' 2>/dev/null | base64 -d > /tmp/pull-secret.json 2>/dev/null && [[ -s /tmp/pull-secret.json ]]; then
-            PULL_SECRET_DATA=$(cat /tmp/pull-secret.json)
-            echo "   Found PULL_SECRET key"
-          elif oc get secret "${PULL_SECRET_NAME}" -o jsonpath='{.data.\.dockercfg}' 2>/dev/null | base64 -d > /tmp/pull-secret.json 2>/dev/null && [[ -s /tmp/pull-secret.json ]]; then
-            PULL_SECRET_DATA=$(cat /tmp/pull-secret.json)
-            echo "   Found .dockercfg key"
-          else
-            echo "❌ Could not extract pull secret data from '${PULL_SECRET_NAME}'"
-            echo "   Secret should have data under key '.dockerconfigjson', 'PULL_SECRET', or '.dockercfg'"
-            exit 1
-          fi
-
-          # Create properly formatted dockerconfigjson secret
+          # Create properly formatted dockerconfigjson secret from pre-extracted file
           oc create secret docker-registry "${PULL_SECRET_NAME}" \
             -n "${CLUSTER_NS}" \
-            --from-file=.dockerconfigjson=/tmp/pull-secret.json \
+            --from-file=.dockerconfigjson="${PULL_SECRET_FILE}" \
             --dry-run=client -o yaml | oc apply -f -
-          rm -f /tmp/pull-secret.json
           echo "✅ Pull secret created in ${CLUSTER_NS}"
         else
           echo "   Pull secret already exists in ${CLUSTER_NS}"
