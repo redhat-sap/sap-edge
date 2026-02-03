@@ -52,6 +52,10 @@ spec:
       value: ""
     - name: skipTeardown
       value: "false"
+  taskRunTemplate:
+    podTemplate:
+      securityContext:
+        fsGroup: 65532
   workspaces:
     - name: source
       volumeClaimTemplate:
