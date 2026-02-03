@@ -8,33 +8,28 @@ apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
   generateName: hcp-kubevirt-validation-
-  labels:
-    app.kubernetes.io/name: hcp-kubevirt-validation
-    app.kubernetes.io/part-of: sap-edge
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
-    pipelinesascode.tekton.dev/pipeline: "[./.tekton/pipelines/hcp-kubevirt-validation-pipeline.yaml]"
-    pipelinesascode.tekton.dev/task: "[./.tekton/tasks/git-clone.yaml, ./.tekton/tasks/hcp-create-hosted-cluster-task.yaml, ./.tekton/tasks/hcp-wait-cluster-ready-task.yaml, ./.tekton/tasks/hcp-deploy-postgres-task.yaml, ./.tekton/tasks/hcp-deploy-redis-task.yaml, ./.tekton/tasks/hcp-teardown-task.yaml, ./.tekton/tasks/jira-add-comment-custom-task.yaml]"
+    pipelinesascode.tekton.dev/task: "[./.tekton/tasks/git-clone.yaml]"
 spec:
   pipelineRef:
     name: hcp-kubevirt-validation-pipeline
+  timeouts:
+    pipeline: "168h"      # Total pipeline timeout (7 days)
+    tasks: "120m"         # Individual task timeout (2 hours)
+    finally: "30m"        # Finally tasks timeout
   params:
-    # Git repository configuration (Pipelines as Code variables)
     - name: repoUrl
       value: "{{ repo_url }}"
     - name: revision
       value: "{{ revision }}"
-
-    # Hosted Cluster configuration
     - name: hostedClusterName
       value: "hcp-eic-test"
     - name: hostedClusterNamespace
       value: "clusters"
     - name: releaseImage
       value: "quay.io/openshift-release-dev/ocp-release:4.19.0-x86_64"
-
-    # Node Pool configuration (3 workers with 16 vCPU, 32GB RAM each)
     - name: nodePoolReplicas
       value: "3"
     - name: nodePoolCpuCores
@@ -43,40 +38,26 @@ spec:
       value: "32"
     - name: rootDiskSizeGB
       value: "120"
-
-    # Infrastructure configuration
     - name: pullSecretName
       value: "mj-pull-secret"
     - name: etcdStorageClass
-      value: ""  # Leave empty for default storage class
-
-    # Database configuration
+      value: ""
     - name: postgresVersion
       value: "v15"
     - name: redisClusterType
       value: "standard"
-
-    # Jira integration (optional - leave empty to skip)
     - name: jiraSecretName
       value: ""
     - name: jiraIssueKey
       value: ""
-
-    # Teardown configuration
     - name: skipTeardown
       value: "false"
-
   workspaces:
     - name: source
       volumeClaimTemplate:
         spec:
-          accessModes:
-            - ReadWriteOnce
+          accessModes: [ReadWriteMany]
+          storageClassName: ocs-storagecluster-cephfs
           resources:
             requests:
-              storage: 1Gi
-
-  timeouts:
-    pipeline: "168h"    # Total pipeline timeout (7 days)
-    tasks: "120m"       # Individual task timeout (2 hours)
-    finally: "30m"      # Finally tasks timeout
+              storage: 200Mi
