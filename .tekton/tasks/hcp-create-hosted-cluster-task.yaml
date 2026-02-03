@@ -158,12 +158,35 @@ spec:
         echo "📁 Creating namespace: ${CLUSTER_NS}..."
         oc create namespace "${CLUSTER_NS}" --dry-run=client -o yaml | oc apply -f -
 
-        # Copy pull secret to cluster namespace if needed
-        echo "🔐 Ensuring pull secret exists in ${CLUSTER_NS}..."
+        # Copy pull secret to cluster namespace if needed (must have .dockerconfigjson key)
+        echo "🔐 Ensuring pull secret exists in ${CLUSTER_NS} with correct format..."
         if ! oc get secret "${PULL_SECRET_NAME}" -n "${CLUSTER_NS}" > /dev/null 2>&1; then
-          oc get secret "${PULL_SECRET_NAME}" -o yaml | \
-            sed "s/namespace: .*/namespace: ${CLUSTER_NS}/" | \
-            oc apply -f -
+          # Extract pull secret data - try different common key names
+          PULL_SECRET_DATA=""
+          if oc get secret "${PULL_SECRET_NAME}" -o jsonpath='{.data.\.dockerconfigjson}' 2>/dev/null | base64 -d > /tmp/pull-secret.json 2>/dev/null && [[ -s /tmp/pull-secret.json ]]; then
+            PULL_SECRET_DATA=$(cat /tmp/pull-secret.json)
+            echo "   Found .dockerconfigjson key"
+          elif oc get secret "${PULL_SECRET_NAME}" -o jsonpath='{.data.PULL_SECRET}' 2>/dev/null | base64 -d > /tmp/pull-secret.json 2>/dev/null && [[ -s /tmp/pull-secret.json ]]; then
+            PULL_SECRET_DATA=$(cat /tmp/pull-secret.json)
+            echo "   Found PULL_SECRET key"
+          elif oc get secret "${PULL_SECRET_NAME}" -o jsonpath='{.data.\.dockercfg}' 2>/dev/null | base64 -d > /tmp/pull-secret.json 2>/dev/null && [[ -s /tmp/pull-secret.json ]]; then
+            PULL_SECRET_DATA=$(cat /tmp/pull-secret.json)
+            echo "   Found .dockercfg key"
+          else
+            echo "❌ Could not extract pull secret data from '${PULL_SECRET_NAME}'"
+            echo "   Secret should have data under key '.dockerconfigjson', 'PULL_SECRET', or '.dockercfg'"
+            exit 1
+          fi
+
+          # Create properly formatted dockerconfigjson secret
+          oc create secret docker-registry "${PULL_SECRET_NAME}" \
+            -n "${CLUSTER_NS}" \
+            --from-file=.dockerconfigjson=/tmp/pull-secret.json \
+            --dry-run=client -o yaml | oc apply -f -
+          rm -f /tmp/pull-secret.json
+          echo "✅ Pull secret created in ${CLUSTER_NS}"
+        else
+          echo "   Pull secret already exists in ${CLUSTER_NS}"
         fi
 
         # Generate Infrastructure ID
