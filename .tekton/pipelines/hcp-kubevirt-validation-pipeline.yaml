@@ -196,43 +196,7 @@ spec:
         - name: source
           workspace: source
 
-    # Step 7: Update Jira with pre-deployment status
-    - name: update-jira-pre-deployment
-      runAfter: [get-all-accesses]
-      when:
-        - input: "$(params.jiraIssueKey)"
-          operator: notin
-          values: [""]
-      taskRef:
-        name: jira-add-comment-custom
-      params:
-        - name: jiraSecretName
-          value: $(params.jiraSecretName)
-        - name: jiraIssueKey
-          value: $(params.jiraIssueKey)
-        - name: comment
-          value: |
-            h2. HCP KubeVirt Pre-EIC Deployment Status
-
-            *Hosted Cluster Configuration:*
-            * *Cluster Name:* $(params.hostedClusterName)
-            * *Namespace:* $(params.hostedClusterNamespace)
-            * *Release Image:* $(params.releaseImage)
-            * *Worker Nodes:* $(params.nodePoolReplicas) x ($(params.nodePoolCpuCores) vCPU, $(params.nodePoolMemoryGB)GB RAM)
-
-            *Infrastructure Status:*
-            * Repository cloned: ✅
-            * HostedCluster created: ✅
-            * NodePool created: ✅
-            * Cluster available: ✅
-            * PostgreSQL $(params.postgresVersion) deployed: ✅
-            * Redis $(params.redisClusterType) deployed: ✅
-            * Credentials retrieved and displayed: ✅
-
-            *Next Steps:*
-            Waiting for manual EIC application deployment. After deploying EIC, approve the pipeline to continue with ConfigMap creation and endpoint tests.
-
-    # Step 8: Manual approval for EIC deployment
+    # Step 7: Manual approval for EIC deployment
     - name: approval-eic-deployment
       runAfter: [get-all-accesses]
       taskRef:
@@ -268,7 +232,7 @@ spec:
         - name: timeout
           value: '336h'
 
-    # Step 9: Validate and create ConfigMap for endpoint tests (after EIC deployment)
+    # Step 8: Validate and create ConfigMap for endpoint tests (after EIC deployment)
     - name: validate-and-create-configmap
       runAfter: [approval-eic-deployment]
       taskRef: { name: hcp-validate-and-create-configmap }
@@ -283,55 +247,7 @@ spec:
         - name: source
           workspace: source
 
-    # Step 10: Update Jira with deployment status
-    - name: update-jira-deployment-status
-      runAfter: [validate-and-create-configmap]
-      when:
-        - input: "$(params.jiraIssueKey)"
-          operator: notin
-          values: [""]
-      taskRef:
-        name: jira-add-comment-custom
-      params:
-        - name: jiraSecretName
-          value: $(params.jiraSecretName)
-        - name: jiraIssueKey
-          value: $(params.jiraIssueKey)
-        - name: comment
-          value: |
-            h2. HCP KubeVirt Deployment Completed
-
-            *Hosted Cluster Configuration:*
-            * *Cluster Name:* $(params.hostedClusterName)
-            * *Namespace:* $(params.hostedClusterNamespace)
-            * *Release Image:* $(params.releaseImage)
-            * *Worker Nodes:* $(params.nodePoolReplicas) x ($(params.nodePoolCpuCores) vCPU, $(params.nodePoolMemoryGB)GB RAM)
-            * *Root Disk:* $(params.rootDiskSizeGB)GB per node
-
-            *Deployment Status:*
-            * Repository cloned: ✅
-            * HostedCluster created: ✅
-            * NodePool created: ✅
-            * Cluster available: ✅
-            * PostgreSQL $(params.postgresVersion) deployed: ✅
-            * Redis $(params.redisClusterType) deployed: ✅
-            * Credentials retrieved and displayed: ✅
-            * EIC application deployed: ✅ (Manual)
-            * Endpoint test ConfigMap created: ✅
-
-            *Infrastructure:*
-            * MCE Hosted Control Plane with KubeVirt
-            * $(params.nodePoolReplicas) KubeVirt worker VMs
-            * Crunchy PostgreSQL Operator
-            * Redis Enterprise Operator
-
-            *Pipeline Details:*
-            * *Repository:* $(params.repoUrl)
-            * *Revision:* $(params.revision)
-
-            Waiting for approval to run endpoint tests...
-
-    # Step 11: Manual approval to run endpoint tests
+    # Step 9: Manual approval to run endpoint tests
     - name: approval-run-tests
       runAfter: [validate-and-create-configmap]
       taskRef:
@@ -361,7 +277,7 @@ spec:
         - name: timeout
           value: '336h'
 
-    # Step 12: Endpoint Tests (run in parallel after approval)
+    # Step 10: Endpoint Tests (run in parallel after approval)
     - name: test-httpbinipfilter
       runAfter: [approval-run-tests]
       taskRef: { name: endpoint-tests }
@@ -442,7 +358,7 @@ spec:
         - name: source
           workspace: source
 
-    # Step 13: Update Jira with test results
+    # Step 11: Update Jira with test results
     - name: update-jira-test-results
       runAfter:
         - test-httpbinipfilter
@@ -509,7 +425,7 @@ spec:
 
             Ready for manual teardown approval. The complete HCP infrastructure will be destroyed once approved.
 
-    # Step 14: Manual approval before teardown
+    # Step 12: Manual approval before teardown
     - name: approval-teardown
       runAfter:
         - update-jira-test-results
@@ -538,7 +454,7 @@ spec:
         - name: timeout
           value: '336h'
 
-    # Step 15: Teardown hosted cluster
+    # Step 13: Teardown hosted cluster
     - name: teardown-hosted-cluster
       runAfter: [approval-teardown]
       when:
