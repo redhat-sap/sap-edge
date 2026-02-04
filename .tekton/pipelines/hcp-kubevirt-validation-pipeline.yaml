@@ -196,8 +196,8 @@ spec:
         - name: source
           workspace: source
 
-    # Step 7: Manual approval for EIC deployment
-    - name: approval-eic-deployment
+    # Step 7: Manual approval after ELM/EIC and iFlow deployment
+    - name: approval-elm-eic-iflow-deployed
       runAfter: [get-all-accesses]
       taskRef:
         apiVersion: openshift-pipelines.org/v1alpha1
@@ -219,22 +219,22 @@ spec:
             Namespace: $(params.hostedClusterNamespace)
             Workers: $(params.nodePoolReplicas) x ($(params.nodePoolCpuCores) vCPU, $(params.nodePoolMemoryGB)GB RAM)
 
-            Please deploy EIC application manually, then approve to continue.
-            After approval, the pipeline will:
-            1. Get LoadBalancer IP from istio-ingressgateway
-            2. Create ConfigMap for endpoint tests
-            3. Run endpoint tests
+            🔧 Please complete the following manually:
+            1. Deploy Edge Lifecycle Management (ELM)
+            2. Deploy Edge Integration Cell (EIC)
+            3. Deploy iFlows for testing
 
-            ✅ APPROVE: EIC deployed, continue with ConfigMap creation and tests
+            After deployment is complete and istio-ingressgateway has a LoadBalancer IP:
+            ✅ APPROVE: Continue with ConfigMap creation and endpoint tests
             ❌ REJECT: Skip tests and proceed to teardown
         - name: numberOfApprovalsRequired
           value: '1'
         - name: timeout
           value: '336h'
 
-    # Step 8: Validate and create ConfigMap for endpoint tests (after EIC deployment)
+    # Step 8: Validate and create ConfigMap for endpoint tests (after ELM/EIC/iFlow deployment)
     - name: validate-and-create-configmap
-      runAfter: [approval-eic-deployment]
+      runAfter: [approval-elm-eic-iflow-deployed]
       taskRef: { name: hcp-validate-and-create-configmap }
       params:
         - name: hostedClusterName

@@ -174,9 +174,9 @@ spec:
         - name: source
           workspace: source
 
-    # Manual approval gate for EIC deployment
-    # After Quay is deployed, pause for manual EIC application deployment
-    - name: approval-eic-deployment
+    # Manual approval gate after ELM/EIC and iFlow deployment
+    # After Quay is deployed, pause for manual ELM/EIC/iFlow deployment
+    - name: approval-elm-eic-iflow-deployed
       runAfter: [deploy-quay]
       taskRef:
         apiVersion: openshift-pipelines.org/v1alpha1
@@ -194,9 +194,12 @@ spec:
           value: |
             ROSA cluster, AWS services (RDS PostgreSQL, ElastiCache Redis, S3), and Quay registry are deployed.
 
-            🔧 Please deploy the EIC application manually now.
+            🔧 Please complete the following manually:
+            1. Deploy Edge Lifecycle Management (ELM)
+            2. Deploy Edge Integration Cell (EIC)
+            3. Deploy iFlows for testing
 
-            After EIC is deployed and istio-ingressgateway has a LoadBalancer IP assigned:
+            After deployment is complete and istio-ingressgateway has a LoadBalancer IP:
             ✅ APPROVE: Continue to create ConfigMap and run endpoint tests
             ❌ REJECT: Skip tests and proceed to teardown
         - name: numberOfApprovalsRequired
@@ -204,9 +207,9 @@ spec:
         - name: timeout
           value: '336h'
 
-    # Create ConfigMap with istio-ingressgateway LoadBalancer IP (after EIC is deployed)
+    # Create ConfigMap with istio-ingressgateway LoadBalancer IP (after ELM/EIC/iFlow deployment)
     - name: validate-and-create-configmap
-      runAfter: [approval-eic-deployment]
+      runAfter: [approval-elm-eic-iflow-deployed]
       taskRef: { name: rosa-validate-and-create-configmap }
       params:
         - name: clusterName
