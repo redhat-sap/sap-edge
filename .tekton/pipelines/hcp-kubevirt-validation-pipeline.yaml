@@ -239,12 +239,6 @@ spec:
         apiVersion: openshift-pipelines.org/v1alpha1
         kind: ApprovalTask
       params:
-        - name: approvers
-          value:
-            - mjiao
-            - rbhandar
-            - ksatarin
-            - kubeadmin
         - name: description
           value: |
             PostgreSQL and Redis deployed successfully. Credentials have been displayed.
@@ -336,12 +330,6 @@ spec:
         apiVersion: openshift-pipelines.org/v1alpha1
         kind: ApprovalTask
       params:
-        - name: approvers
-          value:
-            - mjiao
-            - rbhandar
-            - ksatarin
-            - kubeadmin
         - name: description
           value: |
             HCP KubeVirt cluster with PostgreSQL and Redis deployed successfully.
@@ -513,12 +501,6 @@ spec:
         apiVersion: openshift-pipelines.org/v1alpha1
         kind: ApprovalTask
       params:
-        - name: approvers
-          value:
-            - mjiao
-            - rbhandar
-            - ksatarin
-            - kubeadmin
         - name: description
           value: |
             All endpoint tests completed. Please review results.
