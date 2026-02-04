@@ -196,8 +196,8 @@ spec:
         # Build the EIC host URL
         EIC_HOST=""
         if [[ -n "${INGRESS_DOMAIN}" ]]; then
-          # Standard EIC pattern: edge.{ingress-domain}
-          EIC_HOST="edge.${INGRESS_DOMAIN}"
+          # Standard EIC pattern: eic.{ingress-domain}
+          EIC_HOST="eic.${INGRESS_DOMAIN}"
         fi
 
         echo "  EIC Host: ${EIC_HOST:-'Not configured'}"
@@ -221,13 +221,10 @@ spec:
         # Delete existing ConfigMap if present
         oc delete configmap "${CONFIGMAP_NAME}" --ignore-not-found=true
 
-        # Create the ConfigMap
+        # Create the ConfigMap (matching expected format: host + ingressIP only)
         oc create configmap "${CONFIGMAP_NAME}" \
-          --from-literal=host="${EIC_HOST:-edge.apps.${HOSTED_CLUSTER_NAME}.local}" \
-          --from-literal=ingressIP="${INGRESS_IP:-127.0.0.1}" \
-          --from-literal=clusterName="${HOSTED_CLUSTER_NAME}" \
-          --from-literal=clusterNamespace="${HOSTED_CLUSTER_NAMESPACE}" \
-          --from-literal=ingressDomain="${INGRESS_DOMAIN:-apps.${HOSTED_CLUSTER_NAME}.local}"
+          --from-literal=host="${EIC_HOST:-eic.apps.${HOSTED_CLUSTER_NAME}.local}" \
+          --from-literal=ingressIP="${INGRESS_IP:-127.0.0.1}"
 
         echo "✅ ConfigMap created successfully"
         oc get configmap "${CONFIGMAP_NAME}" -o yaml
