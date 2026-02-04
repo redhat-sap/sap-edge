@@ -247,39 +247,9 @@ spec:
         - name: source
           workspace: source
 
-    # Step 9: Manual approval to run endpoint tests
-    - name: approval-run-tests
-      runAfter: [validate-and-create-configmap]
-      taskRef:
-        apiVersion: openshift-pipelines.org/v1alpha1
-        kind: ApprovalTask
-      params:
-        - name: approvers
-          value:
-            - mjiao
-            - rbhandar
-            - ksatarin
-            - kubeadmin
-            - kube:admin
-            - system:admin
-        - name: description
-          value: |
-            HCP KubeVirt cluster with PostgreSQL and Redis deployed successfully.
-
-            Cluster: $(params.hostedClusterName)
-            Namespace: $(params.hostedClusterNamespace)
-            Workers: $(params.nodePoolReplicas) x ($(params.nodePoolCpuCores) vCPU, $(params.nodePoolMemoryGB)GB RAM)
-
-            ✅ APPROVE: Run EIC endpoint tests, then wait for teardown approval
-            ❌ REJECT: Skip tests and proceed directly to teardown
-        - name: numberOfApprovalsRequired
-          value: '1'
-        - name: timeout
-          value: '336h'
-
-    # Step 10: Endpoint Tests (run in parallel after approval)
+    # Step 9: Endpoint Tests (run in parallel after ConfigMap creation)
     - name: test-httpbinipfilter
-      runAfter: [approval-run-tests]
+      runAfter: [validate-and-create-configmap]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -295,7 +265,7 @@ spec:
           workspace: source
 
     - name: test-http-test1
-      runAfter: [approval-run-tests]
+      runAfter: [validate-and-create-configmap]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -311,7 +281,7 @@ spec:
           workspace: source
 
     - name: test-http-testelster
-      runAfter: [approval-run-tests]
+      runAfter: [validate-and-create-configmap]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -327,7 +297,7 @@ spec:
           workspace: source
 
     - name: test-slvredis
-      runAfter: [approval-run-tests]
+      runAfter: [validate-and-create-configmap]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -358,7 +328,7 @@ spec:
         - name: source
           workspace: source
 
-    # Step 11: Update Jira with test results
+    # Step 10: Update Jira with test results
     - name: update-jira-test-results
       runAfter:
         - test-httpbinipfilter
@@ -425,7 +395,7 @@ spec:
 
             Ready for manual teardown approval. The complete HCP infrastructure will be destroyed once approved.
 
-    # Step 12: Manual approval before teardown
+    # Step 11: Manual approval before teardown
     - name: approval-teardown
       runAfter:
         - update-jira-test-results
@@ -454,7 +424,7 @@ spec:
         - name: timeout
           value: '336h'
 
-    # Step 13: Teardown hosted cluster
+    # Step 12: Teardown hosted cluster
     - name: teardown-hosted-cluster
       runAfter: [approval-teardown]
       when:
