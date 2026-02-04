@@ -16,9 +16,9 @@ spec:
   pipelineRef:
     name: aro-edgelm-validation-pipeline
   timeouts:
-    pipeline: "168h"      # Total pipeline timeout (7 days)
-    tasks: "120m"         # Individual task timeout (2 hours)
-    finally: "30m"        # Finally tasks timeout
+    pipeline: "336h"      # Total pipeline timeout (14 days)
+    tasks: "335h"         # Individual task timeout (tasks + finally must be <= pipeline)
+    finally: "60m"        # Finally tasks timeout
   params:
     - name: repoUrl
       value: "{{ repo_url }}"
