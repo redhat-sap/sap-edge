@@ -10,8 +10,8 @@ metadata:
   name: hcp-validate-and-create-configmap
 spec:
   description: >-
-    Validates hosted cluster deployment and creates a ConfigMap with cluster
-    info for endpoint tests (host, ingressIP).
+    Validates hosted cluster deployment after EIC is deployed and creates a ConfigMap
+    with cluster info for endpoint tests (host, ingressIP from istio-ingressgateway LB).
   params:
     - name: hostedClusterName
       type: string
@@ -114,10 +114,9 @@ spec:
         oc get nodes
         oc get clusterversion || echo "ClusterVersion not available yet"
 
-        # Get ingress controller info
-        echo "📋 Getting ingress information..."
+        # Get ingress domain from OpenShift ingress controller
+        echo "📋 Getting ingress domain..."
         INGRESS_DOMAIN=""
-        INGRESS_IP=""
 
         # Try to get ingress domain from ingress controller
         if oc get ingresscontroller default -n openshift-ingress-operator -o json &>/dev/null; then
@@ -135,35 +134,64 @@ spec:
           echo "Ingress Domain (from DNS): ${INGRESS_DOMAIN}"
         fi
 
-        # Get ingress service IP (for NodePort/LoadBalancer scenarios)
-        if oc get svc -n openshift-ingress router-default &>/dev/null; then
-          INGRESS_IP=$(oc get svc -n openshift-ingress router-default \
+        # Get LoadBalancer IP from istio-ingressgateway service
+        # This is populated by MetalLB after EIC application is deployed
+        echo ""
+        echo "📋 Getting LoadBalancer IP from istio-ingressgateway..."
+        INGRESS_IP=""
+
+        # Try istio-system namespace first
+        if oc get svc istio-ingressgateway -n istio-system &>/dev/null; then
+          echo "Found istio-ingressgateway in istio-system namespace"
+          INGRESS_IP=$(oc get svc istio-ingressgateway -n istio-system \
             -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
 
           if [[ -z "${INGRESS_IP}" ]]; then
-            # Try hostname instead
-            INGRESS_HOSTNAME=$(oc get svc -n openshift-ingress router-default \
+            # Try hostname instead (for cloud providers)
+            INGRESS_IP=$(oc get svc istio-ingressgateway -n istio-system \
               -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
-            if [[ -n "${INGRESS_HOSTNAME}" ]]; then
-              INGRESS_IP="${INGRESS_HOSTNAME}"
+          fi
+        fi
+
+        # Try istio-gateways namespace if not found
+        if [[ -z "${INGRESS_IP}" ]] && oc get svc istio-ingressgateway -n istio-gateways &>/dev/null; then
+          echo "Found istio-ingressgateway in istio-gateways namespace"
+          INGRESS_IP=$(oc get svc istio-ingressgateway -n istio-gateways \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+
+          if [[ -z "${INGRESS_IP}" ]]; then
+            INGRESS_IP=$(oc get svc istio-ingressgateway -n istio-gateways \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+          fi
+        fi
+
+        # Fallback: try any service named istio-ingressgateway
+        if [[ -z "${INGRESS_IP}" ]]; then
+          echo "Searching for istio-ingressgateway in all namespaces..."
+          ISTIO_SVC=$(oc get svc --all-namespaces -o json | jq -r '.items[] | select(.metadata.name=="istio-ingressgateway") | "\(.metadata.namespace)"' | head -1)
+          if [[ -n "${ISTIO_SVC}" ]]; then
+            echo "Found istio-ingressgateway in ${ISTIO_SVC} namespace"
+            INGRESS_IP=$(oc get svc istio-ingressgateway -n "${ISTIO_SVC}" \
+              -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+            if [[ -z "${INGRESS_IP}" ]]; then
+              INGRESS_IP=$(oc get svc istio-ingressgateway -n "${ISTIO_SVC}" \
+                -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
             fi
           fi
         fi
 
-        # For KubeVirt hosted clusters, the ingress may be via NodePort
         if [[ -z "${INGRESS_IP}" ]]; then
-          # Get worker node IP as fallback
-          WORKER_NODE=$(oc get nodes -l node-role.kubernetes.io/worker -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "")
-          if [[ -n "${WORKER_NODE}" ]]; then
-            INGRESS_IP="${WORKER_NODE}"
-            echo "Using worker node IP as ingress IP: ${INGRESS_IP}"
-          fi
+          echo "⚠️ WARNING: Could not get LoadBalancer IP from istio-ingressgateway"
+          echo "   Make sure EIC is deployed and MetalLB has assigned an IP"
+          oc get svc --all-namespaces | grep -i istio || echo "No istio services found"
+        else
+          echo "✅ LoadBalancer IP: ${INGRESS_IP}"
         fi
 
         echo ""
         echo "📊 Ingress Configuration:"
         echo "  Domain: ${INGRESS_DOMAIN:-'Not determined'}"
-        echo "  IP: ${INGRESS_IP:-'Not determined'}"
+        echo "  LoadBalancer IP: ${INGRESS_IP:-'Not determined'}"
 
         # Build the EIC host URL
         EIC_HOST=""
@@ -174,10 +202,14 @@ spec:
 
         echo "  EIC Host: ${EIC_HOST:-'Not configured'}"
 
-        # Switch back to hub cluster to create ConfigMap
-        if [[ -n "${HUB_KUBECONFIG_SECRET}" ]] && [[ -f "/workspace/hub-kubeconfig/kubeconfig" ]]; then
-          export KUBECONFIG="/workspace/hub-kubeconfig/kubeconfig"
+        # Switch back to hub cluster (or in-cluster SA) to create ConfigMap
+        if [[ -n "${HUB_KUBECONFIG_SECRET}" ]] && [[ -f "${HUB_KUBECONFIG}" ]]; then
+          echo ""
+          echo "🔄 Switching back to hub cluster..."
+          export KUBECONFIG="${HUB_KUBECONFIG}"
         else
+          echo ""
+          echo "🔄 Switching back to in-cluster service account..."
           unset KUBECONFIG
         fi
 
@@ -211,4 +243,4 @@ spec:
         echo "  Namespace: ${HOSTED_CLUSTER_NAMESPACE}"
         echo "  ConfigMap: ${CONFIGMAP_NAME}"
         echo "  EIC Host: ${EIC_HOST:-Not configured}"
-        echo "  Ingress IP: ${INGRESS_IP:-Not determined}"
+        echo "  LoadBalancer IP (istio-ingressgateway): ${INGRESS_IP:-Not determined}"
