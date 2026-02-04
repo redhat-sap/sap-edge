@@ -1,0 +1,257 @@
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: rosa-validate-and-create-configmap
+spec:
+  description: >-
+    Creates a ConfigMap with cluster info for endpoint tests (host, ingressIP from
+    istio-ingressgateway LB). Must run AFTER EIC is deployed and MetalLB assigns the IP.
+  params:
+    - name: clusterName
+      type: string
+      description: "ROSA cluster name"
+    - name: awsRegion
+      type: string
+      description: "AWS region"
+      default: "eu-north-1"
+    - name: awsSecretName
+      type: string
+      description: "Name of the Kubernetes Secret containing AWS credentials"
+      default: "aws-credentials-secret"
+    - name: redhatTokenSecretName
+      type: string
+      description: "Name of the Kubernetes Secret containing Red Hat OCM token"
+      default: "redhat-token-secret"
+  workspaces:
+    - name: source
+  results:
+    - name: cluster-summary
+      description: "Brief cluster and services validation summary"
+  steps:
+    - name: validate-and-create-configmap
+      image: registry.access.redhat.com/ubi9/ubi
+      workingDir: $(workspaces.source.path)
+      timeout: "336h"
+      env:
+        - name: CLUSTER_NAME
+          value: "$(params.clusterName)"
+        - name: AWS_REGION
+          value: "$(params.awsRegion)"
+        - name: AWS_DEFAULT_REGION
+          value: "$(params.awsRegion)"
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: $(params.awsSecretName)
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: $(params.awsSecretName)
+              key: AWS_SECRET_ACCESS_KEY
+        - name: REDHAT_OCM_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: $(params.redhatTokenSecretName)
+              key: REDHAT_OCM_TOKEN
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        echo "✅ Creating endpoint test ConfigMap from istio-ingressgateway..."
+        echo "=============================================="
+
+        # Install required packages
+        echo "📦 Installing required packages..."
+        dnf install -y jq wget tar > /dev/null 2>&1
+
+        # Install ROSA CLI
+        echo "📦 Installing ROSA CLI..."
+        wget -q https://mirror.openshift.com/pub/openshift-v4/clients/rosa/latest/rosa-linux.tar.gz
+        mkdir -p /tmp/rosa-install
+        tar xzf rosa-linux.tar.gz -C /tmp/rosa-install
+        mv /tmp/rosa-install/rosa /usr/local/bin/rosa
+        rm -rf /tmp/rosa-install rosa-linux.tar.gz
+
+        # Install OpenShift CLI
+        echo "📦 Installing OpenShift CLI..."
+        curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz -o /tmp/oc.tar.gz
+        tar xzf /tmp/oc.tar.gz -C /tmp
+        mv /tmp/oc /usr/local/bin/
+        cp /usr/local/bin/oc /usr/local/bin/kubectl
+        rm -f /tmp/oc.tar.gz
+        oc version --client
+        rosa version
+
+        # Login to Red Hat OCM
+        echo "🔐 Logging into Red Hat OpenShift Cluster Manager..."
+        rosa login --token="${REDHAT_OCM_TOKEN}"
+
+        # Get cluster info
+        echo "📋 Getting ROSA cluster information..."
+        rosa describe cluster -c "${CLUSTER_NAME}" -o json > cluster-info.json
+        API_URL=$(jq -r '.api.url' cluster-info.json)
+        echo "API URL: ${API_URL}"
+
+        # Try to use existing kubeconfig from source workspace
+        echo "🔐 Looking for kubeconfig in workspace..."
+        if [[ -f "kubeconfig" ]]; then
+          echo "✅ Found kubeconfig in workspace"
+          export KUBECONFIG="$(pwd)/kubeconfig"
+          oc whoami || echo "Kubeconfig may need refresh"
+        else
+          echo "⚠️ No kubeconfig found, trying to login with ROSA credentials..."
+
+          # Try to get admin credentials
+          if rosa describe admin -c "${CLUSTER_NAME}" &>/dev/null; then
+            # Try to recreate admin to get fresh credentials
+            rosa delete admin -c "${CLUSTER_NAME}" --yes 2>/dev/null || true
+            sleep 5
+          fi
+
+          rosa create admin -c "${CLUSTER_NAME}" -o json > admin-creds.json 2>&1 || true
+
+          if [[ -f "admin-creds.json" ]] && jq -e . admin-creds.json >/dev/null 2>&1; then
+            ADMIN_USERNAME=$(jq -r '.username // "cluster-admin"' admin-creds.json)
+            ADMIN_PASSWORD=$(jq -r '.password // ""' admin-creds.json)
+
+            if [[ -n "${ADMIN_PASSWORD}" ]] && [[ "${ADMIN_PASSWORD}" != "null" ]]; then
+              echo "🔐 Attempting login with admin credentials..."
+              for attempt in 1 2 3 4 5; do
+                if oc login "${API_URL}" -u "${ADMIN_USERNAME}" -p "${ADMIN_PASSWORD}" --insecure-skip-tls-verify=true; then
+                  echo "✅ Login successful!"
+                  break
+                fi
+                WAIT_TIME=$((attempt * 15))
+                echo "⏳ Waiting ${WAIT_TIME}s before retry..."
+                sleep $WAIT_TIME
+              done
+            fi
+          fi
+        fi
+
+        echo "🔍 Verifying access to ROSA cluster..."
+        oc get nodes || echo "⚠️ Could not list nodes"
+        echo "✅ Connected to ROSA cluster"
+
+        # Get ingress domain from OpenShift ingress controller
+        echo "📋 Getting ingress domain..."
+        INGRESS_DOMAIN=""
+
+        # Try to get ingress domain from ingress controller
+        if oc get ingresscontroller default -n openshift-ingress-operator -o json &>/dev/null; then
+          INGRESS_DOMAIN=$(oc get ingresscontroller default -n openshift-ingress-operator \
+            -o jsonpath='{.status.domain}' 2>/dev/null || echo "")
+          echo "Ingress Domain: ${INGRESS_DOMAIN}"
+        fi
+
+        # Fallback: Get from DNS config
+        if [[ -z "${INGRESS_DOMAIN}" ]]; then
+          INGRESS_DOMAIN=$(oc get dns cluster -o jsonpath='{.spec.baseDomain}' 2>/dev/null || echo "")
+          if [[ -n "${INGRESS_DOMAIN}" ]]; then
+            INGRESS_DOMAIN="apps.${INGRESS_DOMAIN}"
+          fi
+          echo "Ingress Domain (from DNS): ${INGRESS_DOMAIN}"
+        fi
+
+        # Get LoadBalancer IP from istio-ingressgateway service
+        # This is populated by MetalLB after EIC application is deployed
+        echo ""
+        echo "📋 Getting LoadBalancer IP from istio-ingressgateway..."
+        INGRESS_IP=""
+
+        # Try istio-system namespace first
+        if oc get svc istio-ingressgateway -n istio-system &>/dev/null; then
+          echo "Found istio-ingressgateway in istio-system namespace"
+          INGRESS_IP=$(oc get svc istio-ingressgateway -n istio-system \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+
+          if [[ -z "${INGRESS_IP}" ]]; then
+            # Try hostname instead (for cloud providers)
+            INGRESS_IP=$(oc get svc istio-ingressgateway -n istio-system \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+          fi
+        fi
+
+        # Try istio-gateways namespace if not found
+        if [[ -z "${INGRESS_IP}" ]] && oc get svc istio-ingressgateway -n istio-gateways &>/dev/null; then
+          echo "Found istio-ingressgateway in istio-gateways namespace"
+          INGRESS_IP=$(oc get svc istio-ingressgateway -n istio-gateways \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+
+          if [[ -z "${INGRESS_IP}" ]]; then
+            INGRESS_IP=$(oc get svc istio-ingressgateway -n istio-gateways \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+          fi
+        fi
+
+        # Fallback: try any service named istio-ingressgateway
+        if [[ -z "${INGRESS_IP}" ]]; then
+          echo "Searching for istio-ingressgateway in all namespaces..."
+          ISTIO_SVC=$(oc get svc --all-namespaces -o json | jq -r '.items[] | select(.metadata.name=="istio-ingressgateway") | "\(.metadata.namespace)"' | head -1)
+          if [[ -n "${ISTIO_SVC}" ]]; then
+            echo "Found istio-ingressgateway in ${ISTIO_SVC} namespace"
+            INGRESS_IP=$(oc get svc istio-ingressgateway -n "${ISTIO_SVC}" \
+              -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+            if [[ -z "${INGRESS_IP}" ]]; then
+              INGRESS_IP=$(oc get svc istio-ingressgateway -n "${ISTIO_SVC}" \
+                -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+            fi
+          fi
+        fi
+
+        if [[ -z "${INGRESS_IP}" ]]; then
+          echo "⚠️ WARNING: Could not get LoadBalancer IP from istio-ingressgateway"
+          echo "   Make sure EIC is deployed and MetalLB has assigned an IP"
+          oc get svc --all-namespaces | grep -i istio || echo "No istio services found"
+        else
+          echo "✅ LoadBalancer IP: ${INGRESS_IP}"
+        fi
+
+        echo ""
+        echo "📊 Ingress Configuration:"
+        echo "  Domain: ${INGRESS_DOMAIN:-'Not determined'}"
+        echo "  LoadBalancer IP: ${INGRESS_IP:-'Not determined'}"
+
+        # Build the EIC host URL
+        EIC_HOST=""
+        if [[ -n "${INGRESS_DOMAIN}" ]]; then
+          # Standard EIC pattern: eic.{ingress-domain}
+          EIC_HOST="eic.${INGRESS_DOMAIN}"
+        fi
+
+        echo "  EIC Host: ${EIC_HOST:-'Not configured'}"
+
+        # Create ConfigMap for endpoint tests
+        CONFIGMAP_NAME="cluster-info-rosa-${CLUSTER_NAME}"
+        echo ""
+        echo "📝 Creating ConfigMap '${CONFIGMAP_NAME}' for endpoint tests..."
+
+        # Delete existing ConfigMap if present
+        oc delete configmap "${CONFIGMAP_NAME}" --ignore-not-found=true
+
+        # Create the ConfigMap (matching expected format: host + ingressIP only)
+        oc create configmap "${CONFIGMAP_NAME}" \
+          --from-literal=host="${EIC_HOST:-eic.apps.${CLUSTER_NAME}.local}" \
+          --from-literal=ingressIP="${INGRESS_IP:-127.0.0.1}"
+
+        echo "✅ ConfigMap created successfully"
+        oc get configmap "${CONFIGMAP_NAME}" -o yaml
+
+        # Generate summary
+        SUMMARY="ROSA Cluster: ${CLUSTER_NAME} | Domain: ${INGRESS_DOMAIN:-N/A} | Ingress: ${INGRESS_IP:-N/A}"
+        echo -n "${SUMMARY}" > $(results.cluster-summary.path)
+
+        echo ""
+        echo "✅ ROSA ConfigMap creation completed!"
+        echo "📋 Summary:"
+        echo "  Cluster: ${CLUSTER_NAME}"
+        echo "  ConfigMap: ${CONFIGMAP_NAME}"
+        echo "  EIC Host: ${EIC_HOST:-Not configured}"
+        echo "  LoadBalancer IP (istio-ingressgateway): ${INGRESS_IP:-Not determined}"

@@ -174,8 +174,9 @@ spec:
         - name: source
           workspace: source
 
-    # Single approval gate - Approve to run tests, Reject to skip tests and teardown
-    - name: approval-run-tests
+    # Manual approval gate for EIC deployment
+    # After Quay is deployed, pause for manual EIC application deployment
+    - name: approval-eic-deployment
       runAfter: [deploy-quay]
       taskRef:
         apiVersion: openshift-pipelines.org/v1alpha1
@@ -186,10 +187,59 @@ spec:
             - mjiao
             - rbhandar
             - ksatarin
+            - kubeadmin
+            - kube:admin
+            - system:admin
         - name: description
           value: |
             ROSA cluster, AWS services (RDS PostgreSQL, ElastiCache Redis, S3), and Quay registry are deployed.
-            
+
+            🔧 Please deploy the EIC application manually now.
+
+            After EIC is deployed and istio-ingressgateway has a LoadBalancer IP assigned:
+            ✅ APPROVE: Continue to create ConfigMap and run endpoint tests
+            ❌ REJECT: Skip tests and proceed to teardown
+        - name: numberOfApprovalsRequired
+          value: '1'
+        - name: timeout
+          value: '336h'
+
+    # Create ConfigMap with istio-ingressgateway LoadBalancer IP (after EIC is deployed)
+    - name: validate-and-create-configmap
+      runAfter: [approval-eic-deployment]
+      taskRef: { name: rosa-validate-and-create-configmap }
+      params:
+        - name: clusterName
+          value: $(params.clusterName)
+        - name: awsRegion
+          value: $(params.awsRegion)
+        - name: awsSecretName
+          value: $(params.awsSecretName)
+        - name: redhatTokenSecretName
+          value: $(params.redhatTokenSecretName)
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Approval gate to run endpoint tests
+    - name: approval-run-tests
+      runAfter: [validate-and-create-configmap]
+      taskRef:
+        apiVersion: openshift-pipelines.org/v1alpha1
+        kind: ApprovalTask
+      params:
+        - name: approvers
+          value:
+            - mjiao
+            - rbhandar
+            - ksatarin
+            - kubeadmin
+            - kube:admin
+            - system:admin
+        - name: description
+          value: |
+            EIC is deployed and ConfigMap is created with istio-ingressgateway LoadBalancer IP.
+
             ✅ APPROVE: Run EIC endpoint tests, then wait for teardown approval
             ❌ REJECT: Skip tests and proceed directly to teardown
         - name: numberOfApprovalsRequired
@@ -353,10 +403,13 @@ spec:
             - mjiao
             - rbhandar
             - ksatarin
+            - kubeadmin
+            - kube:admin
+            - system:admin
         - name: description
           value: |
-            All endpoint tests completed. Please review results. 
-            
+            All endpoint tests completed. Please review results.
+
             ✅ APPROVE: Tear down ROSA cluster and AWS resources
             ❌ REJECT: Keep cluster running (will timeout after 336h and teardown anyway)
         - name: numberOfApprovalsRequired
