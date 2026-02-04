@@ -60,44 +60,59 @@ spec:
         echo "📦 Installing required packages..."
         dnf install -y jq wget &>/dev/null
 
-        # Install OpenShift CLI if not present
-        if ! command -v oc &> /dev/null; then
-          echo "📦 Installing OpenShift CLI..."
-          wget -q https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz
-          mkdir -p /tmp/oc-install
-          tar xzf openshift-client-linux.tar.gz -C /tmp/oc-install
-          mv /tmp/oc-install/oc /tmp/oc-install/kubectl /usr/local/bin/
-          rm -rf /tmp/oc-install openshift-client-linux.tar.gz
+        # Install OpenShift CLI
+        echo "📦 Installing OpenShift CLI..."
+        curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz -o /tmp/oc.tar.gz
+        tar xzf /tmp/oc.tar.gz -C /tmp
+        mv /tmp/oc /usr/local/bin/
+        cp /usr/local/bin/oc /usr/local/bin/kubectl
+        rm -f /tmp/oc.tar.gz
+        oc version --client
+
+        # Configure hub cluster kubeconfig if provided
+        if [[ -n "${HUB_KUBECONFIG_SECRET}" ]]; then
+          echo "🔐 Extracting hub cluster kubeconfig from secret: ${HUB_KUBECONFIG_SECRET}..."
+          HUB_KUBECONFIG="/tmp/hub-kubeconfig"
+          # Try different common key names for kubeconfig in secrets
+          if kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.kubeconfig}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: kubeconfig)"
+          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.config}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: config)"
+          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.value}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: value)"
+          else
+            echo "❌ Failed to extract kubeconfig from secret '${HUB_KUBECONFIG_SECRET}'"
+            echo "   Secret should have kubeconfig data under key 'kubeconfig', 'config', or 'value'"
+            exit 1
+          fi
+          chmod 600 "${HUB_KUBECONFIG}"
+          export KUBECONFIG="${HUB_KUBECONFIG}"
+          echo "✅ Using hub kubeconfig for cluster operations"
+          oc whoami
+        else
+          echo "ℹ️  No hub kubeconfig secret provided, using in-cluster service account"
         fi
 
-        # Set up kubeconfig for hub cluster
-        if [[ -n "${HUB_KUBECONFIG_SECRET}" ]] && [[ -f "/workspace/hub-kubeconfig/kubeconfig" ]]; then
-          echo "📋 Using hub kubeconfig from secret..."
-          export KUBECONFIG="/workspace/hub-kubeconfig/kubeconfig"
-        fi
-
-        # Get hosted cluster kubeconfig
-        echo "🔐 Extracting hosted cluster kubeconfig..."
+        # Extract kubeconfig for hosted cluster
+        echo "🔐 Extracting kubeconfig for hosted cluster..."
         KUBECONFIG_SECRET="${HOSTED_CLUSTER_NAME}-admin-kubeconfig"
 
-        if ! oc get secret "${KUBECONFIG_SECRET}" -n "${HOSTED_CLUSTER_NAMESPACE}" &>/dev/null; then
-          echo "❌ Kubeconfig secret ${KUBECONFIG_SECRET} not found in ${HOSTED_CLUSTER_NAMESPACE}"
+        if ! oc get secret "${KUBECONFIG_SECRET}" -n "${HOSTED_CLUSTER_NAMESPACE}" > /dev/null 2>&1; then
+          echo "❌ Kubeconfig secret '${KUBECONFIG_SECRET}' not found in namespace '${HOSTED_CLUSTER_NAMESPACE}'"
           exit 1
         fi
 
+        HOSTED_KUBECONFIG="/tmp/hosted-kubeconfig"
         oc get secret "${KUBECONFIG_SECRET}" -n "${HOSTED_CLUSTER_NAMESPACE}" \
-          -o jsonpath='{.data.kubeconfig}' | base64 -d > /tmp/hosted-kubeconfig
+          -o jsonpath='{.data.kubeconfig}' | base64 -d > "${HOSTED_KUBECONFIG}"
+        chmod 600 "${HOSTED_KUBECONFIG}"
 
-        # Switch to hosted cluster context
-        export KUBECONFIG="/tmp/hosted-kubeconfig"
+        # Set KUBECONFIG to hosted cluster
+        export KUBECONFIG="${HOSTED_KUBECONFIG}"
 
-        # Verify access
         echo "🔍 Verifying access to hosted cluster..."
-        if ! oc whoami &>/dev/null; then
-          echo "❌ Cannot access hosted cluster"
-          exit 1
-        fi
-        echo "✅ Connected as: $(oc whoami)"
+        oc get nodes
+        echo "✅ Successfully connected to hosted cluster"
         echo ""
 
         # Run the get_all_accesses.sh script if it exists
