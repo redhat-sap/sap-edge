@@ -51,7 +51,7 @@ spec:
   steps:
     - name: deploy-aro-with-eic-services
       image: registry.access.redhat.com/ubi9/ubi
-      timeout: "120m"      # ARO deployment can take up to 2 hours
+      timeout: "336h"      # Extended timeout for validation periods
       workingDir: $(workspaces.source.path)
       env:
         - name: ARO_LOCATION

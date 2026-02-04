@@ -1,0 +1,250 @@
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: hcp-get-all-accesses
+spec:
+  description: >-
+    Retrieves and displays all PostgreSQL and Redis credentials from the hosted
+    cluster after deployment. Also displays the content of generated certificate files.
+  params:
+    - name: hostedClusterName
+      type: string
+      description: "Name of the hosted cluster"
+    - name: hostedClusterNamespace
+      type: string
+      description: "Namespace for HostedCluster resources"
+      default: "clusters"
+    - name: hubKubeconfigSecretName
+      type: string
+      description: "Name of the Secret containing kubeconfig for hub cluster (optional)"
+      default: ""
+  workspaces:
+    - name: source
+  results:
+    - name: postgres-host
+      description: "PostgreSQL host"
+    - name: postgres-port
+      description: "PostgreSQL port"
+    - name: redis-host
+      description: "Redis host"
+    - name: redis-port
+      description: "Redis port"
+  steps:
+    - name: get-all-accesses
+      image: registry.access.redhat.com/ubi9/ubi
+      workingDir: $(workspaces.source.path)
+      timeout: "336h"
+      env:
+        - name: HOSTED_CLUSTER_NAME
+          value: "$(params.hostedClusterName)"
+        - name: HOSTED_CLUSTER_NAMESPACE
+          value: "$(params.hostedClusterNamespace)"
+        - name: HUB_KUBECONFIG_SECRET
+          value: "$(params.hubKubeconfigSecretName)"
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        echo "=============================================="
+        echo "📋 Retrieving All Access Credentials"
+        echo "=============================================="
+        echo ""
+
+        # Install required packages
+        echo "📦 Installing required packages..."
+        dnf install -y jq wget &>/dev/null
+
+        # Install OpenShift CLI if not present
+        if ! command -v oc &> /dev/null; then
+          echo "📦 Installing OpenShift CLI..."
+          wget -q https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz
+          mkdir -p /tmp/oc-install
+          tar xzf openshift-client-linux.tar.gz -C /tmp/oc-install
+          mv /tmp/oc-install/oc /tmp/oc-install/kubectl /usr/local/bin/
+          rm -rf /tmp/oc-install openshift-client-linux.tar.gz
+        fi
+
+        # Set up kubeconfig for hub cluster
+        if [[ -n "${HUB_KUBECONFIG_SECRET}" ]] && [[ -f "/workspace/hub-kubeconfig/kubeconfig" ]]; then
+          echo "📋 Using hub kubeconfig from secret..."
+          export KUBECONFIG="/workspace/hub-kubeconfig/kubeconfig"
+        fi
+
+        # Get hosted cluster kubeconfig
+        echo "🔐 Extracting hosted cluster kubeconfig..."
+        KUBECONFIG_SECRET="${HOSTED_CLUSTER_NAME}-admin-kubeconfig"
+
+        if ! oc get secret "${KUBECONFIG_SECRET}" -n "${HOSTED_CLUSTER_NAMESPACE}" &>/dev/null; then
+          echo "❌ Kubeconfig secret ${KUBECONFIG_SECRET} not found in ${HOSTED_CLUSTER_NAMESPACE}"
+          exit 1
+        fi
+
+        oc get secret "${KUBECONFIG_SECRET}" -n "${HOSTED_CLUSTER_NAMESPACE}" \
+          -o jsonpath='{.data.kubeconfig}' | base64 -d > /tmp/hosted-kubeconfig
+
+        # Switch to hosted cluster context
+        export KUBECONFIG="/tmp/hosted-kubeconfig"
+
+        # Verify access
+        echo "🔍 Verifying access to hosted cluster..."
+        if ! oc whoami &>/dev/null; then
+          echo "❌ Cannot access hosted cluster"
+          exit 1
+        fi
+        echo "✅ Connected as: $(oc whoami)"
+        echo ""
+
+        # Run the get_all_accesses.sh script if it exists
+        GET_ACCESS_SCRIPT="./edge-integration-cell/get_all_accesses.sh"
+
+        if [[ -f "${GET_ACCESS_SCRIPT}" ]]; then
+          echo "🔧 Running get_all_accesses.sh script..."
+          chmod +x "${GET_ACCESS_SCRIPT}"
+
+          # Run the script and capture output
+          "${GET_ACCESS_SCRIPT}" || echo "⚠️ Script completed with warnings"
+
+          echo ""
+          echo "=============================================="
+          echo "📄 Certificate File Contents"
+          echo "=============================================="
+          echo ""
+
+          # Display PostgreSQL TLS certificate if generated
+          if [[ -f "external_postgres_db_tls_root_cert.crt" ]]; then
+            echo "📜 PostgreSQL TLS Root Certificate (external_postgres_db_tls_root_cert.crt):"
+            echo "----------------------------------------------"
+            cat external_postgres_db_tls_root_cert.crt
+            echo ""
+            echo "----------------------------------------------"
+            echo ""
+          fi
+
+          # Display Redis TLS certificate if generated
+          if [[ -f "external_redis_tls_certificate.pem" ]]; then
+            echo "📜 Redis TLS Certificate (external_redis_tls_certificate.pem):"
+            echo "----------------------------------------------"
+            cat external_redis_tls_certificate.pem
+            echo ""
+            echo "----------------------------------------------"
+            echo ""
+          fi
+        else
+          echo "⚠️ get_all_accesses.sh not found, retrieving credentials manually..."
+          echo ""
+
+          # ================== PostgreSQL ==================
+          echo "=====================================Postgres========================================="
+
+          PG_NAMESPACE="sap-eic-external-postgres"
+          PG_SECRET="eic-pguser-eic"
+
+          if oc get secret "${PG_SECRET}" -n "${PG_NAMESPACE}" &>/dev/null; then
+            PG_HOST=$(oc get secret "${PG_SECRET}" -n "${PG_NAMESPACE}" -o jsonpath="{.data.host}" | base64 --decode)
+            PG_PORT=$(oc get secret "${PG_SECRET}" -n "${PG_NAMESPACE}" -o jsonpath="{.data.port}" | base64 --decode)
+            PG_DBNAME=$(oc get secret "${PG_SECRET}" -n "${PG_NAMESPACE}" -o jsonpath="{.data.dbname}" | base64 --decode)
+            PG_USER=$(oc get secret "${PG_SECRET}" -n "${PG_NAMESPACE}" -o jsonpath="{.data.user}" | base64 --decode)
+            PG_PASSWORD=$(oc get secret "${PG_SECRET}" -n "${PG_NAMESPACE}" -o jsonpath="{.data.password}" | base64 --decode)
+
+            echo "External DB Hostname: ${PG_HOST}"
+            echo "External DB Port: ${PG_PORT}"
+            echo "External DB Name: ${PG_DBNAME}"
+            echo "External DB Username: ${PG_USER}"
+            echo "External DB Password: ${PG_PASSWORD}"
+
+            # Save results
+            echo -n "${PG_HOST}" > $(results.postgres-host.path)
+            echo -n "${PG_PORT}" > $(results.postgres-port.path)
+
+            # Get TLS certificate
+            PGO_SECRET="pgo-root-cacert"
+            if oc get secret "${PGO_SECRET}" -n "${PG_NAMESPACE}" &>/dev/null; then
+              ROOT_CRT=$(oc get secret "${PGO_SECRET}" -n "${PG_NAMESPACE}" -o json | jq -r '.data["root.crt"]' | base64 -d)
+              if [[ -n "${ROOT_CRT}" ]]; then
+                echo "${ROOT_CRT}" > external_postgres_db_tls_root_cert.crt
+                echo "External DB TLS Root Certificate saved to external_postgres_db_tls_root_cert.crt"
+                echo ""
+                echo "📜 PostgreSQL TLS Root Certificate content:"
+                echo "----------------------------------------------"
+                cat external_postgres_db_tls_root_cert.crt
+                echo "----------------------------------------------"
+              fi
+            fi
+          else
+            echo "⚠️ PostgreSQL secret not found in ${PG_NAMESPACE}"
+            echo -n "N/A" > $(results.postgres-host.path)
+            echo -n "N/A" > $(results.postgres-port.path)
+          fi
+
+          echo ""
+
+          # ================== Redis ==================
+          echo "======================================Redis==========================================="
+
+          REDIS_NAMESPACE="sap-eic-external-redis"
+          REDIS_DB="redb"
+
+          if oc get RedisEnterpriseDatabase "${REDIS_DB}" -n "${REDIS_NAMESPACE}" &>/dev/null; then
+            REDIS_SECRET=$(oc get RedisEnterpriseDatabase "${REDIS_DB}" -n "${REDIS_NAMESPACE}" -o json | jq -r '.spec.databaseSecretName')
+
+            if [[ -n "${REDIS_SECRET}" ]] && [[ "${REDIS_SECRET}" != "null" ]]; then
+              SECRET_DATA=$(oc get secret "${REDIS_SECRET}" -n "${REDIS_NAMESPACE}" -o json)
+              REDIS_PASSWORD=$(echo "${SECRET_DATA}" | jq -r '.data["password"]' | base64 --decode)
+              REDIS_PORT=$(echo "${SECRET_DATA}" | jq -r '.data["port"]' | base64 --decode)
+              REDIS_SERVICE=$(echo "${SECRET_DATA}" | jq -r '.data["service_name"]' | base64 --decode)
+
+              REDIS_SERVICE_FQDN="${REDIS_SERVICE}.${REDIS_NAMESPACE}.svc"
+              REDIS_SERVER_NAME="rec.${REDIS_NAMESPACE}.svc.cluster.local"
+
+              echo "External Redis Addresses: ${REDIS_SERVICE_FQDN}:${REDIS_PORT}"
+              echo "External Redis Mode: standalone"
+              echo "External Redis Username: [leave me blank]"
+              echo "External Redis Password: ${REDIS_PASSWORD}"
+              echo "External Redis Sentinel Username: [leave me blank]"
+              echo "External Redis Sentinel Password: [leave me blank]"
+              echo "External Redis Server Name: ${REDIS_SERVER_NAME}"
+
+              # Save results
+              echo -n "${REDIS_SERVICE_FQDN}" > $(results.redis-host.path)
+              echo -n "${REDIS_PORT}" > $(results.redis-port.path)
+
+              # Get TLS certificate from Redis pod
+              echo ""
+              echo "🔐 Extracting Redis TLS certificate..."
+              if oc get pod rec-0 -n "${REDIS_NAMESPACE}" &>/dev/null; then
+                oc exec -n "${REDIS_NAMESPACE}" rec-0 -c redis-enterprise-node -- \
+                  cat /etc/opt/redislabs/proxy_cert.pem > external_redis_tls_certificate.pem 2>/dev/null || true
+
+                if [[ -f "external_redis_tls_certificate.pem" ]] && [[ -s "external_redis_tls_certificate.pem" ]]; then
+                  echo "External Redis TLS Certificate saved to external_redis_tls_certificate.pem"
+                  echo ""
+                  echo "📜 Redis TLS Certificate content:"
+                  echo "----------------------------------------------"
+                  cat external_redis_tls_certificate.pem
+                  echo "----------------------------------------------"
+                fi
+              else
+                echo "⚠️ Redis pod rec-0 not found, skipping TLS certificate extraction"
+              fi
+            else
+              echo "⚠️ Redis database secret not found"
+              echo -n "N/A" > $(results.redis-host.path)
+              echo -n "N/A" > $(results.redis-port.path)
+            fi
+          else
+            echo "⚠️ RedisEnterpriseDatabase not found in ${REDIS_NAMESPACE}"
+            echo -n "N/A" > $(results.redis-host.path)
+            echo -n "N/A" > $(results.redis-port.path)
+          fi
+        fi
+
+        echo ""
+        echo "=============================================="
+        echo "✅ All credentials retrieved successfully!"
+        echo "=============================================="

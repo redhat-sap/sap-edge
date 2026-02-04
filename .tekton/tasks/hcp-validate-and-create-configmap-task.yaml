@@ -1,0 +1,202 @@
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: hcp-validate-and-create-configmap
+spec:
+  description: >-
+    Validates hosted cluster deployment and creates a ConfigMap with cluster
+    info for endpoint tests (host, ingressIP).
+  params:
+    - name: hostedClusterName
+      type: string
+      description: "Name of the hosted cluster"
+    - name: hostedClusterNamespace
+      type: string
+      description: "Namespace for HostedCluster resources"
+      default: "clusters"
+    - name: hubKubeconfigSecretName
+      type: string
+      description: "Name of the Secret containing kubeconfig for hub cluster (optional)"
+      default: ""
+  workspaces:
+    - name: source
+  results:
+    - name: cluster-summary
+      description: "Brief cluster and services validation summary"
+  steps:
+    - name: validate-and-create-configmap
+      image: registry.access.redhat.com/ubi9/ubi
+      workingDir: $(workspaces.source.path)
+      timeout: "336h"
+      env:
+        - name: HOSTED_CLUSTER_NAME
+          value: "$(params.hostedClusterName)"
+        - name: HOSTED_CLUSTER_NAMESPACE
+          value: "$(params.hostedClusterNamespace)"
+        - name: HUB_KUBECONFIG_SECRET
+          value: "$(params.hubKubeconfigSecretName)"
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        echo "✅ Validating HCP hosted cluster and creating endpoint test ConfigMap..."
+        echo "=============================================="
+
+        # Install required packages
+        echo "📦 Installing required packages..."
+        dnf install -y jq wget
+
+        # Install OpenShift CLI if not present
+        if ! command -v oc &> /dev/null; then
+          echo "📦 Installing OpenShift CLI..."
+          wget -q https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz
+          mkdir -p /tmp/oc-install
+          tar xzf openshift-client-linux.tar.gz -C /tmp/oc-install
+          mv /tmp/oc-install/oc /tmp/oc-install/kubectl /usr/local/bin/
+          rm -rf /tmp/oc-install openshift-client-linux.tar.gz
+        fi
+
+        oc version --client
+
+        # Set up kubeconfig for hub cluster (where HCP resources are)
+        if [[ -n "${HUB_KUBECONFIG_SECRET}" ]] && [[ -f "/workspace/hub-kubeconfig/kubeconfig" ]]; then
+          echo "📋 Using hub kubeconfig from secret..."
+          export KUBECONFIG="/workspace/hub-kubeconfig/kubeconfig"
+        else
+          echo "📋 Using in-cluster credentials for hub..."
+        fi
+
+        # Get hosted cluster kubeconfig
+        echo "🔐 Extracting hosted cluster kubeconfig..."
+        KUBECONFIG_SECRET="${HOSTED_CLUSTER_NAME}-admin-kubeconfig"
+
+        if ! oc get secret "${KUBECONFIG_SECRET}" -n "${HOSTED_CLUSTER_NAMESPACE}" &>/dev/null; then
+          echo "❌ Kubeconfig secret ${KUBECONFIG_SECRET} not found in ${HOSTED_CLUSTER_NAMESPACE}"
+          exit 1
+        fi
+
+        oc get secret "${KUBECONFIG_SECRET}" -n "${HOSTED_CLUSTER_NAMESPACE}" \
+          -o jsonpath='{.data.kubeconfig}' | base64 -d > /tmp/hosted-kubeconfig
+
+        echo "✅ Hosted cluster kubeconfig extracted"
+
+        # Switch to hosted cluster context
+        export KUBECONFIG="/tmp/hosted-kubeconfig"
+
+        # Verify access to hosted cluster
+        echo "🔍 Verifying access to hosted cluster..."
+        if ! oc whoami &>/dev/null; then
+          echo "❌ Cannot access hosted cluster"
+          exit 1
+        fi
+        echo "✅ Authenticated as: $(oc whoami)"
+
+        # Get cluster info
+        echo "📋 Getting hosted cluster information..."
+        oc get nodes
+        oc get clusterversion || echo "ClusterVersion not available yet"
+
+        # Get ingress controller info
+        echo "📋 Getting ingress information..."
+        INGRESS_DOMAIN=""
+        INGRESS_IP=""
+
+        # Try to get ingress domain from ingress controller
+        if oc get ingresscontroller default -n openshift-ingress-operator -o json &>/dev/null; then
+          INGRESS_DOMAIN=$(oc get ingresscontroller default -n openshift-ingress-operator \
+            -o jsonpath='{.status.domain}' 2>/dev/null || echo "")
+          echo "Ingress Domain: ${INGRESS_DOMAIN}"
+        fi
+
+        # Fallback: Get from DNS config
+        if [[ -z "${INGRESS_DOMAIN}" ]]; then
+          INGRESS_DOMAIN=$(oc get dns cluster -o jsonpath='{.spec.baseDomain}' 2>/dev/null || echo "")
+          if [[ -n "${INGRESS_DOMAIN}" ]]; then
+            INGRESS_DOMAIN="apps.${INGRESS_DOMAIN}"
+          fi
+          echo "Ingress Domain (from DNS): ${INGRESS_DOMAIN}"
+        fi
+
+        # Get ingress service IP (for NodePort/LoadBalancer scenarios)
+        if oc get svc -n openshift-ingress router-default &>/dev/null; then
+          INGRESS_IP=$(oc get svc -n openshift-ingress router-default \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+
+          if [[ -z "${INGRESS_IP}" ]]; then
+            # Try hostname instead
+            INGRESS_HOSTNAME=$(oc get svc -n openshift-ingress router-default \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+            if [[ -n "${INGRESS_HOSTNAME}" ]]; then
+              INGRESS_IP="${INGRESS_HOSTNAME}"
+            fi
+          fi
+        fi
+
+        # For KubeVirt hosted clusters, the ingress may be via NodePort
+        if [[ -z "${INGRESS_IP}" ]]; then
+          # Get worker node IP as fallback
+          WORKER_NODE=$(oc get nodes -l node-role.kubernetes.io/worker -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "")
+          if [[ -n "${WORKER_NODE}" ]]; then
+            INGRESS_IP="${WORKER_NODE}"
+            echo "Using worker node IP as ingress IP: ${INGRESS_IP}"
+          fi
+        fi
+
+        echo ""
+        echo "📊 Ingress Configuration:"
+        echo "  Domain: ${INGRESS_DOMAIN:-'Not determined'}"
+        echo "  IP: ${INGRESS_IP:-'Not determined'}"
+
+        # Build the EIC host URL
+        EIC_HOST=""
+        if [[ -n "${INGRESS_DOMAIN}" ]]; then
+          # Standard EIC pattern: edge.{ingress-domain}
+          EIC_HOST="edge.${INGRESS_DOMAIN}"
+        fi
+
+        echo "  EIC Host: ${EIC_HOST:-'Not configured'}"
+
+        # Switch back to hub cluster to create ConfigMap
+        if [[ -n "${HUB_KUBECONFIG_SECRET}" ]] && [[ -f "/workspace/hub-kubeconfig/kubeconfig" ]]; then
+          export KUBECONFIG="/workspace/hub-kubeconfig/kubeconfig"
+        else
+          unset KUBECONFIG
+        fi
+
+        # Create ConfigMap for endpoint tests
+        CONFIGMAP_NAME="cluster-info-hcp-${HOSTED_CLUSTER_NAME}"
+        echo ""
+        echo "📝 Creating ConfigMap '${CONFIGMAP_NAME}' for endpoint tests..."
+
+        # Delete existing ConfigMap if present
+        oc delete configmap "${CONFIGMAP_NAME}" --ignore-not-found=true
+
+        # Create the ConfigMap
+        oc create configmap "${CONFIGMAP_NAME}" \
+          --from-literal=host="${EIC_HOST:-edge.apps.${HOSTED_CLUSTER_NAME}.local}" \
+          --from-literal=ingressIP="${INGRESS_IP:-127.0.0.1}" \
+          --from-literal=clusterName="${HOSTED_CLUSTER_NAME}" \
+          --from-literal=clusterNamespace="${HOSTED_CLUSTER_NAMESPACE}" \
+          --from-literal=ingressDomain="${INGRESS_DOMAIN:-apps.${HOSTED_CLUSTER_NAME}.local}"
+
+        echo "✅ ConfigMap created successfully"
+        oc get configmap "${CONFIGMAP_NAME}" -o yaml
+
+        # Generate summary
+        SUMMARY="HCP Cluster: ${HOSTED_CLUSTER_NAME} | Domain: ${INGRESS_DOMAIN:-N/A} | Ingress: ${INGRESS_IP:-N/A}"
+        echo -n "${SUMMARY}" > $(results.cluster-summary.path)
+
+        echo ""
+        echo "✅ HCP validation completed!"
+        echo "📋 Summary:"
+        echo "  Hosted Cluster: ${HOSTED_CLUSTER_NAME}"
+        echo "  Namespace: ${HOSTED_CLUSTER_NAMESPACE}"
+        echo "  ConfigMap: ${CONFIGMAP_NAME}"
+        echo "  EIC Host: ${EIC_HOST:-Not configured}"
+        echo "  Ingress IP: ${INGRESS_IP:-Not determined}"

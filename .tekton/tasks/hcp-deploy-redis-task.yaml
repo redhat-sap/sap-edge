@@ -46,7 +46,7 @@ spec:
   steps:
     - name: deploy-redis
       image: registry.access.redhat.com/ubi9/ubi
-      timeout: "30m"
+      timeout: "336h"
       workingDir: $(workspaces.source.path)
       script: |
         #!/usr/bin/env bash

@@ -39,7 +39,7 @@ spec:
   steps:
     - name: teardown-rosa
       image: registry.access.redhat.com/ubi9/ubi
-      timeout: "60m"
+      timeout: "336h"
       workingDir: $(workspaces.source.path)
       env:
         - name: CLUSTER_NAME

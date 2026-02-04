@@ -163,7 +163,7 @@ spec:
         - name: numberOfApprovalsRequired
           value: '1'
         - name: timeout
-          value: '168h'
+          value: '336h'
 
     - name: test-httpbinipfilter
       runAfter: [approval-run-tests]
@@ -326,11 +326,11 @@ spec:
             All endpoint tests completed. Please review results.
             
             ✅ APPROVE: Tear down ARO cluster and Azure resources
-            ❌ REJECT: Keep cluster running (will timeout after 168h and teardown anyway)
+            ❌ REJECT: Keep cluster running (will timeout after 336h and teardown anyway)
         - name: numberOfApprovalsRequired
           value: '1'
         - name: timeout
-          value: '168h'
+          value: '336h'
 
     # Teardown after approval
     - name: teardown-aro

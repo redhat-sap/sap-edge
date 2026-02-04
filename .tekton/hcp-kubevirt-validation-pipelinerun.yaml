@@ -16,9 +16,9 @@ spec:
   pipelineRef:
     name: hcp-kubevirt-validation-pipeline
   timeouts:
-    pipeline: "168h"      # Total pipeline timeout (7 days)
-    tasks: "120m"         # Individual task timeout (2 hours)
-    finally: "30m"        # Finally tasks timeout
+    pipeline: "336h"      # Total pipeline timeout (14 days)
+    tasks: "336h"         # Individual task timeout (14 days)
+    finally: "60m"        # Finally tasks timeout
   params:
     - name: repoUrl
       value: "{{ repo_url }}"
@@ -46,8 +46,12 @@ spec:
       value: "v15"
     - name: redisClusterType
       value: "standard"
+    - name: eicAuthSecretName
+      value: "eic-auth-secret"
+    - name: publicDNS
+      value: "false"
     - name: jiraSecretName
-      value: ""
+      value: "jira-secret-mj"
     - name: jiraIssueKey
       value: ""
     - name: skipTeardown

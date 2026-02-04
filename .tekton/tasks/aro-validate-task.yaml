@@ -29,7 +29,7 @@ spec:
   steps:
     - name: validate-and-get-access
       image: registry.access.redhat.com/ubi9/ubi
-      timeout: "30m"       # Validation should be quick
+      timeout: "336h"      # Extended timeout for validation periods
       workingDir: $(workspaces.source.path)
       env:
         - name: ARO_CLUSTER_NAME

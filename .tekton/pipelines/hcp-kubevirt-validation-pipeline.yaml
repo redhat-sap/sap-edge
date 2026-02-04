@@ -9,7 +9,7 @@ kind: Pipeline
 metadata:
   name: hcp-kubevirt-validation-pipeline
   annotations:
-    description: "HCP KubeVirt validation pipeline: creates hosted cluster with MCE/HyperShift on KubeVirt, deploys PostgreSQL and Redis, and validates deployment"
+    description: "Complete SAP Edge Integration Cell validation pipeline for HCP KubeVirt: creates hosted cluster with MCE/HyperShift on KubeVirt, deploys PostgreSQL and Redis, runs comprehensive endpoint tests, and tears down infrastructure"
 spec:
   params:
     - name: repoUrl
@@ -62,6 +62,13 @@ spec:
       type: string
       description: "Redis cluster type (standard/ha)"
       default: "standard"
+    - name: eicAuthSecretName
+      type: string
+      description: "EIC authentication secret name for endpoint tests"
+    - name: publicDNS
+      type: string
+      description: "Use public DNS for endpoint tests"
+      default: "false"
     - name: jiraSecretName
       type: string
       description: "Name of the Kubernetes Secret containing Jira credentials"
@@ -133,7 +140,7 @@ spec:
         - name: hostedClusterNamespace
           value: $(params.hostedClusterNamespace)
         - name: timeoutMinutes
-          value: "45"
+          value: "90"
         - name: hubKubeconfigSecretName
           value: $(params.hubKubeconfigSecretName)
       workspaces:
@@ -174,9 +181,39 @@ spec:
         - name: source
           workspace: source
 
-    # Step 6: Update Jira with deployment status
-    - name: update-jira-deployment-status
+    # Step 6: Get all credentials and display them
+    - name: get-all-accesses
       runAfter: [deploy-postgres, deploy-redis]
+      taskRef: { name: hcp-get-all-accesses }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 7: Validate and create ConfigMap for endpoint tests
+    - name: validate-and-create-configmap
+      runAfter: [get-all-accesses]
+      taskRef: { name: hcp-validate-and-create-configmap }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 8: Update Jira with deployment status
+    - name: update-jira-deployment-status
+      runAfter: [validate-and-create-configmap]
       when:
         - input: "$(params.jiraIssueKey)"
           operator: notin
@@ -200,16 +237,18 @@ spec:
             * *Root Disk:* $(params.rootDiskSizeGB)GB per node
 
             *Deployment Status:*
-            * Repository cloned: OK
-            * HostedCluster created: OK
-            * NodePool created: OK
-            * Cluster available: OK
-            * PostgreSQL $(params.postgresVersion) deployed: OK
-            * Redis $(params.redisClusterType) deployed: OK
+            * Repository cloned: ✅
+            * HostedCluster created: ✅
+            * NodePool created: ✅
+            * Cluster available: ✅
+            * PostgreSQL $(params.postgresVersion) deployed: ✅
+            * Redis $(params.redisClusterType) deployed: ✅
+            * Credentials retrieved and displayed: ✅
+            * Endpoint test ConfigMap created: ✅
 
             *Infrastructure:*
             * MCE Hosted Control Plane with KubeVirt
-            * 3 KubeVirt worker VMs
+            * $(params.nodePoolReplicas) KubeVirt worker VMs
             * Crunchy PostgreSQL Operator
             * Redis Enterprise Operator
 
@@ -217,11 +256,11 @@ spec:
             * *Repository:* $(params.repoUrl)
             * *Revision:* $(params.revision)
 
-            Waiting for validation approval...
+            Waiting for approval to run endpoint tests...
 
-    # Step 7: Manual approval after deployment
-    - name: manual-approval-post-deployment
-      runAfter: [deploy-postgres, deploy-redis]
+    # Step 9: Manual approval to run endpoint tests
+    - name: approval-run-tests
+      runAfter: [validate-and-create-configmap]
       taskRef:
         apiVersion: openshift-pipelines.org/v1alpha1
         kind: ApprovalTask
@@ -239,15 +278,165 @@ spec:
             Namespace: $(params.hostedClusterNamespace)
             Workers: $(params.nodePoolReplicas) x ($(params.nodePoolCpuCores) vCPU, $(params.nodePoolMemoryGB)GB RAM)
 
-            Approve to proceed with final validation or teardown.
+            ✅ APPROVE: Run EIC endpoint tests, then wait for teardown approval
+            ❌ REJECT: Skip tests and proceed directly to teardown
         - name: numberOfApprovalsRequired
           value: '1'
         - name: timeout
-          value: '168h'
+          value: '336h'
 
-    # Step 8: Final approval before teardown
-    - name: manual-approval-final
-      runAfter: [manual-approval-post-deployment]
+    # Step 10: Endpoint Tests (run in parallel after approval)
+    - name: test-httpbinipfilter
+      runAfter: [approval-run-tests]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /httpbinipfilter
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: test-http-test1
+      runAfter: [approval-run-tests]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /http/test1
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: test-http-testelster
+      runAfter: [approval-run-tests]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /http/testelster
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: test-slvredis
+      runAfter: [approval-run-tests]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /slvredis
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: test-ratelimit-slvredis
+      runAfter: [test-slvredis]
+      taskRef: { name: rate-limit-test }
+      params:
+        - name: endpointPath
+          value: /slvredis
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 11: Update Jira with test results
+    - name: update-jira-test-results
+      runAfter:
+        - test-httpbinipfilter
+        - test-http-test1
+        - test-http-testelster
+        - test-slvredis
+        - test-ratelimit-slvredis
+      when:
+        - input: "$(params.jiraIssueKey)"
+          operator: notin
+          values: [""]
+      taskRef:
+        name: jira-add-comment-custom
+      params:
+        - name: jiraSecretName
+          value: $(params.jiraSecretName)
+        - name: jiraIssueKey
+          value: $(params.jiraIssueKey)
+        - name: comment
+          value: |
+            h2. ✅ Complete EIC Validation Pipeline Completed (HCP KubeVirt)
+
+            HCP KubeVirt cluster with full EIC infrastructure and all automated endpoint tests completed successfully.
+
+            *Infrastructure Configuration:*
+            * *Cluster Name:* $(params.hostedClusterName)
+            * *Namespace:* $(params.hostedClusterNamespace)
+            * *Release Image:* $(params.releaseImage)
+            * *Worker Nodes:* $(params.nodePoolReplicas) x ($(params.nodePoolCpuCores) vCPU, $(params.nodePoolMemoryGB)GB RAM)
+            * *PostgreSQL:* $(params.postgresVersion) (Crunchy Operator)
+            * *Redis:* $(params.redisClusterType) (Redis Enterprise Operator)
+
+            *Pipeline Status:*
+            * Repository cloned: ✅
+            * HostedCluster deployment: ✅ Completed
+            * PostgreSQL deployment: ✅ Completed
+            * Redis deployment: ✅ Completed
+            * Validation and ConfigMap setup: ✅ Completed
+            * Endpoint tests: ✅ All Passed
+
+            *Pipeline Details:*
+            * *Repository:* $(params.repoUrl)
+            * *Revision:* $(params.revision)
+            * *Public DNS:* $(params.publicDNS)
+
+            *Executed Tests:*
+            * test-httpbinipfilter ✅
+            * test-http-test1 ✅
+            * test-http-testelster ✅
+            * test-slvredis ✅
+            * test-ratelimit-slvredis ✅
+
+            *Infrastructure Components:*
+            * MCE Hosted Control Plane with KubeVirt ✅
+            * $(params.nodePoolReplicas) KubeVirt worker VMs ✅
+            * Crunchy PostgreSQL Operator ✅
+            * Redis Enterprise Operator ✅
+            * All EIC endpoints validated ✅
+
+            *Security:*
+            * PostgreSQL: In-cluster with operator-managed credentials
+            * Redis: In-cluster with operator-managed credentials
+            * Hosted cluster: Isolated control plane on hub cluster
+
+            Ready for manual teardown approval. The complete HCP infrastructure will be destroyed once approved.
+
+    # Step 12: Manual approval before teardown
+    - name: approval-teardown
+      runAfter:
+        - update-jira-test-results
       taskRef:
         apiVersion: openshift-pipelines.org/v1alpha1
         kind: ApprovalTask
@@ -259,20 +448,20 @@ spec:
             - ksatarin
         - name: description
           value: |
-            HCP KubeVirt validation phase completed.
+            All endpoint tests completed. Please review results.
 
             Cluster: $(params.hostedClusterName)
 
-            Approve to proceed with cluster teardown.
-            Reject to keep the cluster running (you can manually delete later).
+            ✅ APPROVE: Tear down HCP cluster and all resources
+            ❌ REJECT: Keep cluster running (will timeout after 336h and teardown anyway)
         - name: numberOfApprovalsRequired
           value: '1'
         - name: timeout
-          value: '168h'
+          value: '336h'
 
-    # Step 9: Teardown hosted cluster
+    # Step 13: Teardown hosted cluster
     - name: teardown-hosted-cluster
-      runAfter: [manual-approval-final]
+      runAfter: [approval-teardown]
       when:
         - input: "$(params.skipTeardown)"
           operator: in
@@ -319,6 +508,14 @@ spec:
             * Worker Nodes: $(params.nodePoolReplicas) x ($(params.nodePoolCpuCores) vCPU, $(params.nodePoolMemoryGB)GB RAM)
             * PostgreSQL Version: $(params.postgresVersion)
             * Redis Cluster Type: $(params.redisClusterType)
+            * Public DNS: $(params.publicDNS)
+
+            *Endpoint Tests Executed:*
+            * test-httpbinipfilter
+            * test-http-test1
+            * test-http-testelster
+            * test-slvredis
+            * test-ratelimit-slvredis
 
             Pipeline execution completed.
 

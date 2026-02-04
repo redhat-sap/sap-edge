@@ -22,7 +22,7 @@ spec:
   steps:
     - name: teardown-aro
       image: registry.access.redhat.com/ubi9/ubi
-      timeout: "60m"       # Teardown can take time
+      timeout: "336h"      # Extended timeout for validation periods
       workingDir: $(workspaces.source.path)
       env:
         - name: ARO_CLUSTER_NAME

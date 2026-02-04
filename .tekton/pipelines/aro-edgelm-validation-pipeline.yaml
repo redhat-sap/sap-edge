@@ -116,7 +116,7 @@ spec:
         - name: numberOfApprovalsRequired
           value: '1'
         - name: timeout
-          value: '168h'
+          value: '336h'
 
     - name: check-edgelm-pods
       runAfter: [manual-approval-post-deployment]
@@ -191,7 +191,7 @@ spec:
         - name: numberOfApprovalsRequired
           value: '1'
         - name: timeout
-          value: '168h'
+          value: '336h'
 
     - name: final-status-report
       runAfter: [manual-approval-final]
