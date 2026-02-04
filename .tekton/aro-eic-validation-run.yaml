@@ -17,7 +17,7 @@ spec:
     name: aro-eic-full-test-pipeline
   timeouts:
     pipeline: "336h"      # Total pipeline timeout (14 days)
-    tasks: "336h"         # Individual task timeout (14 days)
+    tasks: "335h"         # Individual task timeout (tasks + finally must be <= pipeline)
     finally: "60m"        # Finally tasks timeout
   params:
     - name: repoUrl
