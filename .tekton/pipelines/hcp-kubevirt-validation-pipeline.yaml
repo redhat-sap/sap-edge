@@ -244,6 +244,7 @@ spec:
             - mjiao
             - rbhandar
             - ksatarin
+            - kubeadmin
         - name: description
           value: |
             PostgreSQL and Redis deployed successfully. Credentials have been displayed.
@@ -340,6 +341,7 @@ spec:
             - mjiao
             - rbhandar
             - ksatarin
+            - kubeadmin
         - name: description
           value: |
             HCP KubeVirt cluster with PostgreSQL and Redis deployed successfully.
@@ -516,6 +518,7 @@ spec:
             - mjiao
             - rbhandar
             - ksatarin
+            - kubeadmin
         - name: description
           value: |
             All endpoint tests completed. Please review results.
