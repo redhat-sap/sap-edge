@@ -100,8 +100,11 @@ spec:
         dnf install -y jq > /dev/null 2>&1
 
         echo "📦 Installing OpenShift CLI..."
-        curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz | tar xz
-        mv oc kubectl /usr/local/bin/
+        curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz -o /tmp/oc.tar.gz
+        tar xzf /tmp/oc.tar.gz -C /tmp
+        mv /tmp/oc /usr/local/bin/
+        cp /usr/local/bin/oc /usr/local/bin/kubectl
+        rm -f /tmp/oc.tar.gz
         oc version --client
 
         # Extract pull secret data BEFORE switching kubeconfig (using in-cluster SA)
