@@ -27,7 +27,7 @@ spec:
     - name: aroLocation
       value: "northeurope"
     - name: aroClusterName
-      value: "sapedgelm"
+      value: "sap-eic-validation"
     - name: aroVersion
       value: "4.17.27"
     - name: azureSecretName
