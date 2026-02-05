@@ -49,6 +49,10 @@ spec:
       type: string
       description: "S3 bucket name for Terraform state storage"
       default: "eic-test-rosa-terraform-state"
+    - name: terraformStateS3Key
+      type: string
+      description: "S3 key for Terraform state file (auto-generated as rosa/${CLUSTER_NAME}/terraform.tfstate)"
+      default: "rosa/terraform.tfstate"
     - name: terraformStateDynamoDBTable
       type: string
       description: "DynamoDB table for Terraform state locking"
@@ -89,6 +93,12 @@ spec:
           value: "false"
         - name: deployQuay
           value: "true"
+        - name: terraformStateS3Bucket
+          value: $(params.terraformStateS3Bucket)
+        - name: terraformStateS3Key
+          value: $(params.terraformStateS3Key)
+        - name: terraformStateDynamoDBTable
+          value: $(params.terraformStateDynamoDBTable)
       workspaces:
         - name: source
           workspace: source
