@@ -1,0 +1,222 @@
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: rosa-edgelm-pod-status-check
+spec:
+  description: Check if all pods in edgelm namespace are running correctly on ROSA cluster
+  params:
+    - name: clusterName
+      type: string
+      description: "ROSA cluster name"
+    - name: awsSecretName
+      type: string
+      description: "Name of the Kubernetes Secret containing AWS credentials"
+      default: "aws-credentials-secret"
+    - name: redhatTokenSecretName
+      type: string
+      description: "Name of the Kubernetes Secret containing Red Hat OCM token"
+      default: "redhat-token-secret"
+    - name: namespace
+      type: string
+      description: "Namespace to check pod status"
+      default: "edgelm"
+    - name: expectedPodCount
+      type: string
+      description: "Expected minimum number of pods"
+      default: "3"
+    - name: timeoutMinutes
+      type: string
+      description: "Timeout in minutes to wait for pods to be ready"
+      default: "15"
+  workspaces:
+    - name: source
+  steps:
+    - name: check-pods
+      image: registry.access.redhat.com/ubi9/ubi
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: CLUSTER_NAME
+          value: "$(params.clusterName)"
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: $(params.awsSecretName)
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: $(params.awsSecretName)
+              key: AWS_SECRET_ACCESS_KEY
+        - name: REDHAT_OCM_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: $(params.redhatTokenSecretName)
+              key: REDHAT_OCM_TOKEN
+        - name: NAMESPACE
+          value: $(params.namespace)
+        - name: EXPECTED_POD_COUNT
+          value: $(params.expectedPodCount)
+        - name: TIMEOUT_MINUTES
+          value: $(params.timeoutMinutes)
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        echo "🔍 Starting pod status check in namespace: ${NAMESPACE} on ROSA cluster: ${CLUSTER_NAME}"
+
+        # Install required tools
+        echo "📦 Installing required tools..."
+        dnf install -y jq tar gzip
+
+        # Install ROSA CLI
+        echo "📦 Installing ROSA CLI..."
+        curl -L https://mirror.openshift.com/pub/openshift-v4/clients/rosa/latest/rosa-linux.tar.gz | tar xz
+        mv rosa /usr/local/bin/
+        rosa version
+
+        # Install OpenShift CLI
+        echo "📦 Installing OpenShift CLI..."
+        curl -L https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz | tar xz
+        mv oc kubectl /usr/local/bin/
+
+        # Login to ROSA
+        echo "🔐 Logging into ROSA..."
+        rosa login --token="${REDHAT_OCM_TOKEN}"
+
+        # Get cluster admin credentials
+        echo "🔐 Getting ROSA cluster admin credentials..."
+        API_URL=$(rosa describe cluster -c "${CLUSTER_NAME}" -o json | jq -r '.api.url')
+
+        # Create admin user if not exists and get credentials
+        echo "🔑 Creating/getting cluster admin credentials..."
+        rosa create admin -c "${CLUSTER_NAME}" --yes 2>/dev/null || true
+        sleep 10
+
+        # Get admin credentials
+        ADMIN_CREDS=$(rosa describe admin -c "${CLUSTER_NAME}" -o json 2>/dev/null || echo '{}')
+        ADMIN_USER=$(echo "$ADMIN_CREDS" | jq -r '.username // "cluster-admin"')
+        ADMIN_PASS=$(echo "$ADMIN_CREDS" | jq -r '.password // empty')
+
+        if [ -z "$ADMIN_PASS" ]; then
+          echo "⚠️ Could not get admin password, trying to recreate..."
+          rosa delete admin -c "${CLUSTER_NAME}" --yes 2>/dev/null || true
+          sleep 5
+          rosa create admin -c "${CLUSTER_NAME}" --yes
+          sleep 30
+          ADMIN_CREDS=$(rosa describe admin -c "${CLUSTER_NAME}" -o json)
+          ADMIN_USER=$(echo "$ADMIN_CREDS" | jq -r '.username')
+          ADMIN_PASS=$(echo "$ADMIN_CREDS" | jq -r '.password')
+        fi
+
+        # Login to cluster
+        echo "🔐 Logging into OpenShift cluster..."
+        oc login "${API_URL}" --username="${ADMIN_USER}" --password="${ADMIN_PASS}" --insecure-skip-tls-verify=true
+
+        # Verify cluster access
+        echo "✅ Verifying cluster access..."
+        oc get nodes
+
+        # Check if namespace exists
+        echo "🔍 Checking if namespace '${NAMESPACE}' exists..."
+        if ! oc get namespace "${NAMESPACE}" >/dev/null 2>&1; then
+          echo "⚠️  Namespace '${NAMESPACE}' does not exist yet"
+          echo "📋 Available namespaces:"
+          oc get namespaces
+          echo ""
+          echo "ℹ️  This may be normal if the namespace hasn't been created yet."
+          echo "✅ Pod status check completed - namespace not found (this may be expected)"
+          exit 0
+        fi
+
+        echo "✅ Namespace '${NAMESPACE}' exists"
+
+        # Get initial pod status
+        echo "📋 Current pod status in namespace '${NAMESPACE}':"
+        oc get pods -n "${NAMESPACE}" -o wide || echo "No pods found in namespace"
+        echo ""
+
+        # Function to check pod status
+        check_pod_status() {
+          local pods_info
+          pods_info=$(oc get pods -n "${NAMESPACE}" -o json 2>/dev/null || echo '{"items":[]}')
+
+          local total_pods
+          total_pods=$(echo "$pods_info" | jq -r '.items | length')
+
+          if [ "$total_pods" -eq 0 ]; then
+            echo "📋 No pods found in namespace '${NAMESPACE}'"
+            return 1
+          fi
+
+          echo "📊 Pod Status Summary:"
+          echo "Total pods: $total_pods (expected minimum: ${EXPECTED_POD_COUNT})"
+
+          # Count pods by status
+          local running_pods completed_pods failed_pods pending_pods
+          running_pods=$(echo "$pods_info" | jq -r '[.items[] | select(.status.phase == "Running")] | length')
+          completed_pods=$(echo "$pods_info" | jq -r '[.items[] | select(.status.phase == "Succeeded")] | length')
+          failed_pods=$(echo "$pods_info" | jq -r '[.items[] | select(.status.phase == "Failed")] | length')
+          pending_pods=$(echo "$pods_info" | jq -r '[.items[] | select(.status.phase == "Pending")] | length')
+
+          echo "  Running: $running_pods"
+          echo "  Completed: $completed_pods"
+          echo "  Failed: $failed_pods"
+          echo "  Pending: $pending_pods"
+          echo ""
+
+          # Check if all pods are in acceptable states (Running or Succeeded)
+          local acceptable_pods
+          acceptable_pods=$((running_pods + completed_pods))
+
+          if [ "$acceptable_pods" -ge "${EXPECTED_POD_COUNT}" ] && [ "$failed_pods" -eq 0 ]; then
+            echo "✅ At least ${EXPECTED_POD_COUNT} pods are in acceptable states (Running or Completed)"
+            return 0
+          else
+            echo "⚠️  Not enough pods in acceptable states or some pods failed"
+            return 1
+          fi
+        }
+
+        # Wait for pods to be ready with timeout
+        echo "⏳ Waiting for pods to be Running or Completed (timeout: ${TIMEOUT_MINUTES} minutes)..."
+        timeout_seconds=$((TIMEOUT_MINUTES * 60))
+        start_time=$(date +%s)
+
+        while true; do
+          current_time=$(date +%s)
+          elapsed=$((current_time - start_time))
+
+          if [ $elapsed -ge $timeout_seconds ]; then
+            echo "⏰ Timeout reached (${TIMEOUT_MINUTES} minutes)"
+            break
+          fi
+
+          if check_pod_status; then
+            echo "🎉 Pod status check passed!"
+
+            # Final detailed pod listing
+            echo ""
+            echo "📋 Final pod status:"
+            oc get pods -n "${NAMESPACE}" -o wide
+
+            echo "✅ Pod status check completed successfully!"
+            exit 0
+          fi
+
+          echo "⏳ Waiting... (${elapsed}s elapsed)"
+          sleep 30
+        done
+
+        # Timeout reached or final check failed
+        echo "❌ Pod status check failed or timed out"
+        echo ""
+        echo "📋 Final pod status:"
+        oc get pods -n "${NAMESPACE}" -o wide || echo "Failed to get pod status"
+
+        exit 1

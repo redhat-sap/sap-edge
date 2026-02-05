@@ -1,0 +1,175 @@
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: rosa-deployment-status-report
+spec:
+  description: Generate final deployment status report for ROSA cluster
+  params:
+    - name: clusterName
+      type: string
+      description: "ROSA cluster name"
+    - name: awsSecretName
+      type: string
+      description: "Name of the Kubernetes Secret containing AWS credentials"
+      default: "aws-credentials-secret"
+    - name: redhatTokenSecretName
+      type: string
+      description: "Name of the Kubernetes Secret containing Red Hat OCM token"
+      default: "redhat-token-secret"
+    - name: platform
+      type: string
+      description: "Platform type (rosa)"
+      default: "rosa"
+  workspaces:
+    - name: source
+  steps:
+    - name: generate-report
+      image: registry.access.redhat.com/ubi9/ubi
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: CLUSTER_NAME
+          value: "$(params.clusterName)"
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: $(params.awsSecretName)
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: $(params.awsSecretName)
+              key: AWS_SECRET_ACCESS_KEY
+        - name: REDHAT_OCM_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: $(params.redhatTokenSecretName)
+              key: REDHAT_OCM_TOKEN
+        - name: PLATFORM
+          value: $(params.platform)
+      script: |
+        #!/bin/bash
+        # Status report should not fail on individual command failures
+        set +e
+
+        echo "📊 Generating final deployment status report for ROSA cluster: ${CLUSTER_NAME}"
+
+        # Install required tools
+        echo "📦 Installing required tools..."
+        dnf install -y jq tar gzip
+
+        # Install ROSA CLI
+        echo "📦 Installing ROSA CLI..."
+        curl -L https://mirror.openshift.com/pub/openshift-v4/clients/rosa/latest/rosa-linux.tar.gz | tar xz
+        mv rosa /usr/local/bin/
+        rosa version
+
+        # Install OpenShift CLI
+        echo "📦 Installing OpenShift CLI..."
+        curl -L https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz | tar xz
+        mv oc kubectl /usr/local/bin/
+
+        # Login to ROSA
+        echo "🔐 Logging into ROSA..."
+        rosa login --token="${REDHAT_OCM_TOKEN}"
+
+        # Get cluster info
+        echo "📋 Getting cluster information..."
+        CLUSTER_INFO=$(rosa describe cluster -c "${CLUSTER_NAME}" -o json 2>/dev/null || echo '{}')
+        API_URL=$(echo "$CLUSTER_INFO" | jq -r '.api.url // "N/A"')
+        CONSOLE_URL=$(echo "$CLUSTER_INFO" | jq -r '.console.url // "N/A"')
+        CLUSTER_STATE=$(echo "$CLUSTER_INFO" | jq -r '.state // "unknown"')
+        CLUSTER_VERSION=$(echo "$CLUSTER_INFO" | jq -r '.version.raw_id // "N/A"')
+        AWS_REGION=$(echo "$CLUSTER_INFO" | jq -r '.region.id // "N/A"')
+
+        # Try to login to cluster for node info
+        echo "🔐 Attempting to login to OpenShift cluster..."
+        ADMIN_CREDS=$(rosa describe admin -c "${CLUSTER_NAME}" -o json 2>/dev/null || echo '{}')
+        ADMIN_USER=$(echo "$ADMIN_CREDS" | jq -r '.username // empty')
+        ADMIN_PASS=$(echo "$ADMIN_CREDS" | jq -r '.password // empty')
+
+        CLUSTER_ACCESS="false"
+        if [ -n "$ADMIN_USER" ] && [ -n "$ADMIN_PASS" ] && [ "$API_URL" != "N/A" ]; then
+          if oc login "${API_URL}" --username="${ADMIN_USER}" --password="${ADMIN_PASS}" --insecure-skip-tls-verify=true 2>/dev/null; then
+            CLUSTER_ACCESS="true"
+          fi
+        fi
+
+        echo "📋 Generating comprehensive deployment report..."
+        echo "=============================================="
+        echo ""
+
+        # ROSA Cluster Status
+        echo "🔴 ROSA Cluster Status:"
+        echo "  Cluster Name: ${CLUSTER_NAME}"
+        echo "  State: ${CLUSTER_STATE}"
+        echo "  Version: ${CLUSTER_VERSION}"
+        echo "  AWS Region: ${AWS_REGION}"
+        echo "  API URL: ${API_URL}"
+        echo "  Console URL: ${CONSOLE_URL}"
+        echo ""
+
+        # Node Status (if we have cluster access)
+        if [ "$CLUSTER_ACCESS" = "true" ]; then
+          echo "🖥️  Node Status:"
+          oc get nodes -o wide || echo "  Unable to get node status"
+          echo ""
+
+          # Edgelm Namespace Pods (if exists)
+          echo "🔍 Edgelm Namespace Status:"
+          if oc get namespace edgelm >/dev/null 2>&1; then
+            echo "  Namespace exists: ✅"
+            echo "  Pod count: $(oc get pods -n edgelm --no-headers 2>/dev/null | wc -l)"
+            echo "  Pod status:"
+            oc get pods -n edgelm -o wide || echo "  No pods found"
+          else
+            echo "  Namespace exists: ❌ (not created yet)"
+          fi
+          echo ""
+
+          # Overall namespaces
+          echo "📁 Key Namespaces:"
+          oc get namespaces | grep -E 'edgelm|quay|openshift-operators' || echo "  No matching namespaces found"
+          echo ""
+        else
+          echo "⚠️  Cluster access not available for detailed status"
+          echo ""
+        fi
+
+        # Deployment Summary
+        echo "📊 Deployment Summary:"
+        echo "  Platform: ${PLATFORM}"
+        echo "  Cluster Name: ${CLUSTER_NAME}"
+        echo "  Completion Time: $(date -Iseconds)"
+        echo "  Pipeline Status: ✅ SUCCESS"
+        echo ""
+
+        echo "✅ Deployment status report completed!"
+        echo "=============================================="
+
+        # Generate machine-readable status file
+        cat > final-deployment-status.json << EOF
+        {
+          "platform": "${PLATFORM}",
+          "cluster_name": "${CLUSTER_NAME}",
+          "cluster_state": "${CLUSTER_STATE}",
+          "cluster_version": "${CLUSTER_VERSION}",
+          "aws_region": "${AWS_REGION}",
+          "api_url": "${API_URL}",
+          "console_url": "${CONSOLE_URL}",
+          "completion_timestamp": "$(date -Iseconds)",
+          "status": "SUCCESS"
+        }
+EOF
+
+        echo "💾 Machine-readable status saved to final-deployment-status.json"
+        echo ""
+        echo "🎉 Deployment Status Report Generation Completed!"
+
+        # Ensure the task always succeeds for status reporting
+        exit 0

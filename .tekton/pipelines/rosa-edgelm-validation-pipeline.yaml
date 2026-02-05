@@ -146,8 +146,14 @@ spec:
     # Check edgelm namespace pod status
     - name: check-edgelm-pods
       runAfter: [manual-approval-post-deployment]
-      taskRef: { name: edgelm-pod-status-check }
+      taskRef: { name: rosa-edgelm-pod-status-check }
       params:
+        - name: clusterName
+          value: $(params.clusterName)
+        - name: awsSecretName
+          value: $(params.awsSecretName)
+        - name: redhatTokenSecretName
+          value: $(params.redhatTokenSecretName)
         - name: namespace
           value: "edgelm"
         - name: expectedPodCount
@@ -158,10 +164,14 @@ spec:
 
     - name: deployment-status-report
       runAfter: [check-edgelm-pods]
-      taskRef: { name: deployment-status-report }
+      taskRef: { name: rosa-deployment-status-report }
       params:
         - name: clusterName
           value: $(params.clusterName)
+        - name: awsSecretName
+          value: $(params.awsSecretName)
+        - name: redhatTokenSecretName
+          value: $(params.redhatTokenSecretName)
         - name: platform
           value: "rosa"
       workspaces:
