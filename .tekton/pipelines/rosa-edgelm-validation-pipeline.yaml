@@ -103,8 +103,30 @@ spec:
         - name: source
           workspace: source
 
-    - name: deploy-quay
+    - name: validate-and-get-access
       runAfter: [deploy-rosa]
+      taskRef: { name: rosa-validate-and-get-access }
+      params:
+        - name: clusterName
+          value: $(params.clusterName)
+        - name: awsRegion
+          value: $(params.awsRegion)
+        - name: awsSecretName
+          value: $(params.awsSecretName)
+        - name: redhatTokenSecretName
+          value: $(params.redhatTokenSecretName)
+        - name: terraformStateS3Bucket
+          value: $(params.terraformStateS3Bucket)
+        - name: terraformStateS3Key
+          value: $(params.terraformStateS3Key)
+        - name: terraformStateDynamoDBTable
+          value: $(params.terraformStateDynamoDBTable)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: deploy-quay
+      runAfter: [validate-and-get-access]
       taskRef: { name: rosa-quay-deploy }
       params:
         - name: clusterName
