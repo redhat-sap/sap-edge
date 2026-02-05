@@ -118,9 +118,10 @@ spec:
         - name: timeout
           value: '336h'
 
-    - name: check-edgelm-pods
+    # Validate pods and generate deployment status report
+    - name: deployment-status-report
       runAfter: [manual-approval-post-deployment]
-      taskRef: { name: aro-edgelm-pod-status-check }
+      taskRef: { name: aro-deployment-status-report }
       params:
         - name: aroClusterName
           value: $(params.aroClusterName)
@@ -128,12 +129,16 @@ spec:
           value: $(params.azureSecretName)
         - name: namespace
           value: "edgelm"
+        - name: expectedPodCount
+          value: "3"
+        - name: deploymentType
+          value: "aro-edgelm-validation"
       workspaces:
         - name: source
           workspace: source
 
     - name: update-jira-deployment-status
-      runAfter: [check-edgelm-pods]
+      runAfter: [deployment-status-report]
       taskRef:
         name: jira-add-comment-custom
       params:
@@ -192,17 +197,3 @@ spec:
           value: '1'
         - name: timeout
           value: '336h'
-
-    - name: final-status-report
-      runAfter: [manual-approval-final]
-      taskRef: { name: aro-deployment-status-report }
-      params:
-        - name: aroClusterName
-          value: $(params.aroClusterName)
-        - name: azureSecretName
-          value: $(params.azureSecretName)
-        - name: deploymentType
-          value: "aro-quay-complete"
-      workspaces:
-        - name: source
-          workspace: source

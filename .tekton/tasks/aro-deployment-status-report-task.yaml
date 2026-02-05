@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2024 SAP edge team
+# SPDX-FileCopyrightText: 2025 SAP edge team
 # SPDX-FileContributor: Manjun Jiao (@mjiao)
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -9,7 +9,7 @@ kind: Task
 metadata:
   name: aro-deployment-status-report
 spec:
-  description: Generate final deployment status report
+  description: Validate pods and generate deployment status report for ARO cluster
   params:
     - name: aroClusterName
       type: string
@@ -17,6 +17,14 @@ spec:
     - name: azureSecretName
       type: string
       description: "Name of the Kubernetes Secret containing Azure service principal credentials"
+    - name: namespace
+      type: string
+      description: "Namespace to check pod status"
+      default: "edgelm"
+    - name: expectedPodCount
+      type: string
+      description: "Expected minimum number of pods (0 to skip validation)"
+      default: "0"
     - name: deploymentType
       type: string
       description: "Type of deployment (e.g., aro-quay-complete)"
@@ -24,7 +32,7 @@ spec:
   workspaces:
     - name: source
   steps:
-    - name: generate-report
+    - name: validate-and-report
       image: registry.access.redhat.com/ubi9/ubi
       workingDir: $(workspaces.source.path)
       env:
@@ -50,140 +58,138 @@ spec:
               key: ARO_RESOURCE_GROUP
         - name: ARO_CLUSTER_NAME
           value: $(params.aroClusterName)
+        - name: NAMESPACE
+          value: "$(params.namespace)"
+        - name: EXPECTED_POD_COUNT
+          value: "$(params.expectedPodCount)"
         - name: DEPLOYMENT_TYPE
           value: $(params.deploymentType)
       script: |
         #!/bin/bash
-        # Status report should not fail on individual command failures
-        set +e
-        
-        echo "📊 Generating final deployment status report for cluster: ${ARO_CLUSTER_NAME}"
-        
+        set -euo pipefail
+
+        echo "📊 ARO Deployment Status Report for cluster: ${ARO_CLUSTER_NAME}"
+        echo "=============================================="
+
         # Install required tools
         echo "📦 Installing required tools..."
-        # Install make, libicu, and jq first (needed for makefile operations and Bicep)
-        dnf install -y make libicu jq
-        
+        dnf install -y make libicu jq tar gzip
+
         # Install Azure CLI
         echo "📦 Installing Azure CLI..."
-        # Install Azure CLI using the official Microsoft repository
         rpm --import https://packages.microsoft.com/keys/microsoft.asc
         dnf install -y https://packages.microsoft.com/config/rhel/9.0/packages-microsoft-prod.rpm
         dnf clean all
-        # Pin to a stable version to avoid HTTP client issues
         dnf install -y azure-cli-2.59.0
-        
+
         # Install OpenShift CLI
         echo "📦 Installing OpenShift CLI..."
         curl -L https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz | tar xz
         mv oc kubectl /usr/local/bin/
-        
+
         # Login to Azure
         echo "🔐 Logging into Azure..."
         make azure-login
-        
+
         # Get ARO credentials and login to cluster
         echo "🔐 Getting ARO credentials..."
         rm -f kubeconfig kubeconfig.backup
         az aro get-admin-kubeconfig --name "${ARO_CLUSTER_NAME}" --resource-group "${ARO_RESOURCE_GROUP}" --file kubeconfig
-        echo "🔧 Adding insecure TLS settings to kubeconfig..."
         cp kubeconfig kubeconfig.backup
         sed '/^    server:/a\    insecure-skip-tls-verify: true' kubeconfig.backup > kubeconfig
         export KUBECONFIG="$(pwd)/kubeconfig"
-        
-        echo "📋 Generating comprehensive deployment report..."
-        echo "=============================================="
+
+        # Get cluster info
         echo ""
-        
-        # ARO Cluster Status
         echo "🔴 ARO Cluster Status:"
         echo "  Cluster Name: ${ARO_CLUSTER_NAME}"
         echo "  Resource Group: ${ARO_RESOURCE_GROUP}"
-        echo "  Status: $(make aro-cluster-status | tail -1)"
-        echo "  API URL: $(make aro-cluster-url | tail -1)"
+        API_URL=$(az aro show --name "${ARO_CLUSTER_NAME}" --resource-group "${ARO_RESOURCE_GROUP}" --query "apiserverProfile.url" -o tsv 2>/dev/null || echo "N/A")
+        CONSOLE_URL=$(az aro show --name "${ARO_CLUSTER_NAME}" --resource-group "${ARO_RESOURCE_GROUP}" --query "consoleProfile.url" -o tsv 2>/dev/null || echo "N/A")
+        echo "  API URL: ${API_URL}"
+        echo "  Console URL: ${CONSOLE_URL}"
         echo ""
-        
-        # Node Status
-        echo "🖥️  Node Status:"
+
+        echo "🖥️ Node Status:"
         oc get nodes -o wide
         echo ""
-        
-        # Azure Services Status
-        echo "☁️  Azure Services Status:"
-        make aro-services-info || echo "Azure services info not available"
-        echo ""
-        
-        # Quay Registry Status
-        echo "📦 Quay Registry Status:"
-        make aro-quay-status || echo "Quay status not available"
-        echo ""
-        
-        # Quay Registry Info
-        echo "📋 Quay Registry Information:"
-        make aro-quay-info || echo "Quay info not available"
-        echo ""
-        
-        # Storage Account Status
-        echo "💾 Azure Storage Status:"
-        make aro-quay-storage-info || echo "Storage info not available"
-        echo ""
-        
-        
-        # Edgelm Namespace Pods (if exists)
-        echo "🔍 Edgelm Namespace Status:"
-        if oc get namespace edgelm >/dev/null 2>&1; then
-          echo "  Namespace exists: ✅"
-          echo "  Pod count: $(oc get pods -n edgelm --no-headers | wc -l)"
-          echo "  Pod status:"
-          oc get pods -n edgelm -o wide || echo "  No pods found"
+
+        # Namespace pod validation
+        echo "🔍 Checking namespace '${NAMESPACE}'..."
+        POD_VALIDATION_STATUS="SKIPPED"
+
+        if [ "${EXPECTED_POD_COUNT}" -gt 0 ]; then
+          if ! oc get namespace "${NAMESPACE}" >/dev/null 2>&1; then
+            echo "❌ Namespace '${NAMESPACE}' does not exist"
+            POD_VALIDATION_STATUS="FAILED"
+          else
+            echo "✅ Namespace '${NAMESPACE}' exists"
+
+            # Get pod info
+            PODS_INFO=$(oc get pods -n "${NAMESPACE}" -o json 2>/dev/null || echo '{"items":[]}')
+            TOTAL_PODS=$(echo "$PODS_INFO" | jq -r '.items | length')
+            RUNNING_PODS=$(echo "$PODS_INFO" | jq -r '[.items[] | select(.status.phase == "Running")] | length')
+            COMPLETED_PODS=$(echo "$PODS_INFO" | jq -r '[.items[] | select(.status.phase == "Succeeded")] | length')
+            FAILED_PODS=$(echo "$PODS_INFO" | jq -r '[.items[] | select(.status.phase == "Failed")] | length')
+
+            echo "  Total pods: ${TOTAL_PODS} (expected minimum: ${EXPECTED_POD_COUNT})"
+            echo "  Running: ${RUNNING_PODS}"
+            echo "  Completed: ${COMPLETED_PODS}"
+            echo "  Failed: ${FAILED_PODS}"
+            echo ""
+            oc get pods -n "${NAMESPACE}" -o wide
+            echo ""
+
+            ACCEPTABLE_PODS=$((RUNNING_PODS + COMPLETED_PODS))
+            if [ "${ACCEPTABLE_PODS}" -ge "${EXPECTED_POD_COUNT}" ] && [ "${FAILED_PODS}" -eq 0 ]; then
+              echo "✅ Pod validation passed: ${ACCEPTABLE_PODS} pods in acceptable state"
+              POD_VALIDATION_STATUS="PASSED"
+            else
+              echo "❌ Pod validation failed: expected ${EXPECTED_POD_COUNT}, got ${ACCEPTABLE_PODS} acceptable (${FAILED_PODS} failed)"
+              POD_VALIDATION_STATUS="FAILED"
+            fi
+          fi
         else
-          echo "  Namespace exists: ❌ (not created yet)"
+          echo "ℹ️ Pod validation skipped (expectedPodCount=0)"
+          if oc get namespace "${NAMESPACE}" >/dev/null 2>&1; then
+            oc get pods -n "${NAMESPACE}" -o wide 2>/dev/null || echo "  No pods found"
+          fi
         fi
         echo ""
-        
-        # Overall namespaces
-        echo "📁 All Namespaces:"
-        oc get namespaces | head -20
+
+        # Key namespaces
+        echo "📁 Key Namespaces:"
+        oc get namespaces | grep -E 'edgelm|quay|openshift-operators' || echo "  No matching namespaces found"
         echo ""
-        
-        # Deployment Summary
-        echo "📊 Deployment Summary:"
-        echo "  Deployment Type: ${DEPLOYMENT_TYPE}"
-        echo "  Completion Time: $(date -Iseconds)"
-        echo "  Pipeline Status: ✅ SUCCESS"
-        echo ""
-        
-        echo "✅ Deployment status report completed successfully!"
-        echo "=============================================="
-        
-        # Generate machine-readable status file
+
+        # Generate status file
         cat > final-deployment-status.json << EOF
         {
+          "platform": "aro",
           "deployment_type": "${DEPLOYMENT_TYPE}",
-          "aro_cluster_name": "${ARO_CLUSTER_NAME}",
-          "aro_resource_group": "${ARO_RESOURCE_GROUP}",
+          "cluster_name": "${ARO_CLUSTER_NAME}",
+          "resource_group": "${ARO_RESOURCE_GROUP}",
+          "api_url": "${API_URL}",
+          "console_url": "${CONSOLE_URL}",
+          "namespace_validated": "${NAMESPACE}",
+          "pod_validation_status": "${POD_VALIDATION_STATUS}",
           "completion_timestamp": "$(date -Iseconds)",
-          "status": "SUCCESS",
-          "components": {
-            "aro_cluster": "deployed",
-            "azure_services": "deployed", 
-            "quay_registry": "deployed",
-            "certificate_trust": "configured",
-            "edgelm_namespace": "$(oc get namespace edgelm >/dev/null 2>&1 && echo 'exists' || echo 'not_found')"
-          }
+          "status": "$([ "${POD_VALIDATION_STATUS}" = "FAILED" ] && echo "FAILED" || echo "SUCCESS")"
         }
-        EOF
-        
-        echo "💾 Machine-readable status saved to final-deployment-status.json"
+EOF
+
+        echo "📊 Deployment Summary:"
+        echo "  Platform: ARO"
+        echo "  Deployment Type: ${DEPLOYMENT_TYPE}"
+        echo "  Cluster: ${ARO_CLUSTER_NAME}"
+        echo "  Pod Validation: ${POD_VALIDATION_STATUS}"
+        echo "  Timestamp: $(date -Iseconds)"
         echo ""
-        echo "🎉 Deployment Status Report Generation Completed!"
-        echo "=============================================="
-        
-        # Show final status file for logging
-        echo "📋 Final Status Summary:"
-        cat final-deployment-status.json | jq '.' || cat final-deployment-status.json
-        
-        # Ensure the task always succeeds for status reporting
-        echo ""
-        echo "✅ STATUS REPORT TASK COMPLETED SUCCESSFULLY"
-        exit 0
+
+        # Exit based on validation result
+        if [ "${POD_VALIDATION_STATUS}" = "FAILED" ]; then
+          echo "❌ Deployment validation FAILED"
+          exit 1
+        fi
+
+        echo "✅ Deployment status report completed successfully!"
