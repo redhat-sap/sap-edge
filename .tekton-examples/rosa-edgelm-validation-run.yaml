@@ -27,7 +27,7 @@ spec:
     - name: clusterName
       value: "rosa-edgelm"
     - name: awsRegion
-      value: "us-east-1"
+      value: "eu-north-1"
     - name: rosaVersion
       value: "4.20.12"
     - name: awsSecretName
