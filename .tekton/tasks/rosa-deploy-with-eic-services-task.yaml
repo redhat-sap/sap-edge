@@ -174,12 +174,15 @@ spec:
         
         # Verify AWS credentials
         echo "🔐 Verifying AWS credentials..."
+        echo "  Region: ${AWS_REGION}"
+        echo "  Access Key ID: ${AWS_ACCESS_KEY_ID:0:4}****"
         if AWS_IDENTITY=$(aws sts get-caller-identity 2>&1); then
           AWS_ACCOUNT=$(echo "${AWS_IDENTITY}" | jq -r '.Account')
           AWS_USER=$(echo "${AWS_IDENTITY}" | jq -r '.Arn' | cut -d'/' -f2)
           echo "✅ AWS credentials verified (Account: ${AWS_ACCOUNT}, User: ${AWS_USER})"
         else
           echo "❌ AWS credentials verification failed"
+          echo "  Error: ${AWS_IDENTITY}"
           exit 1
         fi
         
