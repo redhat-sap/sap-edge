@@ -175,6 +175,10 @@ spec:
           
           make aro-deploy-test
 
+          # Wait for ARO cluster to be fully ready before creating DNS records
+          echo "⏳ Waiting for ARO cluster to be ready..."
+          make aro-wait-for-ready
+
           echo "🔄 Creating domain records for ARO..."
           make domain-records
         else
