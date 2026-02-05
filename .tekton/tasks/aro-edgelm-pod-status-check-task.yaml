@@ -7,7 +7,7 @@
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
-  name: edgelm-pod-status-check
+  name: aro-edgelm-pod-status-check
 spec:
   description: Check if all pods in edgelm namespace are running correctly or completed
   params:

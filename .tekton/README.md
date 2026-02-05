@@ -51,8 +51,10 @@ This directory contains Tekton CI/CD pipeline definitions for SAP Edge Integrati
 
 ### Quay Registry Tasks
 - `aro-quay-deploy`: Deploy Quay registry with Azure storage
-- `edgelm-pod-status-check`: Validate edgelm namespace pod status
-- `deployment-status-report`: Generate comprehensive deployment reports
+- `aro-edgelm-pod-status-check`: Validate edgelm namespace pod status (ARO)
+- `aro-deployment-status-report`: Generate comprehensive deployment reports (ARO)
+- `rosa-edgelm-pod-status-check`: Validate edgelm namespace pod status (ROSA)
+- `rosa-deployment-status-report`: Generate comprehensive deployment reports (ROSA)
 
 ### Testing Tasks
 - `endpoint-tests`: Test EIC API endpoints

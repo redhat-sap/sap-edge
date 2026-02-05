@@ -120,7 +120,7 @@ spec:
 
     - name: check-edgelm-pods
       runAfter: [manual-approval-post-deployment]
-      taskRef: { name: edgelm-pod-status-check }
+      taskRef: { name: aro-edgelm-pod-status-check }
       params:
         - name: aroClusterName
           value: $(params.aroClusterName)
@@ -195,7 +195,7 @@ spec:
 
     - name: final-status-report
       runAfter: [manual-approval-final]
-      taskRef: { name: deployment-status-report }
+      taskRef: { name: aro-deployment-status-report }
       params:
         - name: aroClusterName
           value: $(params.aroClusterName)
