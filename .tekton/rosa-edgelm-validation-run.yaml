@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: rosa-edgelm-validation-
+  annotations:
+    pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
+    pipelinesascode.tekton.dev/on-target-branch: "[main]"
+    pipelinesascode.tekton.dev/task: "[./.tekton/tasks/git-clone.yaml]"
+spec:
+  pipelineRef:
+    name: rosa-edgelm-validation-pipeline
+  timeouts:
+    pipeline: "336h"      # Total pipeline timeout (14 days)
+    tasks: "335h"         # Individual task timeout (tasks + finally must be <= pipeline)
+    finally: "60m"        # Finally tasks timeout
+  params:
+    - name: repoUrl
+      value: "{{ repo_url }}"
+    - name: revision
+      value: "{{ revision }}"
+    - name: clusterName
+      value: "rosa-edgelm"
+    - name: awsRegion
+      value: "us-east-1"
+    - name: rosaVersion
+      value: "4.20.12"
+    - name: awsSecretName
+      value: "aws-credentials-secret"
+    - name: redhatTokenSecretName
+      value: "redhat-token-secret"
+    - name: quayAdminPasswordSecretName
+      value: "quay-admin-secret"
+    - name: jiraSecretName
+      value: "jira-secret-mj"
+    - name: jiraIssueKey
+      value: "SAPOCP-1659"
+  workspaces:
+    - name: source
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteMany]
+          storageClassName: ocs-storagecluster-cephfs
+          resources:
+            requests:
+              storage: 200Mi
