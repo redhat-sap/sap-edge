@@ -49,8 +49,10 @@ fi
 if ! [ "$(az resource show --name "${ARO_CLUSTER_NAME}" \
   --resource-group "${ARO_RESOURCE_GROUP}" \
   --resource-type 'Microsoft.RedHatOpenShift/openShiftClusters' \
-  --query "id" -o tsv)" ]; then
-    echo "ARO does not exists"
+  --query "id" -o tsv 2>/dev/null)" ]; then
+    echo "❌ ARO cluster '${ARO_CLUSTER_NAME}' does not exist in resource group '${ARO_RESOURCE_GROUP}'"
+    echo "   Cannot create domain records without an existing ARO cluster"
+    exit 1
 fi
 
 API_IP=$(az aro show --name "${ARO_CLUSTER_NAME}" --resource-group "${ARO_RESOURCE_GROUP}" \

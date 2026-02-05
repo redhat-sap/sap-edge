@@ -85,8 +85,22 @@ spec:
         - name: source
           workspace: source
 
-    - name: deploy-quay
+    - name: validate-and-get-access
       runAfter: [deploy-aro]
+      taskRef: { name: aro-validate-and-get-access }
+      params:
+        - name: aroClusterName
+          value: $(params.aroClusterName)
+        - name: azureSecretName
+          value: $(params.azureSecretName)
+        - name: postgresAdminPasswordSecretName
+          value: "azure-postgres-admin-password"
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: deploy-quay
+      runAfter: [validate-and-get-access]
       taskRef: { name: aro-quay-deploy }
       params:
         - name: aroClusterName
