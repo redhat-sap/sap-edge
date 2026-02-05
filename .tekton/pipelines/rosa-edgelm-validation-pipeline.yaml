@@ -143,10 +143,10 @@ spec:
         - name: timeout
           value: '336h'
 
-    # Check edgelm namespace pod status
-    - name: check-edgelm-pods
+    # Validate pods and generate deployment status report
+    - name: deployment-status-report
       runAfter: [manual-approval-post-deployment]
-      taskRef: { name: rosa-edgelm-pod-status-check }
+      taskRef: { name: rosa-deployment-status-report }
       params:
         - name: clusterName
           value: $(params.clusterName)
@@ -158,20 +158,6 @@ spec:
           value: "edgelm"
         - name: expectedPodCount
           value: "3"
-      workspaces:
-        - name: source
-          workspace: source
-
-    - name: deployment-status-report
-      runAfter: [check-edgelm-pods]
-      taskRef: { name: rosa-deployment-status-report }
-      params:
-        - name: clusterName
-          value: $(params.clusterName)
-        - name: awsSecretName
-          value: $(params.awsSecretName)
-        - name: redhatTokenSecretName
-          value: $(params.redhatTokenSecretName)
         - name: platform
           value: "rosa"
       workspaces:
