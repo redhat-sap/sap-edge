@@ -179,27 +179,30 @@ spec:
         echo ""
 
         # Generate status file
-        cat > final-deployment-status.json << EOF
-        {
-          "platform": "${PLATFORM}",
-          "cluster_name": "${CLUSTER_NAME}",
-          "cluster_state": "${CLUSTER_STATE}",
-          "cluster_version": "${CLUSTER_VERSION}",
-          "aws_region": "${AWS_REGION}",
-          "api_url": "${API_URL}",
-          "console_url": "${CONSOLE_URL}",
-          "namespace_validated": "${NAMESPACE}",
-          "pod_validation_status": "${POD_VALIDATION_STATUS}",
-          "completion_timestamp": "$(date -Iseconds)",
-          "status": "$([ "${POD_VALIDATION_STATUS}" = "FAILED" ] && echo "FAILED" || echo "SUCCESS")"
-        }
-EOF
+        FINAL_STATUS="SUCCESS"
+        if [ "${POD_VALIDATION_STATUS}" = "FAILED" ]; then
+          FINAL_STATUS="FAILED"
+        fi
+        jq -n \
+          --arg platform "${PLATFORM}" \
+          --arg cluster_name "${CLUSTER_NAME}" \
+          --arg cluster_state "${CLUSTER_STATE}" \
+          --arg cluster_version "${CLUSTER_VERSION}" \
+          --arg aws_region "${AWS_REGION}" \
+          --arg api_url "${API_URL}" \
+          --arg console_url "${CONSOLE_URL}" \
+          --arg namespace "${NAMESPACE}" \
+          --arg pod_status "${POD_VALIDATION_STATUS}" \
+          --arg timestamp "$(date -Iseconds)" \
+          --arg status "${FINAL_STATUS}" \
+          '{platform: $platform, cluster_name: $cluster_name, cluster_state: $cluster_state, cluster_version: $cluster_version, aws_region: $aws_region, api_url: $api_url, console_url: $console_url, namespace_validated: $namespace, pod_validation_status: $pod_status, completion_timestamp: $timestamp, status: $status}' \
+          > final-deployment-status.json
 
-        echo "📊 Deployment Summary:"
-        echo "  Platform: ${PLATFORM}"
-        echo "  Cluster: ${CLUSTER_NAME}"
-        echo "  Pod Validation: ${POD_VALIDATION_STATUS}"
-        echo "  Timestamp: $(date -Iseconds)"
+        echo "📊 Deployment Summary"
+        echo "  Platform - ${PLATFORM}"
+        echo "  Cluster - ${CLUSTER_NAME}"
+        echo "  Pod Validation - ${POD_VALIDATION_STATUS}"
+        echo "  Timestamp - $(date -Iseconds)"
         echo ""
 
         # Exit based on validation result
