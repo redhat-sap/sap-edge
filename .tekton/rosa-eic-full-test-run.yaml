@@ -7,14 +7,14 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: rosa-edgelm-validation-
+  generateName: rosa-eic-full-test-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
     pipelinesascode.tekton.dev/task: "[./.tekton/tasks/git-clone.yaml]"
 spec:
   pipelineRef:
-    name: rosa-edgelm-validation-pipeline
+    name: rosa-eic-full-test-pipeline
   timeouts:
     pipeline: "336h"      # Total pipeline timeout (14 days)
     tasks: "335h"         # Individual task timeout (tasks + finally must be <= pipeline)
@@ -25,7 +25,7 @@ spec:
     - name: revision
       value: "{{ revision }}"
     - name: clusterName
-      value: "rosa-edgelm"
+      value: "rosa-eic-test"
     - name: awsRegion
       value: "us-east-1"
     - name: rosaVersion
@@ -34,12 +34,24 @@ spec:
       value: "aws-credentials-secret"
     - name: redhatTokenSecretName
       value: "redhat-token-secret"
+    - name: eicAuthSecretName
+      value: "eic-auth-secret"
+    - name: postgresAdminPassword
+      value: "ChangeMe123!"
     - name: quayAdminPasswordSecretName
       value: "quay-admin-secret"
+    - name: deployPostgres
+      value: "false"
+    - name: deployRedis
+      value: "false"
+    - name: deployQuay
+      value: "true"
+    - name: publicDNS
+      value: "false"
     - name: jiraSecretName
       value: "jira-secret-mj"
     - name: jiraIssueKey
-      value: "SAPOCP-1659"
+      value: "SAPOCP-1590"
   workspaces:
     - name: source
       volumeClaimTemplate:
@@ -48,4 +60,4 @@ spec:
           storageClassName: ocs-storagecluster-cephfs
           resources:
             requests:
-              storage: 200Mi
+              storage: 10Mi
