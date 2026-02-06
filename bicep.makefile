@@ -367,7 +367,7 @@ aro-resources-cleanup:  ## Clean up other ARO-related resources
 	if [[ -n "$$ARO_RESOURCES" ]]; then \
 		echo "Found other ARO-related resources to delete:"; \
 		echo "$$ARO_RESOURCES"; \
-		az resource delete --resource-group "${ARO_RESOURCE_GROUP}" --ids $$ARO_RESOURCES --yes || echo "Some ARO resources may have already been deleted"; \
+		az resource delete --resource-group "${ARO_RESOURCE_GROUP}" --ids $$ARO_RESOURCES || echo "Some ARO resources may have already been deleted"; \
 		echo "✅ ARO resources cleanup completed"; \
 	else \
 		echo "ℹ️ No other ARO-related resources found"; \

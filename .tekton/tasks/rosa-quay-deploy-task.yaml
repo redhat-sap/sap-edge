@@ -119,11 +119,12 @@ spec:
         # Install ROSA CLI (needed for certificate trust configuration)
         echo "📦 Installing ROSA CLI..."
         if ! command -v rosa &> /dev/null; then
-          rm -rf rosa rosa-linux.tar.gz  # Remove if exists from previous run
+          rm -rf /tmp/rosa-install rosa-linux.tar.gz  # Clean temp dir, not workspace rosa/ directory
           wget -q https://mirror.openshift.com/pub/openshift-v4/clients/rosa/latest/rosa-linux.tar.gz
-          tar xzf rosa-linux.tar.gz
-          mv rosa /usr/local/bin/
-          rm -f rosa-linux.tar.gz
+          mkdir -p /tmp/rosa-install
+          tar xzf rosa-linux.tar.gz -C /tmp/rosa-install
+          mv /tmp/rosa-install/rosa /usr/local/bin/
+          rm -rf /tmp/rosa-install rosa-linux.tar.gz
           rosa version
         else
           echo "✅ ROSA CLI already installed"
