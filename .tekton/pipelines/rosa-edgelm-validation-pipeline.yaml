@@ -42,9 +42,15 @@ spec:
     - name: jiraSecretName
       type: string
       description: "Name of the Kubernetes Secret containing Jira credentials"
+      default: ""
     - name: jiraIssueKey
       type: string
       description: "Jira issue key to update with deployment results"
+      default: ""
+    - name: skipEdgelmValidation
+      type: string
+      description: "Skip edgelm validation and Jira updates (true/false). Use 'true' for generic ROSA testing."
+      default: "false"
     - name: terraformStateS3Bucket
       type: string
       description: "S3 bucket name for Terraform state storage"
@@ -147,9 +153,13 @@ spec:
         - name: source
           workspace: source
 
-    # Manual approval step after ROSA and Quay deployment
+    # Manual approval step after ROSA and Quay deployment (only for edgelm validation)
     - name: manual-approval-post-deployment
       runAfter: [deploy-quay]
+      when:
+        - input: $(params.skipEdgelmValidation)
+          operator: in
+          values: ["false"]
       taskRef:
         apiVersion: openshift-pipelines.org/v1alpha1
         kind: ApprovalTask
@@ -167,9 +177,13 @@ spec:
         - name: timeout
           value: '336h'
 
-    # Validate pods and generate deployment status report
+    # Validate pods and generate deployment status report (only for edgelm validation)
     - name: deployment-status-report
       runAfter: [manual-approval-post-deployment]
+      when:
+        - input: $(params.skipEdgelmValidation)
+          operator: in
+          values: ["false"]
       taskRef: { name: rosa-deployment-status-report }
       params:
         - name: clusterName
@@ -188,8 +202,13 @@ spec:
         - name: source
           workspace: source
 
+    # Update Jira with deployment status (only for edgelm validation)
     - name: update-jira-ticket
       runAfter: [deployment-status-report]
+      when:
+        - input: $(params.skipEdgelmValidation)
+          operator: in
+          values: ["false"]
       taskRef:
         name: jira-add-comment-custom
       params:
@@ -231,7 +250,8 @@ spec:
 
             Ready for manual teardown approval. The ROSA cluster and S3 bucket will be destroyed once approved.
 
-    # Manual approval step before teardown
+    # Final manual approval step before teardown (runs for both edgelm and generic testing)
+    # When skipEdgelmValidation=true, upstream tasks are skipped and this runs directly after deploy-quay
     - name: manual-approval-teardown
       runAfter: [update-jira-ticket]
       taskRef:
@@ -245,7 +265,7 @@ spec:
             - ksatarin
             - kube:admin
         - name: description
-          value: "Edge LM validation completed. Please review results and approve to tear down ROSA cluster."
+          value: "ROSA cluster and Quay registry are ready. Approve to tear down ROSA cluster and AWS resources when testing is complete."
         - name: numberOfApprovalsRequired
           value: '1'
         - name: timeout
