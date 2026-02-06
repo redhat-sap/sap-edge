@@ -40,6 +40,8 @@ spec:
       value: "jira-secret-mj"
     - name: jiraIssueKey
       value: "SAPOCP-1659"
+    - name: skipEdgelmValidation
+      value: "false"
   workspaces:
     - name: source
       volumeClaimTemplate:
@@ -48,4 +50,4 @@ spec:
           storageClassName: ocs-storagecluster-cephfs
           resources:
             requests:
-              storage: 200Mi
+              storage: 2Gi
