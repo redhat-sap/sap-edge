@@ -158,6 +158,8 @@ spec:
           value:
             - mjiao
             - rbhandar
+            - ksatarin
+            - kube:admin
         - name: description
           value: "ROSA cluster and Quay registry deployed. Please approve to check edgelm namespace pods status."
         - name: numberOfApprovalsRequired
@@ -241,6 +243,7 @@ spec:
             - mjiao
             - rbhandar
             - ksatarin
+            - kube:admin
         - name: description
           value: "Edge LM validation completed. Please review results and approve to tear down ROSA cluster."
         - name: numberOfApprovalsRequired

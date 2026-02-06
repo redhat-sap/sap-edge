@@ -125,6 +125,7 @@ spec:
             - mjiao
             - rbhandar
             - ksatarin
+            - kube:admin
         - name: description
           value: "ARO cluster and Quay registry deployed successfully. Approve to proceed with Edge LM namespace pod validation."
         - name: numberOfApprovalsRequired
@@ -205,6 +206,7 @@ spec:
             - mjiao
             - rbhandar
             - ksatarin
+            - kube:admin
         - name: description
           value: "Edge LM validation completed successfully. All edgelm namespace pods are running/completed. Approve to finalize pipeline."
         - name: numberOfApprovalsRequired
