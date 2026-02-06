@@ -194,7 +194,7 @@ spec:
 
             Ready for final approval or additional operations. The infrastructure is fully deployed and operational.
 
-    # Final manual approval step
+    # Final manual approval step before teardown
     - name: manual-approval-final
       runAfter: [update-jira-deployment-status]
       taskRef:
@@ -208,8 +208,21 @@ spec:
             - ksatarin
             - kube:admin
         - name: description
-          value: "Edge LM validation completed successfully. All edgelm namespace pods are running/completed. Approve to finalize pipeline."
+          value: "Edge LM validation completed successfully. Approve to tear down ARO cluster and Azure resources."
         - name: numberOfApprovalsRequired
           value: '1'
         - name: timeout
           value: '336h'
+
+    # Teardown ARO cluster after approval
+    - name: teardown-aro
+      runAfter: [manual-approval-final]
+      taskRef: { name: aro-teardown }
+      params:
+        - name: aroClusterName
+          value: $(params.aroClusterName)
+        - name: azureSecretName
+          value: $(params.azureSecretName)
+      workspaces:
+        - name: source
+          workspace: source
