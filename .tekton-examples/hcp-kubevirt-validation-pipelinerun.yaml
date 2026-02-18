@@ -7,7 +7,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: hcp-kubevirt-validation-
+  generateName: hcp-kubevirt-validation-pr{{ pull_request_number }}-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
@@ -66,4 +66,4 @@ spec:
           storageClassName: ocs-storagecluster-cephfs
           resources:
             requests:
-              storage: 200Mi
+              storage: 2Gi
