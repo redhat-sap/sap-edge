@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# SPDX-FileCopyrightText: 2024 SAP edge team
+# SPDX-FileCopyrightText: 2026 SAP edge team
 # SPDX-FileContributor: Manjun Jiao (@mjiao)
 #
 # SPDX-License-Identifier: Apache-2.0

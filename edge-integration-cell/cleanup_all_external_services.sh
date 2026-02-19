@@ -12,8 +12,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Default values
 CLEANUP_POSTGRES=true
 CLEANUP_REDIS=true
+CLEANUP_VALKEY=true
 POSTGRES_NAMESPACE="sap-eic-external-postgres"
 REDIS_NAMESPACE="sap-eic-external-redis"
+VALKEY_NAMESPACE="sap-eic-external-valkey"
 DRY_RUN=false
 FORCE=false
 VERBOSE=false
@@ -62,13 +64,16 @@ usage() {
     cat <<EOF
 Usage: $0 [OPTIONS]
 
-Comprehensive cleanup of all SAP EIC external services (PostgreSQL and Redis).
+Comprehensive cleanup of all SAP EIC external services (PostgreSQL, Redis, and Valkey).
 
 OPTIONS:
-    --postgres-only              Cleanup only PostgreSQL (skip Redis)
-    --redis-only                 Cleanup only Redis (skip PostgreSQL)
+    --postgres-only              Cleanup only PostgreSQL (skip Redis and Valkey)
+    --redis-only                 Cleanup only Redis (skip PostgreSQL and Valkey)
+    --valkey-only                Cleanup only Valkey (skip PostgreSQL and Redis)
+    --no-valkey                  Skip Valkey cleanup
     --postgres-namespace NS      PostgreSQL namespace (default: sap-eic-external-postgres)
     --redis-namespace NS         Redis namespace (default: sap-eic-external-redis)
+    --valkey-namespace NS        Valkey namespace (default: sap-eic-external-valkey)
     --ocp-version VERSION        Specify OpenShift version for SCC cleanup
     -f, --force                  Skip all confirmation prompts (for automation)
     -d, --dry-run               Show what would be deleted without actually deleting
@@ -76,7 +81,7 @@ OPTIONS:
     -h, --help                  Display this help message
 
 EXAMPLES:
-    # Interactive cleanup of both PostgreSQL and Redis
+    # Interactive cleanup of all services (PostgreSQL, Redis, and Valkey)
     $0
 
     # Force cleanup without prompts (CI/CD)
@@ -91,16 +96,22 @@ EXAMPLES:
     # Cleanup only Redis
     $0 --redis-only
 
+    # Cleanup only Valkey
+    $0 --valkey-only
+
+    # Cleanup PostgreSQL and Redis only (skip Valkey)
+    $0 --no-valkey
+
     # Cleanup with OpenShift version specified
     $0 --ocp-version 4.16
 
     # Cleanup with custom namespaces
-    $0 --postgres-namespace my-postgres --redis-namespace my-redis
+    $0 --postgres-namespace my-postgres --redis-namespace my-redis --valkey-namespace my-valkey
 
 REQUIREMENTS:
     - oc CLI tool installed and configured
     - Cluster admin access
-    - Helper scripts in edge-integration-cell/external-postgres/ and external-redis/
+    - Helper scripts in edge-integration-cell/
 
 EOF
     exit 0
@@ -112,11 +123,23 @@ while [[ $# -gt 0 ]]; do
         --postgres-only)
             CLEANUP_POSTGRES=true
             CLEANUP_REDIS=false
+            CLEANUP_VALKEY=false
             shift
             ;;
         --redis-only)
             CLEANUP_POSTGRES=false
             CLEANUP_REDIS=true
+            CLEANUP_VALKEY=false
+            shift
+            ;;
+        --valkey-only)
+            CLEANUP_POSTGRES=false
+            CLEANUP_REDIS=false
+            CLEANUP_VALKEY=true
+            shift
+            ;;
+        --no-valkey)
+            CLEANUP_VALKEY=false
             shift
             ;;
         --postgres-namespace)
@@ -125,6 +148,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --redis-namespace)
             REDIS_NAMESPACE="$2"
+            shift 2
+            ;;
+        --valkey-namespace)
+            VALKEY_NAMESPACE="$2"
             shift 2
             ;;
         --ocp-version)
@@ -171,6 +198,7 @@ log HEADER "SAP EIC External Services Cleanup Utility"
 log INFO "Cleanup Configuration:"
 log INFO "  - PostgreSQL: $([ "$CLEANUP_POSTGRES" == "true" ] && echo "YES (namespace: $POSTGRES_NAMESPACE)" || echo "NO")"
 log INFO "  - Redis: $([ "$CLEANUP_REDIS" == "true" ] && echo "YES (namespace: $REDIS_NAMESPACE)" || echo "NO")"
+log INFO "  - Valkey: $([ "$CLEANUP_VALKEY" == "true" ] && echo "YES (namespace: $VALKEY_NAMESPACE)" || echo "NO")"
 log INFO "  - Dry-run: $([ "$DRY_RUN" == "true" ] && echo "YES" || echo "NO")"
 log INFO "  - Force mode: $([ "$FORCE" == "true" ] && echo "YES" || echo "NO")"
 
@@ -184,6 +212,9 @@ if [[ "$FORCE" != "true" && "$DRY_RUN" != "true" ]]; then
     fi
     if [[ "$CLEANUP_REDIS" == "true" ]]; then
         echo "  ✗ Redis (namespace: $REDIS_NAMESPACE)"
+    fi
+    if [[ "$CLEANUP_VALKEY" == "true" ]]; then
+        echo "  ✗ Valkey (namespace: $VALKEY_NAMESPACE)"
     fi
     echo ""
     read -rp "Type 'DELETE' to confirm cleanup: " confirmation
@@ -275,6 +306,36 @@ if [[ "$CLEANUP_REDIS" == "true" ]]; then
             log SUCCESS "Redis cleanup completed successfully"
         else
             log ERROR "Redis cleanup failed"
+            ERRORS=$((ERRORS + 1))
+        fi
+    fi
+    echo ""
+fi
+
+# Cleanup Valkey
+if [[ "$CLEANUP_VALKEY" == "true" ]]; then
+    log HEADER "Cleaning up Valkey External Services"
+
+    VALKEY_SCRIPT="$SCRIPT_DIR/external-valkey/cleanup_valkey.sh"
+    if [[ ! -f "$VALKEY_SCRIPT" ]]; then
+        log WARNING "Valkey cleanup script not found: $VALKEY_SCRIPT (skipping)"
+    else
+        CLEANUP_ARGS=(
+            "--namespace" "$VALKEY_NAMESPACE"
+        )
+
+        if [[ "$DRY_RUN" == "true" ]]; then
+            CLEANUP_ARGS+=("--dry-run")
+        fi
+
+        if [[ "$FORCE" == "true" ]]; then
+            CLEANUP_ARGS+=("--force")
+        fi
+
+        if bash "$VALKEY_SCRIPT" "${CLEANUP_ARGS[@]}"; then
+            log SUCCESS "Valkey cleanup completed successfully"
+        else
+            log ERROR "Valkey cleanup failed"
             ERRORS=$((ERRORS + 1))
         fi
     fi

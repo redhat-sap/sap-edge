@@ -8,18 +8,29 @@ SPDX-License-Identifier: Apache-2.0
 
 # SAP Edge Integration Cell (EIC) - External Services
 
-This repository provides tooling for deploying external services (PostgreSQL, Redis) for SAP Edge Integration Cell (EIC) on OpenShift Container Platform.
+> [!IMPORTANT]
+> **Support Disclaimer:** Red Hat does not provide support for the PostgreSQL/Redis/Valkey services configured through this repository. Support is available directly from the respective vendors:
+> - **PostgreSQL**: [Crunchy Data](https://www.crunchydata.com/contact)
+> - **Redis**: [Redis Labs](https://redis.io/meeting/)
+> - **Valkey**: [Valkey.io](https://valkey.io/) (community-supported)
+>
+> This repository is intended for **testing purposes only**. The configurations and scripts are designed for test validation scenarios and are not recommended for production use.
+
+This repository provides tooling for deploying external services (PostgreSQL, Redis, Valkey) for SAP Edge Integration Cell (EIC) on OpenShift Container Platform.
 
 ## Table of Contents
 
 - [Overview](#overview)
 - [Prerequisites](#prerequisites)
 - [External Services Setup](#external-services-setup)
-  - [PostgreSQL](#postgresql)
-  - [Redis](#redis)
+  - [Databases](#databases)
+    - [PostgreSQL](#postgresql)
+  - [Datastores](#datastores)
+    - [Redis](#redis)
+    - [Valkey](#valkey)
 - [GitOps with Argo CD](#gitops-with-argo-cd)
 - [Automated Deployment Scripts](#automated-deployment-scripts)
-- [Support & Operations](#support--operations)
+- [Operations Documentation](#operations-documentation)
 - [License](#license)
 
 > For CI/CD pipeline documentation, see [.tekton/README.md](.tekton/README.md)
@@ -28,12 +39,14 @@ This repository provides tooling for deploying external services (PostgreSQL, Re
 
 This repository provides scripts and procedures for setting up test validation external services for SAP EIC on the OpenShift Container Platform (OCP). The services covered include:
 
+**Databases:**
 - **PostgreSQL** (via Crunchy Data Operator)
+
+**Datastores:**
 - **Redis** (via Redis Enterprise Operator)
+- **Valkey** (via Red Hat Helm Charts)
 
-> **Note:** These services are optional. If you don't enable or configure external Postgres and Redis during the SAP EIC installation, EIC will automatically deploy self-contained Postgres and Redis pods within its own service namespace.
-
-**Note:** This repository is intended for testing purposes only. The configurations and scripts are designed for test validation scenarios and are not recommended for production use.
+> **Note:** These services are optional. If you don't enable or configure external database/datastore during the SAP EIC installation, EIC will automatically deploy self-contained pods within its own service namespace.
 
 ## Prerequisites
 
@@ -54,7 +67,9 @@ Additionally, set the ODF `ocs-storagecluster-ceph-rbd` storage class as default
 
 # External Services Setup
 
-## PostgreSQL
+## Databases
+
+### PostgreSQL
 
 The following steps install the Crunchy Postgres Operator and deploy an external PostgreSQL DB service.
 
@@ -102,9 +117,9 @@ After running the above script, you will get the access details of Crunchy Postg
 
 Please use the provided information to set up the EIC external DB accordingly.
 
-### Cleanup PostgreSQL
+#### Cleanup PostgreSQL
 
-#### Option 1: Automated Cleanup (Recommended)
+##### Option 1: Automated Cleanup (Recommended)
 
 Use the provided cleanup script for comprehensive automated cleanup:
 
@@ -122,7 +137,7 @@ bash sap-edge/edge-integration-cell/cleanup_postgres.sh --dry-run
 bash sap-edge/edge-integration-cell/cleanup_postgres.sh --namespace my-postgres-namespace
 ```
 
-#### Option 2: Manual Cleanup
+##### Option 2: Manual Cleanup
 
 To manually clean up the PostgresCluster:
 
@@ -134,7 +149,9 @@ oc get csv -n sap-eic-external-postgres --no-headers | grep 'postgresoperator' |
 oc delete namespace sap-eic-external-postgres
 ```
 
-## Redis
+## Datastores
+
+### Redis
 
 The following steps install the Redis Enterprise Operator and deploy an external Redis datastore service.
 
@@ -204,7 +221,7 @@ Alternatively, you can run the following script to retrieve access details for b
 bash sap-edge/edge-integration-cell/get_all_accesses.sh
 ```
 
-### Cleanup Redis
+#### Cleanup Redis
 
 **Option 1: Automated Cleanup**
 
@@ -242,6 +259,27 @@ oc delete scc redis-enterprise-scc-v2
 # For OpenShift versions 4.16 and later
 oc delete scc redis-enterprise-scc
 oc delete namespace sap-eic-external-redis
+```
+
+### Valkey
+
+Valkey is a Redis-compatible in-memory datastore. For SAP EIC, TLS is always enabled.
+
+For detailed deployment instructions, see [edge-integration-cell/external-valkey/README.md](edge-integration-cell/external-valkey/README.md).
+
+#### Quick Start
+
+```bash
+cd edge-integration-cell/external-valkey
+
+# Deploy Valkey with TLS
+bash deploy_valkey.sh --password <your-password>
+
+# Get access details for SAP EIC configuration
+bash get_valkey_access.sh
+
+# Cleanup
+bash cleanup_valkey.sh
 ```
 
 ## GitOps with Argo CD
@@ -312,19 +350,11 @@ bash edge-integration-cell/cleanup_all_external_services.sh
 bash edge-integration-cell/cleanup_all_external_services.sh --force
 ```
 
-## Support & Operations
+## Operations Documentation
 
-### Support Information
-
-Red Hat does not provide support for the Postgres/Redis services configured through this repository. Support is available directly from the respective vendors:
-
-- **PostgreSQL**: [Crunchy Data](https://www.crunchydata.com/contact) offers enterprise-level support through a subscription-based model.
-- **Redis**: [Redis Labs](https://redis.io/meeting/) provides support as detailed in their Enterprise Software Subscription Agreement.
-
-### Operations Documentation
-
-- [Redis on Kubernetes](https://redis.io/docs/latest/operate/kubernetes/)
 - [Crunchy Postgres Operator Quickstart](https://access.crunchydata.com/documentation/postgres-operator/latest/quickstart)
+- [Redis on Kubernetes](https://redis.io/docs/latest/operate/kubernetes/)
+- [Valkey Documentation](https://valkey.io/docs/)
 
 # License
 
