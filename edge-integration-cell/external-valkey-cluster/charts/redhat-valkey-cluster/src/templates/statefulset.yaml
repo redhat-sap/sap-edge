@@ -1,0 +1,130 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  annotations:
+    template.alpha.openshift.io/wait-for-ready: "true"
+    image.openshift.io/triggers: |-
+      [
+        {
+          "from": {
+            "kind": "ImageStreamTag",
+            "name": "valkey:{{ .Values.valkey_version }}"
+          },
+          "fieldPath": "spec.template.spec.containers[0].image"
+        }
+      ]
+  labels:
+    template: valkey-cluster-template
+  name: {{ .Values.database_service_name }}
+spec:
+  serviceName: {{ .Values.database_service_name }}-headless
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      name: {{ .Values.database_service_name }}
+  template:
+    metadata:
+      labels:
+        name: {{ .Values.database_service_name }}
+    spec:
+      containers:
+      - name: valkey
+        env:
+        - name: VALKEY_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: database-password
+              name: {{ .Values.database_service_name }}
+        image: "valkey:{{ .Values.valkey_version }}"
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - |
+          MASTER_HOST="{{ .Values.database_service_name }}-0.{{ .Values.database_service_name }}-headless.{{ .Release.Namespace }}.svc.cluster.local"
+          {{- if .Values.tls.enabled }}
+          REPL_PORT=6380
+          TLS_ARGS="--tls-port 6380 --tls-cert-file /tls/tls.crt --tls-key-file /tls/tls.key --tls-ca-cert-file /tls/tls.crt --tls-auth-clients no"
+          {{- else }}
+          REPL_PORT=6379
+          TLS_ARGS=""
+          {{- end }}
+          if [ "$(hostname)" = "{{ .Values.database_service_name }}-0" ]; then
+            exec valkey-server --requirepass "$VALKEY_PASSWORD" $TLS_ARGS
+          else
+            exec valkey-server \
+              --requirepass "$VALKEY_PASSWORD" \
+              --replicaof "$MASTER_HOST" "$REPL_PORT" \
+              --masterauth "$VALKEY_PASSWORD" \
+              {{- if .Values.tls.enabled }}
+              --tls-replication yes \
+              {{- end }}
+              $TLS_ARGS
+          fi
+        ports:
+        - containerPort: 6379
+          protocol: TCP
+        {{- if .Values.tls.enabled }}
+        - containerPort: 6380
+          protocol: TCP
+        {{- end }}
+        livenessProbe:
+          initialDelaySeconds: 30
+          tcpSocket:
+            port: 6379
+          timeoutSeconds: 1
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -i
+            - -c
+            {{- if .Values.tls.enabled }}
+            - test "$(valkey-cli -h 127.0.0.1 -a $VALKEY_PASSWORD --tls --cert /tls/tls.crt --key /tls/tls.key --cacert /tls/tls.crt -p 6380 ping)" == "PONG"
+            {{- else }}
+            - test "$(valkey-cli -h 127.0.0.1 -a $VALKEY_PASSWORD ping)" == "PONG"
+            {{- end }}
+          initialDelaySeconds: 5
+          timeoutSeconds: 1
+        resources:
+          limits:
+            memory: {{ .Values.memory_limit }}
+        securityContext:
+          capabilities: {}
+          privileged: false
+        terminationMessagePath: /dev/termination-log
+        volumeMounts:
+        - mountPath: /var/lib/valkey/data
+          name: {{ .Values.database_service_name }}-data
+        {{- if .Values.tls.enabled }}
+        - mountPath: /tls
+          name: tls-certs
+          readOnly: true
+        {{- end }}
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      {{- if .Values.tls.enabled }}
+      volumes:
+      - name: tls-certs
+        secret:
+          secretName: {{ .Values.tls.secretName }}
+      {{- end }}
+  volumeClaimTemplates:
+  - metadata:
+      name: {{ .Values.database_service_name }}-data
+      labels:
+        template: valkey-cluster-template
+      {{- if .Values.pvc.netapp_nfs }}
+      annotations:
+        trident.netapp.io/reclaimPolicy: Delete
+      {{- end }}
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: {{ .Values.pvc.volume_capacity }}
+      {{- if .Values.pvc.netapp_nfs }}
+      storageClassName: netapp-nfs
+      volumeMode: Filesystem
+      {{- end }}
