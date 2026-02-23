@@ -10,7 +10,7 @@ metadata:
 spec:
   containers:
     - name: "valkey-replication-test"
-      image: {{ .Values.image }}
+      image: image-registry.openshift-image-registry.svc:5000/{{ .Release.Namespace }}/valkey:{{ .Values.valkey_version }}
       imagePullPolicy: IfNotPresent
       env:
         - name: VALKEY_PASSWORD

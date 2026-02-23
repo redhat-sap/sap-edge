@@ -28,7 +28,7 @@ Three services are created:
 | `database_service_name` | Base name for all resources. | `valkey` |
 | `replicas` | Total number of pods (1 master + N-1 replicas). | `3` |
 | `valkey_password` | Password for Valkey authentication. | |
-| `image` | Valkey container image. | `registry.redhat.io/rhel10/valkey-8:latest` |
+| `valkey_version` | Valkey ImageStream tag (8-el10, 8-el9, or latest). | `8-el10` |
 | `namespace` | OpenShift namespace. | `valkey-cluster-testing` |
 | `memory_limit` | Memory limit per pod. | `512Mi` |
 | `pvc.volume_capacity` | Persistent volume size per pod. | `1Gi` |

@@ -162,6 +162,33 @@ install_imagestreams() {
     log_info "ImageStreams chart installed successfully"
 }
 
+# Wait for ImageStream to be imported
+wait_for_imagestream() {
+    log_info "Waiting for Valkey ImageStream to be imported..."
+
+    if $DRY_RUN; then
+        log_info "[DRY-RUN] Would wait for ImageStream import"
+        return
+    fi
+
+    local max_attempts=30
+    local attempt=0
+
+    while [[ $attempt -lt $max_attempts ]]; do
+        if oc get istag "valkey:8-el10" -n "$NAMESPACE" &> /dev/null; then
+            log_info "ImageStream tag valkey:8-el10 is available"
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        echo -n "."
+        sleep 5
+    done
+
+    echo ""
+    log_error "Timeout waiting for ImageStream import"
+    exit 1
+}
+
 # Install valkey-cluster chart
 install_valkey() {
     log_info "Installing redhat-valkey-cluster chart..."
@@ -282,6 +309,7 @@ main() {
     check_prerequisites
     create_namespace
     install_imagestreams
+    wait_for_imagestream
     install_valkey
     wait_for_valkey
     verify_deployment

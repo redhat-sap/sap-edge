@@ -25,7 +25,7 @@ spec:
             secretKeyRef:
               key: database-password
               name: {{ .Values.database_service_name }}
-        image: {{ .Values.image }}
+        image: image-registry.openshift-image-registry.svc:5000/{{ .Release.Namespace }}/valkey:{{ .Values.valkey_version }}
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
