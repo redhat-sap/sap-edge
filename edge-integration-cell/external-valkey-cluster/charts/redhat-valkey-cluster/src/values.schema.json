@@ -27,10 +27,9 @@
             "sliderMax": 65536,
             "sliderUnit": "Mi"
         },
-        "valkey_version": {
+        "image": {
             "type": "string",
-            "description": "Specify valkey imagestream tag",
-            "enum": [ "latest", "8-el10", "8-el9" ]
+            "description": "Valkey container image (e.g. registry.redhat.io/rhel10/valkey-8:latest)"
         },
         "pvc": {
             "type": "object",
