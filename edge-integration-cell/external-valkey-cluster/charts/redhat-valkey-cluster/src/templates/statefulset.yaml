@@ -44,9 +44,9 @@ spec:
           TLS_ARGS=""
           {{- end }}
           if [ "$POD_NAME" = "{{ .Values.database_service_name }}-0" ]; then
-            exec valkey-server --requirepass "$VALKEY_PASSWORD" $TLS_ARGS
+            exec valkey-server --dir /var/lib/valkey/data --requirepass "$VALKEY_PASSWORD" $TLS_ARGS
           else
-            exec valkey-server \
+            exec valkey-server --dir /var/lib/valkey/data \
               --requirepass "$VALKEY_PASSWORD" \
               --replicaof "$MASTER_HOST" "$REPL_PORT" \
               --masterauth "$VALKEY_PASSWORD" \
