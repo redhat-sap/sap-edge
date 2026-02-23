@@ -25,6 +25,10 @@ spec:
             secretKeyRef:
               key: database-password
               name: {{ .Values.database_service_name }}
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
         image: image-registry.openshift-image-registry.svc:5000/{{ .Release.Namespace }}/valkey:{{ .Values.valkey_version }}
         imagePullPolicy: IfNotPresent
         command:
@@ -34,21 +38,18 @@ spec:
           MASTER_HOST="{{ .Values.database_service_name }}-0.{{ .Values.database_service_name }}-headless.{{ .Release.Namespace }}.svc.cluster.local"
           {{- if .Values.tls.enabled }}
           REPL_PORT=6380
-          TLS_ARGS="--tls-port 6380 --tls-cert-file /tls/tls.crt --tls-key-file /tls/tls.key --tls-ca-cert-file /tls/tls.crt --tls-auth-clients no"
+          TLS_ARGS="--tls-port 6380 --tls-cert-file /tls/tls.crt --tls-key-file /tls/tls.key --tls-ca-cert-file /tls/tls.crt --tls-auth-clients no --tls-replication yes"
           {{- else }}
           REPL_PORT=6379
           TLS_ARGS=""
           {{- end }}
-          if [ "$(hostname)" = "{{ .Values.database_service_name }}-0" ]; then
+          if [ "$POD_NAME" = "{{ .Values.database_service_name }}-0" ]; then
             exec valkey-server --requirepass "$VALKEY_PASSWORD" $TLS_ARGS
           else
             exec valkey-server \
               --requirepass "$VALKEY_PASSWORD" \
               --replicaof "$MASTER_HOST" "$REPL_PORT" \
               --masterauth "$VALKEY_PASSWORD" \
-              {{- if .Values.tls.enabled }}
-              --tls-replication yes \
-              {{- end }}
               $TLS_ARGS
           fi
         ports:
