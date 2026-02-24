@@ -28,6 +28,8 @@ This repository provides tooling for deploying external services (PostgreSQL, Re
   - [Datastores](#datastores)
     - [Redis](#redis)
     - [Valkey](#valkey)
+      - [Standalone Mode](#standalone-mode)
+      - [Cluster Mode](#cluster-mode)
 - [GitOps with Argo CD](#gitops-with-argo-cd)
 - [Automated Deployment Scripts](#automated-deployment-scripts)
 - [Operations Documentation](#operations-documentation)
@@ -265,22 +267,83 @@ oc delete namespace sap-eic-external-redis
 
 Valkey is a Redis-compatible in-memory datastore. For SAP EIC, TLS is always enabled.
 
+Two deployment modes are available:
+
+| Mode | Directory | Description |
+|------|-----------|-------------|
+| **Standalone** | `external-valkey/` | Single Valkey instance. Use when SAP EIC datastore Mode is `standalone`. |
+| **Cluster** | `external-valkey-cluster/` | Redis Cluster mode with hash slot sharding (3+ nodes). Use when SAP EIC datastore Mode is `cluster`. |
+
+#### Standalone Mode
+
 For detailed deployment instructions, see [edge-integration-cell/external-valkey/README.md](edge-integration-cell/external-valkey/README.md).
 
-#### Quick Start
+1. Clone the repository:
+    ```bash
+    git clone https://github.com/redhat-sap/sap-edge.git
+    ```
+2. Deploy Valkey:
+    ```bash
+    # Deploy with TLS (password optional, default: testp)
+    bash sap-edge/edge-integration-cell/external-valkey/deploy_valkey.sh
+
+    # Deploy with custom password
+    bash sap-edge/edge-integration-cell/external-valkey/deploy_valkey.sh --password <your-password>
+    ```
+3. Get access details for SAP EIC configuration:
+    ```bash
+    bash sap-edge/edge-integration-cell/external-valkey/get_valkey_access.sh
+    ```
+
+After running the above script, you will get access details like the following:
+- External Valkey Addresses: `valkey-0.valkey-headless.sap-eic-external-valkey.svc.cluster.local:6380`
+- External Valkey Mode: `standalone`
+- External Valkey Username: `[leave me blank]`
+- External Valkey Password: `testp`
+- External Valkey TLS Certificate content saved to `valkey_tls_certificate.pem`
+- External Valkey Server Name: `valkey-headless.sap-eic-external-valkey.svc.cluster.local`
+
+#### Cluster Mode
+
+For detailed deployment instructions, see [edge-integration-cell/external-valkey-cluster/README.md](edge-integration-cell/external-valkey-cluster/README.md).
+
+1. Clone the repository:
+    ```bash
+    git clone https://github.com/redhat-sap/sap-edge.git
+    ```
+2. Deploy Valkey cluster:
+    ```bash
+    # Deploy with TLS (password optional, default: testp)
+    bash sap-edge/edge-integration-cell/external-valkey-cluster/deploy_valkey.sh
+
+    # Deploy with custom password
+    bash sap-edge/edge-integration-cell/external-valkey-cluster/deploy_valkey.sh --password <your-password>
+    ```
+3. Get access details for SAP EIC configuration:
+    ```bash
+    bash sap-edge/edge-integration-cell/external-valkey-cluster/get_valkey_access.sh
+    ```
+
+After running the above script, you will get access details like the following:
+- External Valkey Addresses: `valkey-0.valkey-headless.sap-eic-external-valkey-cluster.svc.cluster.local:6380,valkey-1.valkey-headless.sap-eic-external-valkey-cluster.svc.cluster.local:6380,valkey-2.valkey-headless.sap-eic-external-valkey-cluster.svc.cluster.local:6380`
+- External Valkey Mode: `cluster`
+- External Valkey Username: `[leave me blank]`
+- External Valkey Password: `testp`
+- External Valkey TLS Certificate content saved to `valkey_tls_certificate.pem`
+- External Valkey Server Name: `valkey-headless.sap-eic-external-valkey-cluster.svc.cluster.local`
+
+#### Cleanup Valkey
 
 ```bash
-# Deploy Valkey with TLS (password optional, default: testp)
-bash sap-edge/edge-integration-cell/external-valkey/deploy_valkey.sh
-
-# Deploy with custom password
-bash sap-edge/edge-integration-cell/external-valkey/deploy_valkey.sh --password <your-password>
-
-# Get access details for SAP EIC configuration
-bash sap-edge/edge-integration-cell/external-valkey/get_valkey_access.sh
-
-# Cleanup
+# Standalone cleanup
 bash sap-edge/edge-integration-cell/external-valkey/cleanup_valkey.sh
+
+# Cluster cleanup
+bash sap-edge/edge-integration-cell/external-valkey-cluster/cleanup_valkey.sh
+
+# Force cleanup (no prompts)
+bash sap-edge/edge-integration-cell/external-valkey/cleanup_valkey.sh --force
+bash sap-edge/edge-integration-cell/external-valkey-cluster/cleanup_valkey.sh --force
 ```
 
 ## GitOps with Argo CD
