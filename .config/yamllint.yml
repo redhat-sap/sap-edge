@@ -11,6 +11,7 @@ ignore:
   - .tekton
   - rosa/terraform/.terraform
   - edge-integration-cell/external-valkey/charts
+  - edge-integration-cell/external-valkey-cluster/charts
 
 yaml-files:
   - "*.yaml"
