@@ -40,7 +40,7 @@ spec:
           CLUSTER_ANNOUNCE="--cluster-announce-hostname ${POD_FQDN}"
           {{- if .Values.tls.enabled }}
           CLUSTER_ANNOUNCE="${CLUSTER_ANNOUNCE} --cluster-announce-tls-port 6380 --cluster-announce-bus-port 16380"
-          TLS_ARGS="--port 0 --tls-port 6380 --tls-cert-file /tls/tls.crt --tls-key-file /tls/tls.key --tls-ca-cert-file /tls/tls.crt --tls-auth-clients no --tls-cluster yes --tls-replication yes"
+          TLS_ARGS="--port 0 --tls-port 6380 --tls-cert-file /tls/tls.crt --tls-key-file /tls/tls.key --tls-ca-cert-file /service-ca/service-ca.crt --tls-auth-clients no --tls-cluster yes --tls-replication yes"
           {{- else }}
           CLUSTER_ANNOUNCE="${CLUSTER_ANNOUNCE} --cluster-announce-port 6379 --cluster-announce-bus-port 16379"
           TLS_ARGS=""
@@ -68,9 +68,17 @@ spec:
         {{- end }}
         livenessProbe:
           initialDelaySeconds: 30
-          tcpSocket:
-            port: {{- if .Values.tls.enabled }} 6380 {{- else }} 6379 {{- end }}
-          timeoutSeconds: 1
+          exec:
+            command:
+            - /bin/sh
+            - -i
+            - -c
+            {{- if .Values.tls.enabled }}
+            - test "$(valkey-cli -h 127.0.0.1 -a $VALKEY_PASSWORD --tls --cert /tls/tls.crt --key /tls/tls.key --cacert /service-ca/service-ca.crt -p 6380 ping)" == "PONG"
+            {{- else }}
+            - test "$(valkey-cli -h 127.0.0.1 -a $VALKEY_PASSWORD ping)" == "PONG"
+            {{- end }}
+          timeoutSeconds: 5
         readinessProbe:
           exec:
             command:
@@ -78,7 +86,7 @@ spec:
             - -i
             - -c
             {{- if .Values.tls.enabled }}
-            - test "$(valkey-cli -h 127.0.0.1 -a $VALKEY_PASSWORD --tls --cert /tls/tls.crt --key /tls/tls.key --cacert /tls/tls.crt -p 6380 ping)" == "PONG"
+            - test "$(valkey-cli -h 127.0.0.1 -a $VALKEY_PASSWORD --tls --cert /tls/tls.crt --key /tls/tls.key --cacert /service-ca/service-ca.crt -p 6380 ping)" == "PONG"
             {{- else }}
             - test "$(valkey-cli -h 127.0.0.1 -a $VALKEY_PASSWORD ping)" == "PONG"
             {{- end }}
@@ -98,6 +106,9 @@ spec:
         - mountPath: /tls
           name: tls-certs
           readOnly: true
+        - mountPath: /service-ca
+          name: service-ca
+          readOnly: true
         {{- end }}
       dnsPolicy: ClusterFirst
       restartPolicy: Always
@@ -106,6 +117,9 @@ spec:
       - name: tls-certs
         secret:
           secretName: {{ .Values.tls.secretName }}
+      - name: service-ca
+        configMap:
+          name: {{ .Values.database_service_name }}-service-ca
       {{- end }}
   volumeClaimTemplates:
   - metadata:
