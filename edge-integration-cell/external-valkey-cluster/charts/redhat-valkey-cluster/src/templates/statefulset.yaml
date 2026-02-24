@@ -40,7 +40,7 @@ spec:
           CLUSTER_ANNOUNCE="--cluster-announce-hostname ${POD_FQDN}"
           {{- if .Values.tls.enabled }}
           CLUSTER_ANNOUNCE="${CLUSTER_ANNOUNCE} --cluster-announce-tls-port 6380 --cluster-announce-bus-port 16380"
-          TLS_ARGS="--port 0 --tls-port 6380 --tls-cert-file /tls/tls.crt --tls-key-file /tls/tls.key --tls-ca-cert-file /service-ca/service-ca.crt --tls-auth-clients no --tls-cluster yes --tls-replication yes"
+          TLS_ARGS="--port 0 --tls-port 6380 --tls-cert-file /tls/tls.crt --tls-key-file /tls/tls.key --tls-ca-cert-file /service-ca/service-ca.crt --tls-auth-clients no"
           {{- else }}
           CLUSTER_ANNOUNCE="${CLUSTER_ANNOUNCE} --cluster-announce-port 6379 --cluster-announce-bus-port 16379"
           TLS_ARGS=""
