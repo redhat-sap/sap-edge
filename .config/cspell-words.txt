@@ -125,3 +125,6 @@ appcode
 paas
 requirepass
 masterauth
+redirections
+pvcs
+istag
