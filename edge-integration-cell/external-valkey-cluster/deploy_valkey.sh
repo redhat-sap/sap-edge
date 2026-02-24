@@ -253,7 +253,7 @@ wait_for_valkey() {
     exit 1
 }
 
-# Wait for cluster initialization (Helm post-install hook Job)
+# Wait for cluster initialization
 wait_for_cluster_init() {
     log_info "Waiting for Redis Cluster initialization..."
 
@@ -266,10 +266,25 @@ wait_for_cluster_init() {
     local attempt=0
 
     while [[ $attempt -lt $max_attempts ]]; do
+        # Check if cluster is already healthy (handles upgrade case where
+        # the post-install hook doesn't run and the job was already deleted)
+        local pw
+        pw=$(oc get secret valkey -n "$NAMESPACE" -o jsonpath='{.data.database-password}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
+        local cluster_state
+        cluster_state=$(oc exec valkey-0 -n "$NAMESPACE" -- \
+            valkey-cli -a "$pw" --no-auth-warning \
+            --tls --cert /tls/tls.crt --key /tls/tls.key --cacert /service-ca/service-ca.crt \
+            -p 6380 CLUSTER INFO 2>/dev/null | grep -o 'cluster_state:[a-z]*' || echo "")
+        if [[ "$cluster_state" == "cluster_state:ok" ]]; then
+            log_info "Cluster is healthy (cluster_state:ok)"
+            return 0
+        fi
+
+        # Check init job status (exists during first install)
         local job_status
         job_status=$(oc get job valkey-cluster-init -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' 2>/dev/null || echo "")
         if [[ "$job_status" == "True" ]]; then
-            log_info "Cluster initialization completed successfully"
+            log_info "Cluster initialization job completed successfully"
             return 0
         fi
 
