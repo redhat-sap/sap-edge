@@ -59,11 +59,14 @@ if ! oc get pods -l name=valkey -n "$NAMESPACE" &> /dev/null; then
     exit 1
 fi
 
-# Get service hostnames
-MASTER_HOST="valkey-master.${NAMESPACE}.svc"
-MASTER_HOST_FULL="valkey-master.${NAMESPACE}.svc.cluster.local"
-READ_HOST="valkey-read.${NAMESPACE}.svc"
-READ_HOST_FULL="valkey-read.${NAMESPACE}.svc.cluster.local"
+# Use headless service DNS names to match TLS certificate SANs
+# The cert is generated for the headless service, so SANs cover:
+#   *.valkey-headless.<namespace>.svc.cluster.local
+#   valkey-headless.<namespace>.svc.cluster.local
+MASTER_HOST="valkey-0.valkey-headless.${NAMESPACE}.svc"
+MASTER_HOST_FULL="valkey-0.valkey-headless.${NAMESPACE}.svc.cluster.local"
+READ_HOST="valkey-headless.${NAMESPACE}.svc"
+READ_HOST_FULL="valkey-headless.${NAMESPACE}.svc.cluster.local"
 
 # TLS port (TLS is always enabled for SAP EIC)
 PORT="6380"

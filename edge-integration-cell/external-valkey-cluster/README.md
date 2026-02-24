@@ -128,24 +128,27 @@ helm test valkey-cluster -n sap-eic-external-valkey-cluster
 
 ## Connection Details
 
+The TLS certificate is generated for the headless service, so clients must use
+headless service DNS names to match the certificate SANs.
+
 ### Write connections (master only)
 
-- **Host**: `valkey-master.sap-eic-external-valkey-cluster.svc.cluster.local`
+- **Host**: `valkey-0.valkey-headless.sap-eic-external-valkey-cluster.svc.cluster.local`
 - **Port**: `6380` (TLS)
 
 ```bash
-valkey-cli -h valkey-master.sap-eic-external-valkey-cluster.svc -p 6380 \
+valkey-cli -h valkey-0.valkey-headless.sap-eic-external-valkey-cluster.svc -p 6380 \
   --tls --cacert /etc/ssl/service-ca/service-ca.crt \
   -a <your-password>
 ```
 
 ### Read connections (load-balanced)
 
-- **Host**: `valkey-read.sap-eic-external-valkey-cluster.svc.cluster.local`
+- **Host**: `valkey-headless.sap-eic-external-valkey-cluster.svc.cluster.local`
 - **Port**: `6380` (TLS)
 
 ```bash
-valkey-cli -h valkey-read.sap-eic-external-valkey-cluster.svc -p 6380 \
+valkey-cli -h valkey-headless.sap-eic-external-valkey-cluster.svc -p 6380 \
   --tls --cacert /etc/ssl/service-ca/service-ca.crt \
   -a <your-password>
 ```
