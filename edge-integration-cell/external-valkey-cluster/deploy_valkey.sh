@@ -193,8 +193,8 @@ wait_for_imagestream() {
 install_valkey() {
     log_info "Installing redhat-valkey-cluster chart..."
 
-    local helm_cmd="helm install ${RELEASE_NAME} ${CHARTS_DIR}/redhat-valkey-cluster/src -n ${NAMESPACE}"
-    local helm_upgrade_cmd="helm upgrade ${RELEASE_NAME} ${CHARTS_DIR}/redhat-valkey-cluster/src -n ${NAMESPACE}"
+    local helm_cmd="helm install ${RELEASE_NAME} ${CHARTS_DIR}/redhat-valkey-cluster/src -n ${NAMESPACE} --timeout 10m"
+    local helm_upgrade_cmd="helm upgrade ${RELEASE_NAME} ${CHARTS_DIR}/redhat-valkey-cluster/src -n ${NAMESPACE} --timeout 10m"
 
     # Add password if provided
     if [[ -n "$VALKEY_PASSWORD" ]]; then
