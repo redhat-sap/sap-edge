@@ -63,13 +63,23 @@ fi
 # The cert is generated for the headless service, so SANs cover:
 #   *.valkey-headless.<namespace>.svc.cluster.local
 #   valkey-headless.<namespace>.svc.cluster.local
-MASTER_HOST="valkey-0.valkey-headless.${NAMESPACE}.svc"
-MASTER_HOST_FULL="valkey-0.valkey-headless.${NAMESPACE}.svc.cluster.local"
-READ_HOST="valkey-headless.${NAMESPACE}.svc"
-READ_HOST_FULL="valkey-headless.${NAMESPACE}.svc.cluster.local"
 
 # TLS port (TLS is always enabled for SAP EIC)
 PORT="6380"
+
+# Build comma-separated list of all cluster node addresses
+# Get the number of running valkey pods
+REPLICA_COUNT=$(oc get pods -l name=valkey -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+NODES=""
+for i in $(seq 0 $((REPLICA_COUNT - 1))); do
+    if [ -n "$NODES" ]; then
+        NODES="${NODES},"
+    fi
+    NODES="${NODES}valkey-${i}.valkey-headless.${NAMESPACE}.svc.cluster.local:${PORT}"
+done
+
+# TLS Server Name must match certificate SANs
+SERVER_NAME="valkey-headless.${NAMESPACE}.svc.cluster.local"
 
 # Get password from secret
 VALKEY_PASSWORD=""
@@ -86,9 +96,9 @@ else
     exit 1
 fi
 
-echo "External Valkey Addresses: ${MASTER_HOST_FULL}:${PORT}"
+echo "External Valkey Addresses: ${NODES}"
 echo "External Valkey Mode: cluster"
 echo "External Valkey Username: [leave me blank]"
 echo "External Valkey Password: ${VALKEY_PASSWORD:-"<not found>"}"
 echo "External Valkey TLS Certificate content saved to ${CA_CERT_FILE}"
-echo "External Valkey Server Name: ${MASTER_HOST_FULL}"
+echo "External Valkey Server Name: ${SERVER_NAME}"

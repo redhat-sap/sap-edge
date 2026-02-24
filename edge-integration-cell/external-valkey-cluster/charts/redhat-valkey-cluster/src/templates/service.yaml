@@ -3,7 +3,7 @@ kind: Service
 metadata:
   labels:
     template: valkey-cluster-template
-  name: {{ .Values.database_service_name }}-read
+  name: {{ .Values.database_service_name }}
 spec:
   ports:
   - name: valkey

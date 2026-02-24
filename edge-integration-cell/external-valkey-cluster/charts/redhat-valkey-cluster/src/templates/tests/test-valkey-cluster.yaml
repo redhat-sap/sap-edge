@@ -1,0 +1,62 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ .Release.Name }}-cluster-test"
+  namespace: "{{ .Release.Namespace }}"
+  annotations:
+    "helm.sh/hook": test
+  labels:
+    name: {{ .Values.database_service_name }}
+spec:
+  containers:
+    - name: "valkey-cluster-test"
+      image: image-registry.openshift-image-registry.svc:5000/{{ .Release.Namespace }}/valkey:{{ .Values.valkey_version }}
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: VALKEY_PASSWORD
+          value: "{{ .Values.valkey_password }}"
+      command:
+        - /bin/bash
+        - -ec
+        - |
+          {{- if .Values.tls.enabled }}
+          TLS_ARGS="--tls --cacert /service-ca/service-ca.crt -p 6380"
+          {{- else }}
+          TLS_ARGS=""
+          {{- end }}
+
+          NODE="{{ .Values.database_service_name }}-0.{{ .Values.database_service_name }}-headless.{{ .Release.Namespace }}.svc.cluster.local"
+
+          echo "==> Pinging cluster node..."
+          timeout 15 valkey-cli -h "$NODE" -a $VALKEY_PASSWORD $TLS_ARGS ping
+
+          echo "==> Checking cluster state..."
+          CLUSTER_INFO=$(timeout 15 valkey-cli -h "$NODE" -a $VALKEY_PASSWORD $TLS_ARGS CLUSTER INFO)
+          echo "$CLUSTER_INFO"
+          echo "$CLUSTER_INFO" | grep -q "cluster_state:ok" || { echo "FAIL: cluster_state is not ok"; exit 1; }
+          echo "$CLUSTER_INFO" | grep -q "cluster_slots_assigned:16384" || { echo "FAIL: not all 16384 slots assigned"; exit 1; }
+
+          echo "==> Checking cluster nodes..."
+          CLUSTER_NODES=$(timeout 15 valkey-cli -h "$NODE" -a $VALKEY_PASSWORD $TLS_ARGS CLUSTER NODES)
+          echo "$CLUSTER_NODES"
+          NODE_COUNT=$(echo "$CLUSTER_NODES" | grep -c "master\|slave" || echo "0")
+          echo "Found ${NODE_COUNT} nodes in cluster"
+          if [ "$NODE_COUNT" -lt {{ .Values.replicas }} ]; then
+            echo "FAIL: expected at least {{ .Values.replicas }} nodes, found ${NODE_COUNT}"
+            exit 1
+          fi
+
+          echo "==> All cluster tests passed."
+      {{- if .Values.tls.enabled }}
+      volumeMounts:
+        - mountPath: /service-ca
+          name: service-ca
+          readOnly: true
+      {{- end }}
+  {{- if .Values.tls.enabled }}
+  volumes:
+    - name: service-ca
+      configMap:
+        name: {{ .Values.database_service_name }}-service-ca
+  {{- end }}
+  restartPolicy: Never

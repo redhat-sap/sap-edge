@@ -124,3 +124,4 @@ cabundle
 appcode
 paas
 requirepass
+masterauth

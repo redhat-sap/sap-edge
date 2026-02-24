@@ -21,6 +21,16 @@ spec:
     protocol: TCP
     targetPort: 6380
   {{- end }}
+  - name: cluster-bus
+    port: 16379
+    protocol: TCP
+    targetPort: 16379
+  {{- if .Values.tls.enabled }}
+  - name: cluster-bus-tls
+    port: 16380
+    protocol: TCP
+    targetPort: 16380
+  {{- end }}
   selector:
     name: {{ .Values.database_service_name }}
   publishNotReadyAddresses: true

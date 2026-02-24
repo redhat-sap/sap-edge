@@ -41,7 +41,7 @@ usage() {
     cat <<EOF
 Usage: $0 [OPTIONS]
 
-Deploy Valkey in cluster mode (1 master + N-1 read replicas) with TLS on OpenShift for SAP EIC.
+Deploy Valkey in Redis Cluster mode (hash slot sharding) with TLS on OpenShift for SAP EIC.
 
 OPTIONS:
     -n, --namespace NAMESPACE    Namespace for Valkey (default: sap-eic-external-valkey-cluster)
@@ -253,6 +253,44 @@ wait_for_valkey() {
     exit 1
 }
 
+# Wait for cluster initialization (Helm post-install hook Job)
+wait_for_cluster_init() {
+    log_info "Waiting for Redis Cluster initialization..."
+
+    if $DRY_RUN; then
+        log_info "[DRY-RUN] Would wait for cluster initialization job"
+        return
+    fi
+
+    local max_attempts=60
+    local attempt=0
+
+    while [[ $attempt -lt $max_attempts ]]; do
+        local job_status
+        job_status=$(oc get job valkey-cluster-init -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' 2>/dev/null || echo "")
+        if [[ "$job_status" == "True" ]]; then
+            log_info "Cluster initialization completed successfully"
+            return 0
+        fi
+
+        local job_failed
+        job_failed=$(oc get job valkey-cluster-init -n "$NAMESPACE" -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null || echo "")
+        if [[ "$job_failed" == "True" ]]; then
+            log_error "Cluster initialization job failed"
+            oc logs job/valkey-cluster-init -n "$NAMESPACE" 2>/dev/null || true
+            exit 1
+        fi
+
+        attempt=$((attempt + 1))
+        echo -n "."
+        sleep 5
+    done
+
+    echo ""
+    log_error "Timeout waiting for cluster initialization"
+    exit 1
+}
+
 # Verify deployment
 verify_deployment() {
     log_info "Verifying deployment..."
@@ -292,7 +330,7 @@ main() {
     echo ""
     echo "Configuration:"
     echo "  Namespace:    ${NAMESPACE}"
-    echo "  Mode:         cluster (1 master + N-1 replicas)"
+    echo "  Mode:         Redis Cluster (hash slot sharding)"
     echo "  TLS:          enabled (required by SAP EIC)"
     echo "  Dry Run:      ${DRY_RUN}"
     echo ""
@@ -312,6 +350,7 @@ main() {
     wait_for_imagestream
     install_valkey
     wait_for_valkey
+    wait_for_cluster_init
     verify_deployment
 
     echo ""

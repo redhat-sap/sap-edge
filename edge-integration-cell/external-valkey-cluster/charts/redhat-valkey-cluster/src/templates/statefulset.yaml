@@ -35,23 +35,22 @@ spec:
         - /bin/sh
         - -c
         - |
-          MASTER_HOST="{{ .Values.database_service_name }}-0.{{ .Values.database_service_name }}-headless.{{ .Release.Namespace }}.svc.cluster.local"
+          POD_FQDN="${POD_NAME}.{{ .Values.database_service_name }}-headless.{{ .Release.Namespace }}.svc.cluster.local"
+          CLUSTER_ARGS="--cluster-enabled yes --cluster-config-file /var/lib/valkey/data/nodes.conf --cluster-node-timeout 5000"
+          CLUSTER_ANNOUNCE="--cluster-announce-hostname ${POD_FQDN}"
           {{- if .Values.tls.enabled }}
-          REPL_PORT=6380
-          TLS_ARGS="--tls-port 6380 --tls-cert-file /tls/tls.crt --tls-key-file /tls/tls.key --tls-ca-cert-file /tls/tls.crt --tls-auth-clients no --tls-replication yes"
+          CLUSTER_ANNOUNCE="${CLUSTER_ANNOUNCE} --cluster-announce-tls-port 6380 --cluster-announce-bus-port 16380"
+          TLS_ARGS="--tls-port 6380 --tls-cert-file /tls/tls.crt --tls-key-file /tls/tls.key --tls-ca-cert-file /tls/tls.crt --tls-auth-clients no --tls-cluster yes --tls-replication yes"
           {{- else }}
-          REPL_PORT=6379
+          CLUSTER_ANNOUNCE="${CLUSTER_ANNOUNCE} --cluster-announce-port 6379 --cluster-announce-bus-port 16379"
           TLS_ARGS=""
           {{- end }}
-          if [ "$POD_NAME" = "{{ .Values.database_service_name }}-0" ]; then
-            exec valkey-server --dir /var/lib/valkey/data --requirepass "$VALKEY_PASSWORD" $TLS_ARGS
-          else
-            exec valkey-server --dir /var/lib/valkey/data \
-              --requirepass "$VALKEY_PASSWORD" \
-              --replicaof "$MASTER_HOST" "$REPL_PORT" \
-              --masterauth "$VALKEY_PASSWORD" \
-              $TLS_ARGS
-          fi
+          exec valkey-server --dir /var/lib/valkey/data \
+            --requirepass "$VALKEY_PASSWORD" \
+            --masterauth "$VALKEY_PASSWORD" \
+            $CLUSTER_ARGS \
+            $CLUSTER_ANNOUNCE \
+            $TLS_ARGS
         ports:
         - containerPort: 6379
           protocol: TCP
@@ -59,10 +58,18 @@ spec:
         - containerPort: 6380
           protocol: TCP
         {{- end }}
+        - containerPort: 16379
+          name: cluster-bus
+          protocol: TCP
+        {{- if .Values.tls.enabled }}
+        - containerPort: 16380
+          name: cluster-bus-tls
+          protocol: TCP
+        {{- end }}
         livenessProbe:
           initialDelaySeconds: 30
           tcpSocket:
-            port: 6379
+            port: {{- if .Values.tls.enabled }} 6380 {{- else }} 6379 {{- end }}
           timeoutSeconds: 1
         readinessProbe:
           exec:
