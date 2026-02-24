@@ -86,10 +86,8 @@ else
     exit 1
 fi
 
-echo "External Valkey Addresses: ${MASTER_HOST}:${PORT}"
-echo "External Valkey Mode: cluster (1 master + N-1 read replicas)"
-echo "External Valkey Master (read/write): ${MASTER_HOST_FULL}:${PORT}"
-echo "External Valkey Read (load-balanced): ${READ_HOST_FULL}:${PORT}"
+echo "External Valkey Addresses: ${MASTER_HOST_FULL}:${PORT}"
+echo "External Valkey Mode: cluster"
 echo "External Valkey Username: [leave me blank]"
 echo "External Valkey Password: ${VALKEY_PASSWORD:-"<not found>"}"
 echo "External Valkey TLS Certificate content saved to ${CA_CERT_FILE}"
