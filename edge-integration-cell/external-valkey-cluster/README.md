@@ -106,7 +106,8 @@ helm install redhat-valkey-imagestreams \
 helm install valkey-cluster \
   ./charts/redhat-valkey-cluster/src \
   -n sap-eic-external-valkey-cluster \
-  --set valkey_password=<your-password>
+  --set valkey_password=<your-password> \
+  --timeout 10m
 ```
 
 The Helm post-install hook will automatically form the Redis Cluster after all pods are ready.
@@ -175,7 +176,8 @@ No client certificate is required (`--tls-auth-clients` is set to `no`).
 ```bash
 helm upgrade valkey-cluster \
   ./charts/redhat-valkey-cluster/src \
-  -n sap-eic-external-valkey-cluster
+  -n sap-eic-external-valkey-cluster \
+  --timeout 10m
 ```
 
 ## Manual Cleanup
