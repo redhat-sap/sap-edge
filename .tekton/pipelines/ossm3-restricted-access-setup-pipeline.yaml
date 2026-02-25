@@ -1,0 +1,216 @@
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: ossm3-restricted-access-setup-pipeline
+  annotations:
+    description: "Set up a restricted-access OpenShift cluster for SAP Edge Lifecycle Management (ELM) with OpenShift Service Mesh 3.x: verifies operators, prepares namespaces, configures the service mesh, applies RBAC permissions, and generates a restricted kubeconfig"
+spec:
+  params:
+    - name: repoUrl
+      type: string
+      description: "Git repository URL"
+    - name: revision
+      type: string
+      description: "Git revision (branch/tag/commit)"
+      default: "main"
+    - name: hostedClusterName
+      type: string
+      description: "Name of the hosted cluster"
+    - name: hostedClusterNamespace
+      type: string
+      description: "Namespace for HostedCluster resources"
+      default: "clusters"
+    - name: hubKubeconfigSecretName
+      type: string
+      description: "Name of the Secret containing kubeconfig for hub cluster (optional, uses in-cluster config if empty)"
+      default: ""
+    - name: rbacResourcesConfigMapName
+      type: string
+      description: "Name of the ConfigMap containing RBAC YAML files from SAP Note 3618713 resources.zip"
+    - name: skipWebhook
+      type: string
+      description: "Skip optional admission webhook installation"
+      default: "false"
+    - name: jiraSecretName
+      type: string
+      description: "Name of the Kubernetes Secret containing Jira credentials"
+      default: ""
+    - name: jiraIssueKey
+      type: string
+      description: "Jira issue key to update with setup results"
+      default: ""
+  workspaces:
+    - name: source
+    - name: rbac-resources
+      description: "ConfigMap-backed workspace containing RBAC YAML files from SAP Note 3618713 resources.zip"
+
+  tasks:
+    # Step 1: Clone repository
+    - name: fetch-repository
+      taskRef: { name: git-clone }
+      params:
+        - name: url
+          value: $(params.repoUrl)
+        - name: revision
+          value: $(params.revision)
+      workspaces:
+        - name: output
+          workspace: source
+
+    # Step 2: Verify Service Mesh 3.x operators are installed
+    - name: verify-operators
+      runAfter: [fetch-repository]
+      taskRef: { name: ossm3-verify-operators }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 3: Prepare namespaces with labels and SCC annotations
+    - name: prepare-namespaces
+      runAfter: [verify-operators]
+      taskRef: { name: ossm3-prepare-namespaces }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 4: Configure OpenShift Service Mesh 3.x
+    - name: configure-mesh
+      runAfter: [prepare-namespaces]
+      taskRef: { name: ossm3-configure-mesh }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 5: Apply RBAC permissions from SAP Note 3618713 resources
+    - name: apply-rbac
+      runAfter: [configure-mesh]
+      taskRef: { name: ossm3-apply-rbac }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
+        - name: skipWebhook
+          value: $(params.skipWebhook)
+      workspaces:
+        - name: source
+          workspace: source
+        - name: rbac-resources
+          workspace: rbac-resources
+
+    # Step 6: Generate restricted kubeconfig for ELM registration
+    - name: generate-kubeconfig
+      runAfter: [apply-rbac]
+      taskRef: { name: ossm3-generate-kubeconfig }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 7: Update Jira with setup results
+    - name: update-jira-setup-results
+      runAfter: [generate-kubeconfig]
+      when:
+        - input: "$(params.jiraIssueKey)"
+          operator: notin
+          values: [""]
+      taskRef:
+        name: jira-add-comment-custom
+      params:
+        - name: jiraSecretName
+          value: $(params.jiraSecretName)
+        - name: jiraIssueKey
+          value: $(params.jiraIssueKey)
+        - name: comment
+          value: |
+            h2. OSSM3 Restricted-Access Cluster Setup Completed
+
+            OpenShift Service Mesh 3.x restricted-access cluster setup completed successfully.
+
+            *Setup Summary:*
+            * Service Mesh 3.x operator verification: Completed
+            * Namespace preparation (6 namespaces): Completed
+            * Service Mesh 3.x configuration: Completed
+            * RBAC permissions applied: Completed
+            * Restricted kubeconfig generated: Completed
+
+            *Generated Kubeconfig:*
+            The restricted kubeconfig has been stored as Secret 'edgelm-kubeconfig-generated' in the pipeline namespace.
+
+            *Next Steps:*
+            # Register the cluster in ELM UI
+            # Check "Restricted Access to Kubernetes cluster"
+            # Provide the generated kubeconfig
+
+            *Pipeline Details:*
+            * *Repository:* $(params.repoUrl)
+            * *Revision:* $(params.revision)
+
+  finally:
+    # Update Jira on pipeline completion (success or failure)
+    - name: update-jira-final-status
+      when:
+        - input: "$(params.jiraIssueKey)"
+          operator: notin
+          values: [""]
+      taskRef:
+        name: jira-add-comment-custom
+      params:
+        - name: jiraSecretName
+          value: $(params.jiraSecretName)
+        - name: jiraIssueKey
+          value: $(params.jiraIssueKey)
+        - name: comment
+          value: |
+            h2. OSSM3 Restricted-Access Setup Pipeline Completed
+
+            *Hosted Cluster:* $(params.hostedClusterName)
+            *Cluster Namespace:* $(params.hostedClusterNamespace)
+            *Skip Webhook:* $(params.skipWebhook)
+
+            *Steps Executed:*
+            * Operator verification
+            * Namespace preparation
+            * Service Mesh 3.x configuration
+            * RBAC permissions
+            * Kubeconfig generation
+
+            Pipeline execution completed.
+
+            *Repository:* $(params.repoUrl)
+            *Revision:* $(params.revision)

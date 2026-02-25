@@ -28,6 +28,13 @@ CI/CD pipelines for deploying and testing SAP Edge Integration Cell on ARO, ROSA
 | Pipeline | Purpose |
 |----------|---------|
 | `hcp-kubevirt-validation-pipeline.yaml` | HCP KubeVirt cluster deployment and validation |
+| `hcp-ossm3-validation-pipeline.yaml` | HCP KubeVirt + OSSM3 restricted-access setup, EIC services, endpoint tests, and teardown |
+
+### OSSM3 (OpenShift Service Mesh 3.x)
+
+| Pipeline | Purpose |
+|----------|---------|
+| `ossm3-restricted-access-setup-pipeline.yaml` | Standalone OSSM3 restricted-access setup on an existing hosted cluster |
 
 ### Common
 
@@ -59,6 +66,13 @@ CI/CD pipelines for deploying and testing SAP Edge Integration Cell on ARO, ROSA
 - `hcp-get-all-accesses-task`: Retrieve service credentials
 - `hcp-validate-and-create-configmap-task`: Validate and configure
 - `hcp-teardown-task`: Clean up resources
+
+### OSSM3 Tasks
+- `ossm3-verify-operators-task`: Verify Service Mesh 3.x operators are installed
+- `ossm3-prepare-namespaces-task`: Create and configure namespaces with labels and SCC annotations
+- `ossm3-configure-mesh-task`: Deploy IstioCNI and Istio control plane
+- `ossm3-apply-rbac-task`: Apply RBAC permissions from SAP Note 3618713 resources
+- `ossm3-generate-kubeconfig-task`: Generate restricted kubeconfig for ELM registration
 
 ### Common Tasks
 - `endpoint-tests`: Test EIC API endpoints
@@ -114,6 +128,31 @@ oc create secret generic rosa-postgres-admin-password \
   --from-literal=POSTGRES_ADMIN_PASSWORD="YourSecure-Password123!"
 ```
 
+**HCP-specific secrets:**
+```bash
+# Hub cluster kubeconfig (for accessing the management cluster)
+oc create secret generic hub-admin-kubeconfig \
+  --from-file=kubeconfig=/path/to/hub-kubeconfig
+```
+
+**OSSM3 prerequisites:**
+
+The OSSM3 pipelines require:
+
+1. **Service Mesh 3.x operator** installed on the target cluster via OperatorHub before running the pipeline.
+
+2. **RBAC resources ConfigMap** created from SAP Note 3618713 `resources.zip`:
+```bash
+# Download and extract resources.zip from SAP Note 3618713
+unzip resources.zip -d /tmp/rbac-resources/
+
+# Create ConfigMap from extracted YAML files
+oc create configmap ossm3-rbac-resources \
+  --from-file=/tmp/rbac-resources/
+```
+
+The ConfigMap is mounted as a workspace in the pipeline and contains CRDs, ClusterRoles, ClusterRoleBindings, Roles, RoleBindings, and optional webhook YAML files.
+
 ### 2. Deploy Pipeline Resources
 ```bash
 oc apply -f .tekton/tasks/
@@ -122,13 +161,17 @@ oc apply -f .tekton/pipelines/
 
 ### 3. Run a Pipeline
 ```bash
-# Apply a PipelineRun
-oc apply -f .tekton/<pipeline-run>.yaml
+# Apply a PipelineRun (use 'oc create' for generateName-based runs)
+oc create -f .tekton-examples/<pipeline-run>.yaml
 
 # Monitor
 tkn pipelinerun logs <pipelinerun-name> -f
 tkn pipelinerun list
 ```
+
+**Example PipelineRuns** are in `.tekton-examples/`:
+- `hcp-kubevirt-validation-pipelinerun.yaml` - HCP KubeVirt validation
+- `hcp-ossm3-validation-pipelinerun.yaml` - HCP KubeVirt + OSSM3 restricted-access setup
 
 ### 4. Manual Approvals
 ```bash

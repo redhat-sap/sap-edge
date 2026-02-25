@@ -202,6 +202,56 @@ spec:
 
         echo "  EIC Host: ${EIC_HOST:-'Not configured'}"
 
+        # --- Patch istio-ingressgateway HPA to match node count ---
+        echo ""
+        echo "🔧 Checking istio-ingressgateway HorizontalPodAutoscaler..."
+        NODE_COUNT=$(oc get nodes --no-headers 2>/dev/null | wc -l | tr -d ' ')
+        echo "   Managed cluster node count: ${NODE_COUNT}"
+
+        HPA_NAMESPACE=""
+        if oc get hpa istio-ingressgateway -n istio-system &>/dev/null; then
+          HPA_NAMESPACE="istio-system"
+        elif oc get hpa istio-ingressgateway -n istio-gateways &>/dev/null; then
+          HPA_NAMESPACE="istio-gateways"
+        fi
+
+        if [[ -n "${HPA_NAMESPACE}" ]]; then
+          echo "   Found istio-ingressgateway HPA in namespace ${HPA_NAMESPACE}"
+          CURRENT_MIN=$(oc get hpa istio-ingressgateway -n "${HPA_NAMESPACE}" \
+            -o jsonpath='{.spec.minReplicas}')
+          CURRENT_MAX=$(oc get hpa istio-ingressgateway -n "${HPA_NAMESPACE}" \
+            -o jsonpath='{.spec.maxReplicas}')
+          echo "   Current minReplicas: ${CURRENT_MIN}, maxReplicas: ${CURRENT_MAX}"
+
+          PATCH_NEEDED="false"
+          PATCH_JSON='{"spec":{'
+          if [[ "${CURRENT_MIN}" -ne "${NODE_COUNT}" ]]; then
+            PATCH_JSON="${PATCH_JSON}\"minReplicas\":${NODE_COUNT}"
+            PATCH_NEEDED="true"
+          fi
+          if [[ "${CURRENT_MAX}" -lt "${NODE_COUNT}" ]]; then
+            if [[ "${PATCH_NEEDED}" == "true" ]]; then
+              PATCH_JSON="${PATCH_JSON},"
+            fi
+            PATCH_JSON="${PATCH_JSON}\"maxReplicas\":${NODE_COUNT}"
+            PATCH_NEEDED="true"
+          fi
+          PATCH_JSON="${PATCH_JSON}}}"
+
+          if [[ "${PATCH_NEEDED}" == "true" ]]; then
+            oc patch hpa istio-ingressgateway -n "${HPA_NAMESPACE}" \
+              --type=merge -p "${PATCH_JSON}"
+            echo "✅ Patched HPA: minReplicas=${NODE_COUNT}, maxReplicas=$(( CURRENT_MAX > NODE_COUNT ? CURRENT_MAX : NODE_COUNT ))"
+          else
+            echo "✅ HPA already configured correctly (minReplicas=${CURRENT_MIN}, maxReplicas=${CURRENT_MAX})"
+          fi
+
+          # Show updated HPA
+          oc get hpa istio-ingressgateway -n "${HPA_NAMESPACE}"
+        else
+          echo "   ℹ️ No istio-ingressgateway HPA found in istio-system or istio-gateways"
+        fi
+
         # Switch back to hub cluster (or in-cluster SA) to create ConfigMap
         if [[ -n "${HUB_KUBECONFIG_SECRET}" ]] && [[ -f "${HUB_KUBECONFIG}" ]]; then
           echo ""
@@ -211,6 +261,36 @@ spec:
           echo ""
           echo "🔄 Switching back to in-cluster service account..."
           unset KUBECONFIG
+        fi
+
+        # --- Patch hub-side LB service externalTrafficPolicy ---
+        if [[ -n "${INGRESS_IP}" ]]; then
+          echo ""
+          echo "🔧 Patching hub-side LoadBalancer service externalTrafficPolicy..."
+          HUB_VM_NAMESPACE="${HOSTED_CLUSTER_NAMESPACE}-${HOSTED_CLUSTER_NAME}"
+          echo "   Looking for LB service with IP ${INGRESS_IP} in namespace ${HUB_VM_NAMESPACE}..."
+
+          # Find the LB service in the VM namespace that has this ingress IP
+          LB_SVC_NAME=$(oc get svc -n "${HUB_VM_NAMESPACE}" -o json | \
+            jq -r --arg ip "${INGRESS_IP}" \
+            '.items[] | select(.status.loadBalancer.ingress[]?.ip == $ip) | .metadata.name' | head -1)
+
+          if [[ -n "${LB_SVC_NAME}" ]]; then
+            echo "   Found service: ${LB_SVC_NAME} in namespace ${HUB_VM_NAMESPACE}"
+            CURRENT_POLICY=$(oc get svc "${LB_SVC_NAME}" -n "${HUB_VM_NAMESPACE}" \
+              -o jsonpath='{.spec.externalTrafficPolicy}')
+            echo "   Current externalTrafficPolicy: ${CURRENT_POLICY}"
+
+            if [[ "${CURRENT_POLICY}" != "Cluster" ]]; then
+              oc patch svc "${LB_SVC_NAME}" -n "${HUB_VM_NAMESPACE}" \
+                --type=merge -p '{"spec":{"externalTrafficPolicy":"Cluster"}}'
+              echo "✅ Patched externalTrafficPolicy to Cluster"
+            else
+              echo "✅ externalTrafficPolicy already set to Cluster"
+            fi
+          else
+            echo "⚠️ Could not find LB service with IP ${INGRESS_IP} in namespace ${HUB_VM_NAMESPACE}"
+          fi
         fi
 
         # Create ConfigMap for endpoint tests

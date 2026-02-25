@@ -1,0 +1,190 @@
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: ossm3-configure-mesh
+spec:
+  description: >-
+    Deploy and configure Red Hat OpenShift Service Mesh 3.x on the hosted
+    cluster. Creates the Istio CNI and control plane, labels application
+    namespaces for mesh discovery and sidecar injection, and waits for the
+    control plane to become ready.
+  params:
+    - name: hostedClusterName
+      type: string
+      description: "Name of the hosted cluster"
+    - name: hostedClusterNamespace
+      type: string
+      description: "Namespace for HostedCluster resources"
+      default: "clusters"
+    - name: hubKubeconfigSecretName
+      type: string
+      description: "Name of the Secret containing kubeconfig for hub cluster (optional, uses in-cluster config if empty)"
+      default: ""
+  workspaces:
+    - name: source
+  steps:
+    - name: configure-mesh
+      image: registry.access.redhat.com/ubi9/ubi
+      timeout: "336h"
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        CLUSTER_NAME="$(params.hostedClusterName)"
+        CLUSTER_NS="$(params.hostedClusterNamespace)"
+        HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
+
+        echo "=========================================="
+        echo "OSSM3 Configure Service Mesh Task"
+        echo "=========================================="
+        echo "Hosted Cluster: ${CLUSTER_NAME}"
+        echo "Cluster Namespace: ${CLUSTER_NS}"
+        echo "=========================================="
+
+        # Install required tools
+        echo "📦 Installing OpenShift CLI..."
+        curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz -o /tmp/oc.tar.gz
+        tar xzf /tmp/oc.tar.gz -C /tmp
+        mv /tmp/oc /usr/local/bin/
+        cp /usr/local/bin/oc /usr/local/bin/kubectl
+        rm -f /tmp/oc.tar.gz
+        oc version --client
+
+        # Configure hub cluster kubeconfig if provided
+        if [[ -n "${HUB_KUBECONFIG_SECRET}" ]]; then
+          echo "🔐 Extracting hub cluster kubeconfig from secret: ${HUB_KUBECONFIG_SECRET}..."
+          HUB_KUBECONFIG="/tmp/hub-kubeconfig"
+          if kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.kubeconfig}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: kubeconfig)"
+          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.config}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: config)"
+          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.value}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: value)"
+          else
+            echo "❌ Failed to extract kubeconfig from secret '${HUB_KUBECONFIG_SECRET}'"
+            echo "   Secret should have kubeconfig data under key 'kubeconfig', 'config', or 'value'"
+            exit 1
+          fi
+          chmod 600 "${HUB_KUBECONFIG}"
+          export KUBECONFIG="${HUB_KUBECONFIG}"
+          echo "✅ Using hub kubeconfig for cluster operations"
+          oc whoami
+        else
+          echo "ℹ️  No hub kubeconfig secret provided, using in-cluster service account"
+        fi
+
+        # Extract kubeconfig for hosted cluster
+        echo "🔐 Extracting kubeconfig for hosted cluster..."
+        KUBECONFIG_SECRET="${CLUSTER_NAME}-admin-kubeconfig"
+
+        if ! oc get secret "${KUBECONFIG_SECRET}" -n "${CLUSTER_NS}" > /dev/null 2>&1; then
+          echo "❌ Kubeconfig secret '${KUBECONFIG_SECRET}' not found in namespace '${CLUSTER_NS}'"
+          exit 1
+        fi
+
+        HOSTED_KUBECONFIG="/tmp/hosted-kubeconfig"
+        oc get secret "${KUBECONFIG_SECRET}" -n "${CLUSTER_NS}" \
+          -o jsonpath='{.data.kubeconfig}' | base64 -d > "${HOSTED_KUBECONFIG}"
+        chmod 600 "${HOSTED_KUBECONFIG}"
+
+        export KUBECONFIG="${HOSTED_KUBECONFIG}"
+
+        echo "🔍 Verifying access to hosted cluster..."
+        oc get nodes
+        echo "✅ Successfully connected to hosted cluster"
+
+        # --- Create Service Mesh control plane namespace ---
+        echo ""
+        echo "📦 Creating istio-system namespace..."
+        oc create namespace istio-system --dry-run=client -o yaml | oc apply -f -
+
+        # --- Create CNI namespace ---
+        echo "📦 Creating istio-cni namespace..."
+        oc create namespace istio-cni --dry-run=client -o yaml | oc apply -f -
+
+        # --- Create the IstioCNI resource ---
+        echo ""
+        echo "🔧 Creating IstioCNI resource..."
+        cat <<EOF | oc apply -f -
+        apiVersion: sailoperator.io/v1
+        kind: IstioCNI
+        metadata:
+          name: default
+          namespace: istio-cni
+        spec:
+          namespace: istio-cni
+        EOF
+        echo "✅ IstioCNI resource created"
+
+        # --- Create the Istio control plane (standard configuration) ---
+        echo ""
+        echo "🔧 Creating Istio control plane (standard configuration)..."
+        cat <<EOF | oc apply -f -
+        apiVersion: sailoperator.io/v1
+        kind: Istio
+        metadata:
+          name: default
+          namespace: istio-system
+        spec:
+          namespace: istio-system
+          values:
+            meshConfig:
+              discoverySelectors:
+                - matchLabels:
+                    istio-discovery: enabled
+        EOF
+        echo "✅ Istio control plane resource created"
+
+        # --- Label the control plane namespace for discovery ---
+        echo ""
+        echo "🏷️ Labeling istio-system for mesh discovery..."
+        oc label namespace istio-system istio-discovery=enabled --overwrite
+
+        # --- Label application namespaces to join the mesh ---
+        echo "🏷️ Labeling application namespaces for mesh discovery and injection..."
+        APP_NAMESPACES=(edgelm edge-icell edge-icell-services edge-icell-secrets edge-icell-ela istio-gateways)
+        for NS in "${APP_NAMESPACES[@]}"; do
+          echo "   Labeling ${NS} with istio-discovery=enabled and istio-injection=enabled"
+          oc label namespace "${NS}" istio-discovery=enabled istio-injection=enabled --overwrite
+        done
+        echo "✅ Namespace labels applied"
+
+        # --- Wait for Service Mesh control plane to be ready ---
+        echo ""
+        echo "⏳ Waiting for Istio control plane to become ready (timeout: 600s)..."
+        if oc wait --for=condition=Ready istio/default -n istio-system --timeout=600s; then
+          echo "✅ Istio control plane is ready"
+        else
+          echo "❌ Istio control plane did not become ready within 600s"
+          echo ""
+          echo "   Istio status:"
+          oc get istio/default -n istio-system -o yaml || true
+          echo ""
+          echo "   Pods in istio-system:"
+          oc get pods -n istio-system || true
+          exit 1
+        fi
+
+        # --- Verify all components are running ---
+        echo ""
+        echo "🔍 Verifying Service Mesh components..."
+
+        echo ""
+        echo "   Pods in istio-system:"
+        oc get pods -n istio-system
+
+        echo ""
+        echo "   Pods in istio-cni:"
+        oc get pods -n istio-cni
+
+        echo ""
+        echo "=========================================="
+        echo "✅ Service Mesh 3.x configuration completed"
+        echo "=========================================="
