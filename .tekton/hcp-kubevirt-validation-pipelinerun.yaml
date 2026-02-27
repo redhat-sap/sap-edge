@@ -43,7 +43,7 @@ spec:
     - name: etcdStorageClass
       value: ""
     - name: postgresVersion
-      value: "v15"
+      value: "v17"
     - name: redisClusterType
       value: "standard"
     - name: eicAuthSecretName
