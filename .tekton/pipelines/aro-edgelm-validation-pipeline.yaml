@@ -166,9 +166,62 @@ spec:
         - name: source
           workspace: source
 
+    # Manual approval before second round of validation
+    - name: approval-second-validation-round
+      runAfter: [deployment-status-report]
+      when:
+        - input: $(params.skipEdgelmValidation)
+          operator: in
+          values: ["false"]
+      taskRef:
+        apiVersion: openshift-pipelines.org/v1alpha1
+        kind: ApprovalTask
+      params:
+        - name: approvers
+          value:
+            - mjiao
+            - rbhandar
+            - ksatarin
+            - kube:admin
+        - name: description
+          value: |
+            First round of edgelm pod validation completed.
+
+            Cluster: $(params.aroClusterName)
+
+            ✅ APPROVE: Run second round of edgelm pod validation
+            ❌ REJECT: Skip second round and proceed
+        - name: numberOfApprovalsRequired
+          value: '1'
+        - name: timeout
+          value: '336h'
+
+    # Second round of edgelm pod validation
+    - name: deployment-status-report-round2
+      runAfter: [approval-second-validation-round]
+      when:
+        - input: $(params.skipEdgelmValidation)
+          operator: in
+          values: ["false"]
+      taskRef: { name: aro-deployment-status-report }
+      params:
+        - name: aroClusterName
+          value: $(params.aroClusterName)
+        - name: azureSecretName
+          value: $(params.azureSecretName)
+        - name: namespace
+          value: "edgelm"
+        - name: expectedPodCount
+          value: "3"
+        - name: deploymentType
+          value: "aro-edgelm-validation"
+      workspaces:
+        - name: source
+          workspace: source
+
     # Update Jira with deployment status (only for edgelm validation)
     - name: update-jira-deployment-status
-      runAfter: [deployment-status-report]
+      runAfter: [deployment-status-report-round2]
       when:
         - input: $(params.skipEdgelmValidation)
           operator: in
@@ -200,7 +253,7 @@ spec:
             * Quay registry deployment: ✅ Completed
             * Azure storage for Quay: ✅ Configured
             * Certificate trust: ✅ Configured
-            * Edgelm namespace validation: ✅ All Pods Running/Completed
+            * Edgelm namespace validation (2 rounds): ✅ All Pods Running/Completed
 
             *Infrastructure Components:*
             * Lightweight ARO cluster (no PostgreSQL/Redis) ✅

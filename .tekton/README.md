@@ -30,12 +30,6 @@ CI/CD pipelines for deploying and testing SAP Edge Integration Cell on ARO, ROSA
 | `hcp-kubevirt-validation-pipeline.yaml` | HCP KubeVirt cluster deployment and validation |
 | `hcp-ossm3-validation-pipeline.yaml` | HCP KubeVirt + OSSM3 restricted-access setup, EIC services, endpoint tests, and teardown |
 
-### OSSM3 (OpenShift Service Mesh 3.x)
-
-| Pipeline | Purpose |
-|----------|---------|
-| `ossm3-restricted-access-setup-pipeline.yaml` | Standalone OSSM3 restricted-access setup on an existing hosted cluster |
-
 ### Common
 
 | Pipeline | Purpose |

@@ -328,14 +328,128 @@ spec:
         - name: source
           workspace: source
 
-    # Step 10: Update Jira with test results
-    - name: update-jira-test-results
+    # Step 10: Manual approval before second round of tests
+    - name: approval-second-test-round
       runAfter:
         - test-httpbinipfilter
         - test-http-test1
         - test-http-testelster
         - test-slvredis
         - test-ratelimit-slvredis
+      taskRef:
+        apiVersion: openshift-pipelines.org/v1alpha1
+        kind: ApprovalTask
+      params:
+        - name: approvers
+          value:
+            - mjiao
+            - rbhandar
+            - ksatarin
+            - kubeadmin
+            - kube:admin
+            - system:admin
+        - name: description
+          value: |
+            First round of endpoint tests completed successfully.
+
+            Cluster: $(params.hostedClusterName)
+
+            ✅ APPROVE: Run second round of endpoint tests
+            ❌ REJECT: Skip second round and proceed
+        - name: numberOfApprovalsRequired
+          value: '1'
+        - name: timeout
+          value: '336h'
+
+    # Step 11: Second round of endpoint tests
+    - name: test-httpbinipfilter-round2
+      runAfter: [approval-second-test-round]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /httpbinipfilter
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: test-http-test1-round2
+      runAfter: [approval-second-test-round]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /http/test1
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: test-http-testelster-round2
+      runAfter: [approval-second-test-round]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /http/testelster
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: test-slvredis-round2
+      runAfter: [approval-second-test-round]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /slvredis
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: test-ratelimit-slvredis-round2
+      runAfter: [test-slvredis-round2]
+      taskRef: { name: rate-limit-test }
+      params:
+        - name: endpointPath
+          value: /slvredis
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 12: Update Jira with test results
+    - name: update-jira-test-results
+      runAfter:
+        - test-httpbinipfilter-round2
+        - test-http-test1-round2
+        - test-http-testelster-round2
+        - test-slvredis-round2
+        - test-ratelimit-slvredis-round2
       when:
         - input: "$(params.jiraIssueKey)"
           operator: notin
@@ -367,19 +481,26 @@ spec:
             * PostgreSQL deployment: ✅ Completed
             * Redis deployment: ✅ Completed
             * Validation and ConfigMap setup: ✅ Completed
-            * Endpoint tests: ✅ All Passed
+            * Endpoint tests (2 rounds): ✅ All Passed
 
             *Pipeline Details:*
             * *Repository:* $(params.repoUrl)
             * *Revision:* $(params.revision)
             * *Public DNS:* $(params.publicDNS)
 
-            *Executed Tests:*
+            *Executed Tests (Round 1):*
             * test-httpbinipfilter ✅
             * test-http-test1 ✅
             * test-http-testelster ✅
             * test-slvredis ✅
             * test-ratelimit-slvredis ✅
+
+            *Executed Tests (Round 2):*
+            * test-httpbinipfilter-round2 ✅
+            * test-http-test1-round2 ✅
+            * test-http-testelster-round2 ✅
+            * test-slvredis-round2 ✅
+            * test-ratelimit-slvredis-round2 ✅
 
             *Infrastructure Components:*
             * MCE Hosted Control Plane with KubeVirt ✅
@@ -395,7 +516,7 @@ spec:
 
             Ready for manual teardown approval. The complete HCP infrastructure will be destroyed once approved.
 
-    # Step 11: Manual approval before teardown
+    # Step 13: Manual approval before teardown
     - name: approval-teardown
       runAfter:
         - update-jira-test-results
@@ -424,7 +545,7 @@ spec:
         - name: timeout
           value: '336h'
 
-    # Step 12: Teardown hosted cluster
+    # Step 14: Teardown hosted cluster
     - name: teardown-hosted-cluster
       runAfter: [approval-teardown]
       when:
@@ -475,12 +596,19 @@ spec:
             * Redis Cluster Type: $(params.redisClusterType)
             * Public DNS: $(params.publicDNS)
 
-            *Endpoint Tests Executed:*
+            *Endpoint Tests Executed (Round 1):*
             * test-httpbinipfilter
             * test-http-test1
             * test-http-testelster
             * test-slvredis
             * test-ratelimit-slvredis
+
+            *Endpoint Tests Executed (Round 2):*
+            * test-httpbinipfilter-round2
+            * test-http-test1-round2
+            * test-http-testelster-round2
+            * test-slvredis-round2
+            * test-ratelimit-slvredis-round2
 
             Pipeline execution completed.
 

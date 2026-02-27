@@ -202,9 +202,64 @@ spec:
         - name: source
           workspace: source
 
+    # Manual approval before second round of validation
+    - name: approval-second-validation-round
+      runAfter: [deployment-status-report]
+      when:
+        - input: $(params.skipEdgelmValidation)
+          operator: in
+          values: ["false"]
+      taskRef:
+        apiVersion: openshift-pipelines.org/v1alpha1
+        kind: ApprovalTask
+      params:
+        - name: approvers
+          value:
+            - mjiao
+            - rbhandar
+            - ksatarin
+            - kube:admin
+        - name: description
+          value: |
+            First round of edgelm pod validation completed.
+
+            Cluster: $(params.clusterName)
+
+            ✅ APPROVE: Run second round of edgelm pod validation
+            ❌ REJECT: Skip second round and proceed
+        - name: numberOfApprovalsRequired
+          value: '1'
+        - name: timeout
+          value: '336h'
+
+    # Second round of edgelm pod validation
+    - name: deployment-status-report-round2
+      runAfter: [approval-second-validation-round]
+      when:
+        - input: $(params.skipEdgelmValidation)
+          operator: in
+          values: ["false"]
+      taskRef: { name: rosa-deployment-status-report }
+      params:
+        - name: clusterName
+          value: $(params.clusterName)
+        - name: awsSecretName
+          value: $(params.awsSecretName)
+        - name: redhatTokenSecretName
+          value: $(params.redhatTokenSecretName)
+        - name: namespace
+          value: "edgelm"
+        - name: expectedPodCount
+          value: "3"
+        - name: platform
+          value: "rosa"
+      workspaces:
+        - name: source
+          workspace: source
+
     # Update Jira with deployment status (only for edgelm validation)
     - name: update-jira-ticket
-      runAfter: [deployment-status-report]
+      runAfter: [deployment-status-report-round2]
       when:
         - input: $(params.skipEdgelmValidation)
           operator: in
@@ -235,7 +290,7 @@ spec:
             * Repository cloned: ✅
             * ROSA HCP deployment: ✅ Completed
             * Quay registry deployment: ✅ Completed
-            * Edge LM pod status check: ✅ Completed
+            * Edge LM pod status check (2 rounds): ✅ Completed
             * Deployment status report: ✅ Generated
 
             *Infrastructure Components:*
