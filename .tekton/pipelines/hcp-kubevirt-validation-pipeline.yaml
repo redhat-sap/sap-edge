@@ -62,9 +62,13 @@ spec:
       type: string
       description: "PostgreSQL version (v15/v16/v17)"
       default: "v15"
+    - name: datastoreType
+      type: string
+      description: "Datastore type: redis, valkey-standalone, or valkey-cluster"
+      default: "redis"
     - name: redisClusterType
       type: string
-      description: "Redis cluster type (standard/ha)"
+      description: "Redis cluster type (standard/ha) - only used when datastoreType=redis"
       default: "standard"
     - name: eicAuthSecretName
       type: string
@@ -168,9 +172,13 @@ spec:
         - name: source
           workspace: source
 
-    # Step 5: Deploy Redis on hosted cluster (parallel with PostgreSQL)
+    # Step 5a: Deploy Redis on hosted cluster (parallel with PostgreSQL, when datastoreType=redis)
     - name: deploy-redis
       runAfter: [wait-cluster-ready]
+      when:
+        - input: "$(params.datastoreType)"
+          operator: in
+          values: ["redis"]
       taskRef: { name: hcp-deploy-redis }
       params:
         - name: hostedClusterName
@@ -185,15 +193,38 @@ spec:
         - name: source
           workspace: source
 
+    # Step 5b: Deploy Valkey on hosted cluster (parallel with PostgreSQL, when datastoreType=valkey-*)
+    - name: deploy-valkey
+      runAfter: [wait-cluster-ready]
+      when:
+        - input: "$(params.datastoreType)"
+          operator: in
+          values: ["valkey-standalone", "valkey-cluster"]
+      taskRef: { name: hcp-deploy-valkey }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: datastoreType
+          value: $(params.datastoreType)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
+      workspaces:
+        - name: source
+          workspace: source
+
     # Step 6: Get all credentials and display them
     - name: get-all-accesses
-      runAfter: [deploy-postgres, deploy-redis]
+      runAfter: [deploy-postgres, deploy-redis, deploy-valkey]
       taskRef: { name: hcp-get-all-accesses }
       params:
         - name: hostedClusterName
           value: $(params.hostedClusterName)
         - name: hostedClusterNamespace
           value: $(params.hostedClusterNamespace)
+        - name: datastoreType
+          value: $(params.datastoreType)
         - name: hubKubeconfigSecretName
           value: $(params.hubKubeconfigSecretName)
       workspaces:
@@ -477,7 +508,7 @@ spec:
             * *Release Image:* $(params.releaseImage)
             * *Worker Nodes:* $(params.nodePoolReplicas) x ($(params.nodePoolCpuCores) vCPU, $(params.nodePoolMemoryGB)GB RAM)
             * *PostgreSQL:* $(params.postgresVersion) (Crunchy Operator)
-            * *Redis:* $(params.redisClusterType) (Redis Enterprise Operator)
+            * *Datastore:* $(params.datastoreType)
 
             *Pipeline Status:*
             * Repository cloned: ✅

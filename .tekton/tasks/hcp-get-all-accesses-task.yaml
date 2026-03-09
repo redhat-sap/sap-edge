@@ -10,7 +10,7 @@ metadata:
   name: hcp-get-all-accesses
 spec:
   description: >-
-    Retrieves and displays all PostgreSQL and Redis credentials from the hosted
+    Retrieves and displays all PostgreSQL and Redis/Valkey credentials from the hosted
     cluster after deployment. Also displays the content of generated certificate files.
   params:
     - name: hostedClusterName
@@ -20,6 +20,10 @@ spec:
       type: string
       description: "Namespace for HostedCluster resources"
       default: "clusters"
+    - name: datastoreType
+      type: string
+      description: "Datastore type: redis, valkey-standalone, or valkey-cluster"
+      default: "redis"
     - name: hubKubeconfigSecretName
       type: string
       description: "Name of the Secret containing kubeconfig for hub cluster (optional)"
@@ -45,6 +49,8 @@ spec:
           value: "$(params.hostedClusterName)"
         - name: HOSTED_CLUSTER_NAMESPACE
           value: "$(params.hostedClusterNamespace)"
+        - name: DATASTORE_TYPE
+          value: "$(params.datastoreType)"
         - name: HUB_KUBECONFIG_SECRET
           value: "$(params.hubKubeconfigSecretName)"
       script: |
@@ -199,63 +205,137 @@ spec:
 
           echo ""
 
-          # ================== Redis ==================
-          echo "======================================Redis==========================================="
+          # ================== Datastore (Redis/Valkey) ==================
+          if [[ "${DATASTORE_TYPE}" == "redis" ]]; then
+            echo "======================================Redis==========================================="
 
-          REDIS_NAMESPACE="sap-eic-external-redis"
-          REDIS_DB="redb"
+            REDIS_NAMESPACE="sap-eic-external-redis"
+            REDIS_DB="redb"
 
-          if oc get RedisEnterpriseDatabase "${REDIS_DB}" -n "${REDIS_NAMESPACE}" &>/dev/null; then
-            REDIS_SECRET=$(oc get RedisEnterpriseDatabase "${REDIS_DB}" -n "${REDIS_NAMESPACE}" -o json | jq -r '.spec.databaseSecretName')
+            if oc get RedisEnterpriseDatabase "${REDIS_DB}" -n "${REDIS_NAMESPACE}" &>/dev/null; then
+              REDIS_SECRET=$(oc get RedisEnterpriseDatabase "${REDIS_DB}" -n "${REDIS_NAMESPACE}" -o json | jq -r '.spec.databaseSecretName')
 
-            if [[ -n "${REDIS_SECRET}" ]] && [[ "${REDIS_SECRET}" != "null" ]]; then
-              SECRET_DATA=$(oc get secret "${REDIS_SECRET}" -n "${REDIS_NAMESPACE}" -o json)
-              REDIS_PASSWORD=$(echo "${SECRET_DATA}" | jq -r '.data["password"]' | base64 --decode)
-              REDIS_PORT=$(echo "${SECRET_DATA}" | jq -r '.data["port"]' | base64 --decode)
-              REDIS_SERVICE=$(echo "${SECRET_DATA}" | jq -r '.data["service_name"]' | base64 --decode)
+              if [[ -n "${REDIS_SECRET}" ]] && [[ "${REDIS_SECRET}" != "null" ]]; then
+                SECRET_DATA=$(oc get secret "${REDIS_SECRET}" -n "${REDIS_NAMESPACE}" -o json)
+                REDIS_PASSWORD=$(echo "${SECRET_DATA}" | jq -r '.data["password"]' | base64 --decode)
+                REDIS_PORT=$(echo "${SECRET_DATA}" | jq -r '.data["port"]' | base64 --decode)
+                REDIS_SERVICE=$(echo "${SECRET_DATA}" | jq -r '.data["service_name"]' | base64 --decode)
 
-              REDIS_SERVICE_FQDN="${REDIS_SERVICE}.${REDIS_NAMESPACE}.svc"
-              REDIS_SERVER_NAME="rec.${REDIS_NAMESPACE}.svc.cluster.local"
+                REDIS_SERVICE_FQDN="${REDIS_SERVICE}.${REDIS_NAMESPACE}.svc"
+                REDIS_SERVER_NAME="rec.${REDIS_NAMESPACE}.svc.cluster.local"
 
-              echo "External Redis Addresses: ${REDIS_SERVICE_FQDN}:${REDIS_PORT}"
-              echo "External Redis Mode: standalone"
-              echo "External Redis Username: [leave me blank]"
-              echo "External Redis Password: ${REDIS_PASSWORD}"
-              echo "External Redis Sentinel Username: [leave me blank]"
-              echo "External Redis Sentinel Password: [leave me blank]"
-              echo "External Redis Server Name: ${REDIS_SERVER_NAME}"
+                echo "External Redis Addresses: ${REDIS_SERVICE_FQDN}:${REDIS_PORT}"
+                echo "External Redis Mode: standalone"
+                echo "External Redis Username: [leave me blank]"
+                echo "External Redis Password: ${REDIS_PASSWORD}"
+                echo "External Redis Sentinel Username: [leave me blank]"
+                echo "External Redis Sentinel Password: [leave me blank]"
+                echo "External Redis Server Name: ${REDIS_SERVER_NAME}"
 
-              # Save results
-              echo -n "${REDIS_SERVICE_FQDN}" > $(results.redis-host.path)
-              echo -n "${REDIS_PORT}" > $(results.redis-port.path)
+                # Save results
+                echo -n "${REDIS_SERVICE_FQDN}" > $(results.redis-host.path)
+                echo -n "${REDIS_PORT}" > $(results.redis-port.path)
 
-              # Get TLS certificate from Redis pod
-              echo ""
-              echo "🔐 Extracting Redis TLS certificate..."
-              if oc get pod rec-0 -n "${REDIS_NAMESPACE}" &>/dev/null; then
-                oc exec -n "${REDIS_NAMESPACE}" rec-0 -c redis-enterprise-node -- \
-                  cat /etc/opt/redislabs/proxy_cert.pem > external_redis_tls_certificate.pem 2>/dev/null || true
+                # Get TLS certificate from Redis pod
+                echo ""
+                echo "🔐 Extracting Redis TLS certificate..."
+                if oc get pod rec-0 -n "${REDIS_NAMESPACE}" &>/dev/null; then
+                  oc exec -n "${REDIS_NAMESPACE}" rec-0 -c redis-enterprise-node -- \
+                    cat /etc/opt/redislabs/proxy_cert.pem > external_redis_tls_certificate.pem 2>/dev/null || true
 
-                if [[ -f "external_redis_tls_certificate.pem" ]] && [[ -s "external_redis_tls_certificate.pem" ]]; then
-                  echo "External Redis TLS Certificate saved to external_redis_tls_certificate.pem"
-                  echo ""
-                  echo "📜 Redis TLS Certificate content:"
-                  echo "----------------------------------------------"
-                  cat external_redis_tls_certificate.pem
-                  echo "----------------------------------------------"
+                  if [[ -f "external_redis_tls_certificate.pem" ]] && [[ -s "external_redis_tls_certificate.pem" ]]; then
+                    echo "External Redis TLS Certificate saved to external_redis_tls_certificate.pem"
+                    echo ""
+                    echo "📜 Redis TLS Certificate content:"
+                    echo "----------------------------------------------"
+                    cat external_redis_tls_certificate.pem
+                    echo "----------------------------------------------"
+                  fi
+                else
+                  echo "⚠️ Redis pod rec-0 not found, skipping TLS certificate extraction"
                 fi
               else
-                echo "⚠️ Redis pod rec-0 not found, skipping TLS certificate extraction"
+                echo "⚠️ Redis database secret not found"
+                echo -n "N/A" > $(results.redis-host.path)
+                echo -n "N/A" > $(results.redis-port.path)
               fi
             else
-              echo "⚠️ Redis database secret not found"
+              echo "⚠️ RedisEnterpriseDatabase not found in ${REDIS_NAMESPACE}"
               echo -n "N/A" > $(results.redis-host.path)
               echo -n "N/A" > $(results.redis-port.path)
             fi
-          else
-            echo "⚠️ RedisEnterpriseDatabase not found in ${REDIS_NAMESPACE}"
-            echo -n "N/A" > $(results.redis-host.path)
-            echo -n "N/A" > $(results.redis-port.path)
+
+          elif [[ "${DATASTORE_TYPE}" == "valkey-standalone" ]] || [[ "${DATASTORE_TYPE}" == "valkey-cluster" ]]; then
+            echo "======================================Valkey==========================================="
+
+            if [[ "${DATASTORE_TYPE}" == "valkey-standalone" ]]; then
+              VALKEY_NAMESPACE="sap-eic-external-valkey"
+              VALKEY_MODE="standalone"
+            else
+              VALKEY_NAMESPACE="sap-eic-external-valkey-cluster"
+              VALKEY_MODE="cluster"
+            fi
+
+            if oc get secret valkey -n "${VALKEY_NAMESPACE}" &>/dev/null; then
+              VALKEY_PASSWORD=$(oc get secret valkey -n "${VALKEY_NAMESPACE}" -o jsonpath='{.data.database-password}' | base64 --decode)
+              VALKEY_PORT="6380"
+
+              if [[ "${VALKEY_MODE}" == "standalone" ]]; then
+                VALKEY_HOST="valkey.${VALKEY_NAMESPACE}.svc"
+                VALKEY_SERVER_NAME="valkey.${VALKEY_NAMESPACE}.svc.cluster.local"
+                echo "External Valkey Addresses: ${VALKEY_HOST}:${VALKEY_PORT}"
+              else
+                # Cluster mode: build comma-separated list of all node addresses
+                REPLICA_COUNT=$(oc get pods -l name=valkey -n "${VALKEY_NAMESPACE}" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+                if [[ "${REPLICA_COUNT}" -eq 0 ]]; then
+                  REPLICA_COUNT=3
+                fi
+                VALKEY_NODES=""
+                for i in $(seq 0 $((REPLICA_COUNT - 1))); do
+                  if [[ -n "${VALKEY_NODES}" ]]; then
+                    VALKEY_NODES="${VALKEY_NODES},"
+                  fi
+                  VALKEY_NODES="${VALKEY_NODES}valkey-${i}.valkey-headless.${VALKEY_NAMESPACE}.svc.cluster.local:${VALKEY_PORT}"
+                done
+                VALKEY_HOST="${VALKEY_NODES}"
+                VALKEY_SERVER_NAME="valkey-headless.${VALKEY_NAMESPACE}.svc.cluster.local"
+                echo "External Valkey Addresses: ${VALKEY_HOST}"
+              fi
+
+              echo "External Valkey Mode: ${VALKEY_MODE}"
+              echo "External Valkey Username: [leave me blank]"
+              echo "External Valkey Password: ${VALKEY_PASSWORD}"
+              echo "External Valkey Sentinel Username: [leave me blank]"
+              echo "External Valkey Sentinel Password: [leave me blank]"
+              echo "External Valkey Server Name: ${VALKEY_SERVER_NAME}"
+
+              # Save results (use redis-host/redis-port results for compatibility)
+              echo -n "${VALKEY_HOST}" > $(results.redis-host.path)
+              echo -n "${VALKEY_PORT}" > $(results.redis-port.path)
+
+              # Get TLS certificate from ConfigMap
+              echo ""
+              echo "🔐 Extracting Valkey TLS certificate..."
+              if oc get configmap valkey-service-ca -n "${VALKEY_NAMESPACE}" &>/dev/null; then
+                oc get configmap valkey-service-ca -n "${VALKEY_NAMESPACE}" \
+                  -o jsonpath='{.data.service-ca\.crt}' > external_valkey_tls_certificate.pem 2>/dev/null || true
+
+                if [[ -f "external_valkey_tls_certificate.pem" ]] && [[ -s "external_valkey_tls_certificate.pem" ]]; then
+                  echo "External Valkey TLS Certificate saved to external_valkey_tls_certificate.pem"
+                  echo ""
+                  echo "📜 Valkey TLS Certificate content:"
+                  echo "----------------------------------------------"
+                  cat external_valkey_tls_certificate.pem
+                  echo "----------------------------------------------"
+                fi
+              else
+                echo "⚠️ Valkey service-ca ConfigMap not found, skipping TLS certificate extraction"
+              fi
+            else
+              echo "⚠️ Valkey secret not found in ${VALKEY_NAMESPACE}"
+              echo -n "N/A" > $(results.redis-host.path)
+              echo -n "N/A" > $(results.redis-port.path)
+            fi
           fi
         fi
 
