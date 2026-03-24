@@ -99,11 +99,15 @@ spec:
         API_URL=$(jq -r '.api.url' cluster-info.json)
         echo "API URL: ${API_URL}"
 
+        # Use a separate kubeconfig for the ROSA cluster so the default
+        # in-cluster config (management cluster) remains available via plain oc.
+        export KUBECONFIG="/tmp/rosa-kubeconfig"
+
         # Try to use existing kubeconfig from source workspace
         echo "🔐 Looking for kubeconfig in workspace..."
         if [[ -f "kubeconfig" ]]; then
           echo "✅ Found kubeconfig in workspace"
-          export KUBECONFIG="$(pwd)/kubeconfig"
+          cp "$(pwd)/kubeconfig" "${KUBECONFIG}"
           oc whoami || echo "Kubeconfig may need refresh"
         else
           echo "⚠️ No kubeconfig found, trying to login with ROSA credentials..."
@@ -228,21 +232,23 @@ spec:
 
         echo "  EIC Host: ${EIC_HOST:-'Not configured'}"
 
-        # Create ConfigMap for endpoint tests
+        # Create ConfigMap for endpoint tests on the MANAGEMENT cluster
+        # (where Tekton runs and where test task pods will be scheduled).
+        # Unset KUBECONFIG so oc falls back to the in-cluster config.
         CONFIGMAP_NAME="cluster-info-rosa-${CLUSTER_NAME}"
         echo ""
-        echo "📝 Creating ConfigMap '${CONFIGMAP_NAME}' for endpoint tests..."
+        echo "📝 Creating ConfigMap '${CONFIGMAP_NAME}' on the management cluster for endpoint tests..."
 
         # Delete existing ConfigMap if present
-        oc delete configmap "${CONFIGMAP_NAME}" --ignore-not-found=true
+        KUBECONFIG="" oc delete configmap "${CONFIGMAP_NAME}" --ignore-not-found=true
 
         # Create the ConfigMap (matching expected format: host + ingressIP only)
-        oc create configmap "${CONFIGMAP_NAME}" \
+        KUBECONFIG="" oc create configmap "${CONFIGMAP_NAME}" \
           --from-literal=host="${EIC_HOST:-eic.apps.${CLUSTER_NAME}.local}" \
           --from-literal=ingressIP="${INGRESS_IP:-127.0.0.1}"
 
-        echo "✅ ConfigMap created successfully"
-        oc get configmap "${CONFIGMAP_NAME}" -o yaml
+        echo "✅ ConfigMap created successfully on management cluster"
+        KUBECONFIG="" oc get configmap "${CONFIGMAP_NAME}" -o yaml
 
         # Generate summary
         SUMMARY="ROSA Cluster: ${CLUSTER_NAME} | Domain: ${INGRESS_DOMAIN:-N/A} | Ingress: ${INGRESS_IP:-N/A}"
