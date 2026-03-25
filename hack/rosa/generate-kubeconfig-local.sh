@@ -88,8 +88,15 @@ if [[ -z "${TOKEN}" ]]; then
   exit 1
 fi
 
-# Step 5: Get cluster API server URL
-echo "5. Fetching cluster server URL..."
+# Step 5: Get CA certificate from the token secret
+echo "5. Extracting CA certificate from token secret..."
+CA_DATA=$(oc get secret "${TOKEN_SECRET_NAME}" -n "${NAMESPACE}" -o jsonpath='{.data.ca\.crt}')
+if [[ -z "${CA_DATA}" ]]; then
+  echo "   ⚠️  No CA certificate found in secret, falling back to insecure mode"
+fi
+
+# Step 6: Get cluster API server URL
+echo "6. Fetching cluster server URL..."
 API_SERVER_URL=$(oc config view --minify -o jsonpath='{.clusters[0].cluster.server}')
 if [[ -z "${API_SERVER_URL}" ]]; then
   echo "   ❌ Could not retrieve API server URL"
@@ -97,20 +104,26 @@ if [[ -z "${API_SERVER_URL}" ]]; then
 fi
 echo "   API Server: ${API_SERVER_URL}"
 
-# Step 6: Create the kubeconfig file
-echo "6. Building the kubeconfig file..."
+# Step 7: Create the kubeconfig file
+echo "7. Building the kubeconfig file..."
 
 # Extract cluster name from URL (remove https://)
 CLUSTER_NAME_FROM_URL="${API_SERVER_URL#https://}"
 
 # Build kubeconfig
+if [[ -n "${CA_DATA}" ]]; then
+  CLUSTER_SECTION="    certificate-authority-data: ${CA_DATA}"
+else
+  CLUSTER_SECTION="    insecure-skip-tls-verify: true"
+fi
+
 cat > "${OUTPUT_KUBECONFIG_FILE}" <<EOF
 apiVersion: v1
 kind: Config
 clusters:
 - name: ${CLUSTER_NAME_FROM_URL}
   cluster:
-    insecure-skip-tls-verify: true
+${CLUSTER_SECTION}
     server: ${API_SERVER_URL}
 
 users:
