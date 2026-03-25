@@ -164,58 +164,81 @@ spec:
           echo "Ingress Domain (from DNS): ${INGRESS_DOMAIN}"
         fi
 
-        # Get LoadBalancer IP from istio-ingressgateway service
-        # This is populated by MetalLB after EIC application is deployed
+        # Detect istio-ingressgateway namespace
         echo ""
-        echo "📋 Getting LoadBalancer IP from istio-ingressgateway..."
-        INGRESS_IP=""
-
-        # Try istio-system namespace first
-        if oc get svc istio-ingressgateway -n istio-system &>/dev/null; then
-          echo "Found istio-ingressgateway in istio-system namespace"
-          INGRESS_IP=$(oc get svc istio-ingressgateway -n istio-system \
-            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
-
-          if [[ -z "${INGRESS_IP}" ]]; then
-            # Try hostname instead (for cloud providers)
-            INGRESS_IP=$(oc get svc istio-ingressgateway -n istio-system \
-              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
-          fi
+        echo "📋 Locating istio-ingressgateway service..."
+        ISTIO_NS=""
+        if oc get svc istio-ingressgateway -n istio-gateways &>/dev/null; then
+          ISTIO_NS="istio-gateways"
+        elif oc get svc istio-ingressgateway -n istio-system &>/dev/null; then
+          ISTIO_NS="istio-system"
+        else
+          # Fallback: search all namespaces
+          ISTIO_NS=$(oc get svc --all-namespaces -o json | jq -r '.items[] | select(.metadata.name=="istio-ingressgateway") | .metadata.namespace' | head -1)
         fi
 
-        # Try istio-gateways namespace if not found
-        if [[ -z "${INGRESS_IP}" ]] && oc get svc istio-ingressgateway -n istio-gateways &>/dev/null; then
-          echo "Found istio-ingressgateway in istio-gateways namespace"
-          INGRESS_IP=$(oc get svc istio-ingressgateway -n istio-gateways \
-            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
-
-          if [[ -z "${INGRESS_IP}" ]]; then
-            INGRESS_IP=$(oc get svc istio-ingressgateway -n istio-gateways \
-              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
-          fi
-        fi
-
-        # Fallback: try any service named istio-ingressgateway
-        if [[ -z "${INGRESS_IP}" ]]; then
-          echo "Searching for istio-ingressgateway in all namespaces..."
-          ISTIO_SVC=$(oc get svc --all-namespaces -o json | jq -r '.items[] | select(.metadata.name=="istio-ingressgateway") | "\(.metadata.namespace)"' | head -1)
-          if [[ -n "${ISTIO_SVC}" ]]; then
-            echo "Found istio-ingressgateway in ${ISTIO_SVC} namespace"
-            INGRESS_IP=$(oc get svc istio-ingressgateway -n "${ISTIO_SVC}" \
-              -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
-            if [[ -z "${INGRESS_IP}" ]]; then
-              INGRESS_IP=$(oc get svc istio-ingressgateway -n "${ISTIO_SVC}" \
-                -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
-            fi
-          fi
-        fi
-
-        if [[ -z "${INGRESS_IP}" ]]; then
-          echo "⚠️ WARNING: Could not get LoadBalancer IP from istio-ingressgateway"
-          echo "   Make sure EIC is deployed and MetalLB has assigned an IP"
+        if [[ -z "${ISTIO_NS}" ]]; then
+          echo "⚠️ WARNING: Could not find istio-ingressgateway in any namespace"
           oc get svc --all-namespaces | grep -i istio || echo "No istio services found"
         else
-          echo "✅ LoadBalancer IP: ${INGRESS_IP}"
+          echo "✅ Found istio-ingressgateway in ${ISTIO_NS} namespace"
+        fi
+
+        # Annotate istio-ingressgateway for AWS NLB (required for ROSA)
+        if [[ -n "${ISTIO_NS}" ]]; then
+          echo ""
+          echo "📋 Annotating istio-ingressgateway for AWS NLB..."
+          oc annotate svc istio-ingressgateway -n "${ISTIO_NS}" \
+            service.beta.kubernetes.io/aws-load-balancer-type="nlb" \
+            --overwrite
+          echo "✅ NLB annotation applied"
+
+          # Wait for AWS to provision the NLB
+          echo "⏳ Waiting for NLB to be provisioned..."
+          NLB_TIMEOUT=300
+          NLB_INTERVAL=10
+          NLB_ELAPSED=0
+          while [[ ${NLB_ELAPSED} -lt ${NLB_TIMEOUT} ]]; do
+            NLB_ADDR=$(oc get svc istio-ingressgateway -n "${ISTIO_NS}" \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+            if [[ -z "${NLB_ADDR}" ]]; then
+              NLB_ADDR=$(oc get svc istio-ingressgateway -n "${ISTIO_NS}" \
+                -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+            fi
+            if [[ -n "${NLB_ADDR}" ]]; then
+              echo "✅ NLB provisioned: ${NLB_ADDR}"
+              break
+            fi
+            echo "  Waiting... (${NLB_ELAPSED}s/${NLB_TIMEOUT}s)"
+            sleep ${NLB_INTERVAL}
+            NLB_ELAPSED=$((NLB_ELAPSED + NLB_INTERVAL))
+          done
+          if [[ ${NLB_ELAPSED} -ge ${NLB_TIMEOUT} ]]; then
+            echo "⚠️ WARNING: NLB provisioning timed out after ${NLB_TIMEOUT}s"
+          fi
+        fi
+
+        # Get LoadBalancer address from istio-ingressgateway service
+        echo ""
+        echo "📋 Getting LoadBalancer address from istio-ingressgateway..."
+        INGRESS_IP=""
+
+        if [[ -n "${ISTIO_NS}" ]]; then
+          # Try IP first, then hostname (for cloud providers like AWS)
+          INGRESS_IP=$(oc get svc istio-ingressgateway -n "${ISTIO_NS}" \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+          if [[ -z "${INGRESS_IP}" ]]; then
+            INGRESS_IP=$(oc get svc istio-ingressgateway -n "${ISTIO_NS}" \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+          fi
+        fi
+
+        if [[ -z "${INGRESS_IP}" ]]; then
+          echo "⚠️ WARNING: Could not get LoadBalancer address from istio-ingressgateway"
+          echo "   Make sure EIC is deployed and the LoadBalancer is provisioned"
+          oc get svc --all-namespaces | grep -i istio || echo "No istio services found"
+        else
+          echo "✅ LoadBalancer address: ${INGRESS_IP}"
         fi
 
         echo ""
