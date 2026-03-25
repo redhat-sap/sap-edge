@@ -64,8 +64,14 @@ CURL_OPTS=()
 if $USE_PUBLIC_DNS; then
   echo "Resolution:     Public DNS (--public-dns)"
 else
-  echo "Resolution:     Internal via --resolve ($INGRESS_IP)"
-  CURL_OPTS+=("--resolve" "${HOST}:443:${INGRESS_IP}")
+  # Detect if INGRESS_IP is a hostname (e.g. AWS ELB) or an actual IP address
+  if [[ "$INGRESS_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "Resolution:     Internal via --resolve ($INGRESS_IP)"
+    CURL_OPTS+=("--resolve" "${HOST}:443:${INGRESS_IP}")
+  else
+    echo "Resolution:     Internal via --connect-to ($INGRESS_IP)"
+    CURL_OPTS+=("--connect-to" "${HOST}:443:${INGRESS_IP}:443")
+  fi
 fi
 echo "--------------------------------------------------"
 
