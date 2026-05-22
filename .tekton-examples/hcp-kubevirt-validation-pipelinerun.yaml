@@ -65,7 +65,7 @@ spec:
     - name: skipTeardown
       value: "false"
     - name: hubKubeconfigSecretName
-      value: "hub-admin-kubeconfig"
+      value: "eic-cluster-kubeconfig"
   workspaces:
     - name: source
       volumeClaimTemplate:
