@@ -204,6 +204,48 @@ spec:
         chmod 600 "${KUBECONFIG_PATH}"
         echo "✅ Kubeconfig saved to: ${KUBECONFIG_PATH}"
 
+        # When using a remote hub cluster, the hosted cluster's API server LB IP
+        # is not routable from the pipeline cluster. Create a passthrough Route on
+        # the hub to expose the kube-apiserver and rewrite the kubeconfig to use it.
+        # We patch the Secret on the hub so all downstream tasks that re-extract
+        # the kubeconfig automatically get the Route-based version.
+        if [[ -n "${HUB_KUBECONFIG_SECRET}" ]]; then
+          echo ""
+          echo "🔧 Remote hub detected: creating passthrough Route for hosted cluster kube-apiserver..."
+          HCP_NS="${CLUSTER_NS}-${CLUSTER_NAME}"
+          ROUTE_NAME="kube-apiserver-external"
+
+          # Create passthrough Route if it doesn't already exist
+          if ! oc get route "${ROUTE_NAME}" -n "${HCP_NS}" &>/dev/null; then
+            oc create route passthrough "${ROUTE_NAME}" \
+              --service=kube-apiserver --port=6443 \
+              -n "${HCP_NS}"
+            echo "✅ Passthrough Route created"
+          else
+            echo "✅ Passthrough Route already exists"
+          fi
+
+          ROUTE_HOST=$(oc get route "${ROUTE_NAME}" -n "${HCP_NS}" \
+            -o jsonpath='{.spec.host}')
+          echo "   Route hostname: ${ROUTE_HOST}"
+
+          # Get the original API server address from the kubeconfig
+          ORIGINAL_SERVER=$(grep -oP 'server:\s*\K\S+' "${KUBECONFIG_PATH}")
+          echo "   Original server: ${ORIGINAL_SERVER}"
+          echo "   New server: https://${ROUTE_HOST}:443"
+
+          # Rewrite the local kubeconfig file
+          sed -i "s|${ORIGINAL_SERVER}|https://${ROUTE_HOST}:443|" "${KUBECONFIG_PATH}"
+          sed -i 's|certificate-authority-data:.*|insecure-skip-tls-verify: true|' "${KUBECONFIG_PATH}"
+
+          # Patch the Secret on the hub so downstream tasks that re-extract
+          # the kubeconfig will get the rewritten version automatically
+          KUBECONFIG_B64=$(base64 -w0 "${KUBECONFIG_PATH}")
+          oc patch secret "${KUBECONFIG_SECRET}" -n "${CLUSTER_NS}" \
+            --type=merge -p "{\"data\":{\"kubeconfig\":\"${KUBECONFIG_B64}\"}}"
+          echo "✅ Kubeconfig Secret patched on hub for remote access via Route"
+        fi
+
         # Get API URL
         API_HOST=$(oc get hostedcluster "${CLUSTER_NAME}" -n "${CLUSTER_NS}" \
           -o jsonpath='{.status.controlPlaneEndpoint.host}' 2>/dev/null || echo "")
