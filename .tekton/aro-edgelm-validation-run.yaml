@@ -31,19 +31,19 @@ spec:
     - name: aroLocation
       value: "northeurope"
     - name: aroClusterName
-      value: "sap-eic-validation"
+      value: "sap-elm-validation"
     - name: aroVersion
-      value: "4.19.20"
+      value: "4.21.7"
     - name: azureSecretName
-      value: "azure-sp-secret"
+      value: "azure-sp-secret-rb"
     - name: pullSecretName
       value: "mj-pull-secret"
     - name: quayAdminPasswordSecretName
       value: "quay-admin-secret"
     - name: jiraSecretName
-      value: "jira-secret-mj"
+      value: "jira-secret-rb"
     - name: jiraIssueKey
-      value: "SAPOCP-1659"
+      value: "SAPOCP-1962"
     - name: skipEdgelmValidation
       value: "false"
   workspaces:
