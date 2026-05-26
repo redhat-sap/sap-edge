@@ -236,7 +236,7 @@ spec:
 
     # Step 7: Get all credentials and display them
     - name: get-all-accesses
-      runAfter: [deploy-postgres, deploy-redis, deploy-valkey]
+      runAfter: [deploy-postgres, deploy-redis, deploy-valkey, enable-monitoring]
       taskRef: { name: hcp-get-all-accesses }
       params:
         - name: hostedClusterName
@@ -319,7 +319,7 @@ spec:
 
     # Step 11: Fix EndpointSlice for Hypershift KubeVirt OCP 4.21 bug
     - name: fix-endpointslice
-      runAfter: [validate-and-create-configmap]
+      runAfter: [validate-and-create-configmap, verify-monitoring]
       taskRef: { name: hcp-fix-endpointslice }
       params:
         - name: hostedClusterName

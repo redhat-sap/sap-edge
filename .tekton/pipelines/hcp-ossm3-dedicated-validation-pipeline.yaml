@@ -390,7 +390,7 @@ spec:
 
     # Step 11: Get all credentials and display them
     - name: get-all-accesses
-      runAfter: [deploy-postgres, deploy-redis, deploy-valkey]
+      runAfter: [deploy-postgres, deploy-redis, deploy-valkey, enable-monitoring]
       taskRef: { name: hcp-get-all-accesses }
       params:
         - name: hostedClusterName
@@ -487,7 +487,7 @@ spec:
     #          The service-sync controller may fail to create EndpointSlice
     #          objects for LoadBalancer services, breaking MetalLB routing.
     - name: fix-endpointslice
-      runAfter: [validate-and-create-configmap]
+      runAfter: [validate-and-create-configmap, verify-monitoring]
       taskRef: { name: hcp-fix-endpointslice }
       params:
         - name: hostedClusterName
