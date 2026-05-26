@@ -304,12 +304,9 @@ spec:
         echo "📦 Storing credentials in a Kubernetes Secret on management cluster..."
         CREDS_SECRET_NAME="eic-credentials-hcp-${HOSTED_CLUSTER_NAME}"
 
-        # Switch to management cluster
-        if [[ -n "${HUB_KUBECONFIG_SECRET}" ]]; then
-          MGMT_KUBECONFIG="/tmp/hub-kubeconfig"
-        else
-          MGMT_KUBECONFIG=""
-        fi
+        # Switch to management cluster (pipeline cluster, not the remote hub)
+        # Use empty KUBECONFIG to fall back to in-cluster service account
+        MGMT_KUBECONFIG=""
 
         # Build secret arguments
         SECRET_ARGS=()

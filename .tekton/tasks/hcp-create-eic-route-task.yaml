@@ -171,12 +171,9 @@ spec:
         oc get route eic-https-route -n "${GW_NS}"
         echo "✅ Route created successfully"
 
-        # Switch back to hub kubeconfig to create ConfigMap
-        if [[ -n "${HUB_KUBECONFIG_SECRET}" ]]; then
-          export KUBECONFIG="/tmp/hub-kubeconfig"
-        else
-          unset KUBECONFIG
-        fi
+        # Switch to pipeline cluster (in-cluster SA) to create ConfigMap
+        # so endpoint test tasks can read it via configMapKeyRef
+        unset KUBECONFIG
 
         # Create ConfigMap with Route info for Route-based endpoint tests
         echo ""

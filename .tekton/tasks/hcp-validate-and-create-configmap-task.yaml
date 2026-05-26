@@ -293,10 +293,15 @@ spec:
           fi
         fi
 
-        # Create ConfigMap for endpoint tests
+        # Create ConfigMap for endpoint tests on the pipeline cluster
+        # (unset KUBECONFIG to use in-cluster SA, so ConfigMap is accessible
+        # by endpoint test tasks running on the pipeline cluster)
         CONFIGMAP_NAME="cluster-info-hcp-${HOSTED_CLUSTER_NAME}"
         echo ""
         echo "📝 Creating ConfigMap '${CONFIGMAP_NAME}' for endpoint tests..."
+
+        SAVED_KUBECONFIG="${KUBECONFIG:-}"
+        unset KUBECONFIG
 
         # Delete existing ConfigMap if present
         oc delete configmap "${CONFIGMAP_NAME}" --ignore-not-found=true
@@ -308,6 +313,11 @@ spec:
 
         echo "✅ ConfigMap created successfully"
         oc get configmap "${CONFIGMAP_NAME}" -o yaml
+
+        # Restore previous KUBECONFIG
+        if [[ -n "${SAVED_KUBECONFIG}" ]]; then
+          export KUBECONFIG="${SAVED_KUBECONFIG}"
+        fi
 
         # Generate summary
         SUMMARY="HCP Cluster: ${HOSTED_CLUSTER_NAME} | Domain: ${INGRESS_DOMAIN:-N/A} | Ingress: ${INGRESS_IP:-N/A}"
