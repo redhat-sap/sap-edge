@@ -33,7 +33,7 @@ spec:
     - name: hostedClusterNamespace
       value: "clusters"
     - name: releaseImage
-      value: "quay.io/openshift-release-dev/ocp-release:4.20.17-x86_64"
+      value: "quay.io/openshift-release-dev/ocp-release:4.19.25-x86_64"
     - name: nodePoolReplicas
       value: "3"
     - name: nodePoolCpuCores
@@ -59,9 +59,9 @@ spec:
     - name: publicDNS
       value: "false"
     - name: jiraSecretName
-      value: "jira-secret-mj"
+      value: "jira-secret-rb"
     - name: jiraIssueKey
-      value: ""
+      value: "SAPOCP-1958"
     - name: skipTeardown
       value: "false"
     - name: hubKubeconfigSecretName

@@ -171,7 +171,16 @@ wait_for_imagestream() {
         return
     fi
 
-    local max_attempts=30
+    # Explicitly schedule import (Helm only applies ImageStream spec; import can be lazy
+    # or delayed on HyperShift until a client requests the tag.)
+    log_info "Requesting import for valkey:8-el10..."
+    if ! oc import-image "valkey:8-el10" --confirm -n "$NAMESPACE" --request-timeout=3m &>/tmp/valkey-import.log; then
+        log_warn "oc import-image returned non-zero; continuing to poll. Last output:"
+        sed 's/^/[import] /' /tmp/valkey-import.log || true
+    fi
+
+    # registry.redhat.io pulls on fresh hosted clusters are often slower than 2.5 minutes
+    local max_attempts=120
     local attempt=0
 
     while [[ $attempt -lt $max_attempts ]]; do
@@ -181,11 +190,23 @@ wait_for_imagestream() {
         fi
         attempt=$((attempt + 1))
         echo -n "."
+        if (( attempt % 30 == 0 )); then
+            echo ""
+            log_info "Still waiting (${attempt}/${max_attempts}) — ImageStream status:"
+            oc get imagestream valkey -n "$NAMESPACE" -o wide 2>/dev/null || true
+        fi
         sleep 5
     done
 
     echo ""
-    log_error "Timeout waiting for ImageStream import"
+    log_error "Timeout waiting for ImageStream import (after $((max_attempts * 5))s)"
+    log_error "Ensure the hosted cluster pull secret can pull registry.redhat.io (rhel10/valkey-8)."
+    echo ""
+    log_info "imagestream valkey:"
+    oc describe imagestream valkey -n "$NAMESPACE" 2>/dev/null || true
+    echo ""
+    log_info "Recent events in ${NAMESPACE}:"
+    oc get events -n "$NAMESPACE" --sort-by='.lastTimestamp' 2>/dev/null | tail -25 || true
     exit 1
 }
 
