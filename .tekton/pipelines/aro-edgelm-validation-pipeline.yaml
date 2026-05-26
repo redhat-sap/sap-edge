@@ -29,7 +29,7 @@ spec:
     - name: aroVersion
       type: string
       description: "ARO version"
-      default: "4.15.35"
+      default: "4.20.15"
     - name: azureSecretName
       type: string
       description: "Name of the Kubernetes Secret containing Azure service principal credentials, ARO resource group, and ARO domain"

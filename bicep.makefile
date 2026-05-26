@@ -9,7 +9,7 @@ ARO_LOCATION?=northeurope
 
 ARO_CLUSTER_NAME?=sapeic
 ARO_DOMAIN?=saponrhel.org
-ARO_VERSION?=4.15.35
+ARO_VERSION?=4.20.15
 
 # Azure services configuration
 DEPLOY_POSTGRES?=true
@@ -478,7 +478,8 @@ aro-deploy-only:  ## Deploy ARO cluster only (no PostgreSQL/Redis services)
 		--name aro-deploy-${ARO_CLUSTER_NAME} \
 		--template-file bicep/aro.bicep \
 		--parameters @bicep/test.parameters.json \
-		--parameters @$$TEMP_PARAMS; then \
+		--parameters @$$TEMP_PARAMS \
+		--parameters version=${ARO_VERSION}; then \
 		echo "✅ Bicep deployment completed successfully"; \
 	else \
 		echo "❌ Bicep deployment failed"; \
@@ -567,7 +568,7 @@ aro-deploy-test:  ## Deploy ARO with cost-optimized test settings
 		--template-file bicep/aro.bicep \
 		--parameters @bicep/test.parameters.json \
 		--parameters @$$TEMP_PARAMS \
-		--parameters deployPostgres=$${DEPLOY_POSTGRES:-false} deployRedis=$${DEPLOY_REDIS:-false} deployQuay=$${DEPLOY_QUAY:-false}; \
+		--parameters deployPostgres=$${DEPLOY_POSTGRES:-false} deployRedis=$${DEPLOY_REDIS:-false} deployQuay=$${DEPLOY_QUAY:-false} version=${ARO_VERSION}; \
 	rm -f $$TEMP_PARAMS
 
 .PHONY: aro-services-deploy-test

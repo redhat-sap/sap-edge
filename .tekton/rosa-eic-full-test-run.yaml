@@ -7,7 +7,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: aro-eic-full-test-pr{{ pull_request_number }}-
+  generateName: rosa-eic-full-test-pr{{ pull_request_number }}-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
@@ -16,7 +16,7 @@ metadata:
     pipelinesascode.tekton.dev/cancel-in-progress: "true"
 spec:
   pipelineRef:
-    name: aro-eic-full-test-pipeline
+    name: rosa-eic-full-test-pipeline
   timeouts:
     pipeline: "336h"      # Total pipeline timeout (14 days)
     tasks: "335h"         # Individual task timeout (tasks + finally must be <= pipeline)
@@ -28,34 +28,40 @@ spec:
       value: "{{ revision }}"
     - name: pullRequestNumber
       value: "{{ pull_request_number }}"
-    - name: aroLocation
-      value: "northeurope"
-    - name: aroClusterName
-      value: "sap-eic-validation"
-    - name: aroVersion
-      value: "4.19.20"
-    - name: azureSecretName
-      value: "azure-sp-secret"
-    - name: pullSecretName
-      value: "mj-pull-secret"
+    - name: clusterName
+      value: "rosa-eic-rb"
+    - name: awsRegion
+      value: "eu-north-1"
+    - name: rosaVersion
+      value: "4.21.0"
+    - name: awsSecretName
+      value: "aws-credentials-secret-rb"
+    - name: redhatTokenSecretName
+      value: "redhat-token-secret"
     - name: eicAuthSecretName
       value: "eic-auth-secret"
     - name: postgresAdminPasswordSecretName
-      value: "azure-postgres-admin-password"
+      value: "rosa-postgres-admin-password"
+    - name: quayAdminPasswordSecretName
+      value: "quay-admin-secret"
     - name: deployPostgres
       value: "false"
     - name: deployRedis
       value: "false"
-    - name: publicDNS
-      value: "false"
     - name: deployQuay
       value: "true"
-    - name: quayAdminPasswordSecretName
-      value: "quay-admin-secret"
+    - name: publicDNS
+      value: "false"
     - name: jiraSecretName
-      value: "jira-secret-mj"
+      value: "jira-secret-rb"
     - name: jiraIssueKey
-      value: "SAPOCP-1708"
+      value: "SAPOCP-1943"
+    - name: terraformStateS3Bucket
+      value: "eic-test-rosa-terraform-state"
+    - name: terraformStateS3Key
+      value: "rosa/terraform.tfstate"
+    - name: terraformStateDynamoDBTable
+      value: "eic-test-rosa-terraform-state-lock"
   workspaces:
     - name: source
       volumeClaimTemplate:
