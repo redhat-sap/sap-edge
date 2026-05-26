@@ -102,6 +102,7 @@ spec:
 
         # Set KUBECONFIG to hosted cluster
         export KUBECONFIG="${HOSTED_KUBECONFIG}"
+        [[ -f "$(workspaces.source.path)/.kubeconfig-rewrite.sh" ]] && source "$(workspaces.source.path)/.kubeconfig-rewrite.sh" "${HOSTED_KUBECONFIG}"
 
         # Verify access to hosted cluster
         echo "🔍 Verifying access to hosted cluster..."

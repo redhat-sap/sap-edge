@@ -215,6 +215,7 @@ spec:
         chmod 600 "${HOSTED_KUBECONFIG}"
 
         export KUBECONFIG="${HOSTED_KUBECONFIG}"
+        [[ -f "$(workspaces.source.path)/.kubeconfig-rewrite.sh" ]] && source "$(workspaces.source.path)/.kubeconfig-rewrite.sh" "${HOSTED_KUBECONFIG}"
 
         echo "🔍 Verifying access to hosted cluster..."
         oc get nodes

@@ -88,6 +88,7 @@ spec:
           -o jsonpath='{.data.kubeconfig}' | base64 -d > "${HOSTED_KUBECONFIG}"
         chmod 600 "${HOSTED_KUBECONFIG}"
         export KUBECONFIG="${HOSTED_KUBECONFIG}"
+        [[ -f "$(workspaces.source.path)/.kubeconfig-rewrite.sh" ]] && source "$(workspaces.source.path)/.kubeconfig-rewrite.sh" "${HOSTED_KUBECONFIG}"
         echo "✅ Successfully connected to hosted cluster"
         oc whoami
 
