@@ -360,6 +360,8 @@ spec:
           value: $(params.eicAuthSecretName)
         - name: publicDNS
           value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
       workspaces:
         - name: source
           workspace: source
@@ -376,6 +378,8 @@ spec:
           value: $(params.eicAuthSecretName)
         - name: publicDNS
           value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
       workspaces:
         - name: source
           workspace: source
@@ -392,6 +396,8 @@ spec:
           value: $(params.eicAuthSecretName)
         - name: publicDNS
           value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
       workspaces:
         - name: source
           workspace: source
@@ -408,6 +414,8 @@ spec:
           value: $(params.eicAuthSecretName)
         - name: publicDNS
           value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
       workspaces:
         - name: source
           workspace: source
@@ -424,6 +432,8 @@ spec:
           value: $(params.eicAuthSecretName)
         - name: publicDNS
           value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
       workspaces:
         - name: source
           workspace: source
@@ -474,6 +484,8 @@ spec:
           value: $(params.eicAuthSecretName)
         - name: publicDNS
           value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
       workspaces:
         - name: source
           workspace: source
@@ -490,6 +502,8 @@ spec:
           value: $(params.eicAuthSecretName)
         - name: publicDNS
           value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
       workspaces:
         - name: source
           workspace: source
@@ -506,6 +520,8 @@ spec:
           value: $(params.eicAuthSecretName)
         - name: publicDNS
           value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
       workspaces:
         - name: source
           workspace: source
@@ -522,6 +538,8 @@ spec:
           value: $(params.eicAuthSecretName)
         - name: publicDNS
           value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
       workspaces:
         - name: source
           workspace: source
@@ -538,6 +556,8 @@ spec:
           value: $(params.eicAuthSecretName)
         - name: publicDNS
           value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
       workspaces:
         - name: source
           workspace: source
@@ -594,6 +614,8 @@ spec:
           value: $(params.eicAuthSecretName)
         - name: publicDNS
           value: "true"
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
       workspaces:
         - name: source
           workspace: source
@@ -610,6 +632,8 @@ spec:
           value: $(params.eicAuthSecretName)
         - name: publicDNS
           value: "true"
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
       workspaces:
         - name: source
           workspace: source
@@ -626,6 +650,8 @@ spec:
           value: $(params.eicAuthSecretName)
         - name: publicDNS
           value: "true"
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
       workspaces:
         - name: source
           workspace: source
@@ -642,6 +668,8 @@ spec:
           value: $(params.eicAuthSecretName)
         - name: publicDNS
           value: "true"
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
       workspaces:
         - name: source
           workspace: source
@@ -658,6 +686,8 @@ spec:
           value: $(params.eicAuthSecretName)
         - name: publicDNS
           value: "true"
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
       workspaces:
         - name: source
           workspace: source

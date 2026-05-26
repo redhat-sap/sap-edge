@@ -27,11 +27,15 @@ spec:
     - name: expectedStatus
       type: string
       description: The expected HTTP status code (e.g. "403")
+    - name: hubKubeconfigSecretName
+      type: string
+      description: "Name of the Secret containing kubeconfig for hub cluster (optional, enables remote exec via oc run)"
+      default: ""
   workspaces:
     - name: source
   steps:
     - name: run-single-test
-      image: registry.access.redhat.com/ubi9/ubi-minimal
+      image: registry.access.redhat.com/ubi9/ubi
       workingDir: $(workspaces.source.path)
       env:
         - name: HOST
@@ -45,6 +49,8 @@ spec:
         set -euo pipefail
 
         EXPECTED_STATUS="$(params.expectedStatus)"
+        ENDPOINT_PATH="$(params.endpointPath)"
+        HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
 
         CURL_OPTS=("-k" "-s" "-o" "/dev/null" "-w" "%{http_code}")
 
@@ -58,19 +64,64 @@ spec:
           fi
         fi
 
-        echo "======== Testing https://${HOST}$(params.endpointPath) ========"
+        echo "======== Testing https://${HOST}${ENDPOINT_PATH} ========"
         echo "Expected HTTP status: ${EXPECTED_STATUS}"
 
-        ACTUAL_STATUS=$(curl "${CURL_OPTS[@]}" \
-          -H "Authorization: Basic ${AUTH_KEY}" \
-          --url "https://${HOST}$(params.endpointPath)")
+        if [[ -n "${HUB_KUBECONFIG_SECRET}" ]]; then
+          echo "🔐 Remote exec mode: will run curl via oc run on remote cluster"
+
+          echo "📦 Installing OpenShift CLI..."
+          curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz -o /tmp/oc.tar.gz
+          tar xzf /tmp/oc.tar.gz -C /tmp
+          mv /tmp/oc /usr/local/bin/
+          rm -f /tmp/oc.tar.gz
+
+          echo "🔐 Extracting hub cluster kubeconfig from secret: ${HUB_KUBECONFIG_SECRET}..."
+          HUB_KUBECONFIG="/tmp/hub-kubeconfig"
+          if kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.kubeconfig}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: kubeconfig)"
+          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.config}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: config)"
+          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.value}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: value)"
+          else
+            echo "❌ Failed to extract kubeconfig from secret '${HUB_KUBECONFIG_SECRET}'"
+            exit 1
+          fi
+          chmod 600 "${HUB_KUBECONFIG}"
+          export KUBECONFIG="${HUB_KUBECONFIG}"
+
+          RESOLVE_OPT=""
+          if [[ "$(params.publicDNS)" != "true" ]]; then
+            if [[ "$INGRESS_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              RESOLVE_OPT="--resolve ${HOST}:443:${INGRESS_IP}"
+            else
+              RESOLVE_OPT="--connect-to ${HOST}:443:${INGRESS_IP}:443"
+            fi
+          fi
+
+          POD_NAME="curl-test-$(date +%s)-${RANDOM}"
+          ACTUAL_STATUS=$(oc run "${POD_NAME}" --rm -i --restart=Never \
+            --image=curlimages/curl \
+            -- curl -k -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Basic ${AUTH_KEY}" \
+            ${RESOLVE_OPT} \
+            "https://${HOST}${ENDPOINT_PATH}")
+
+          # oc run may include pod status lines, extract just the HTTP status code
+          ACTUAL_STATUS=$(echo "${ACTUAL_STATUS}" | grep -oE '[0-9]{3}' | tail -1)
+        else
+          ACTUAL_STATUS=$(curl "${CURL_OPTS[@]}" \
+            -H "Authorization: Basic ${AUTH_KEY}" \
+            --url "https://${HOST}${ENDPOINT_PATH}")
+        fi
 
         echo "Actual HTTP status: ${ACTUAL_STATUS}"
 
         if [[ "${ACTUAL_STATUS}" == "${EXPECTED_STATUS}" ]]; then
-          echo "✅ Endpoint returned expected status ${EXPECTED_STATUS}: $(params.endpointPath)"
+          echo "✅ Endpoint returned expected status ${EXPECTED_STATUS}: ${ENDPOINT_PATH}"
           exit 0
         else
-          echo "❌ Endpoint returned ${ACTUAL_STATUS}, expected ${EXPECTED_STATUS}: $(params.endpointPath)"
+          echo "❌ Endpoint returned ${ACTUAL_STATUS}, expected ${EXPECTED_STATUS}: ${ENDPOINT_PATH}"
           exit 1
         fi

@@ -21,11 +21,15 @@ spec:
     - name: publicDNS
       type: string
       default: "false"
+    - name: hubKubeconfigSecretName
+      type: string
+      description: "Name of the Secret containing kubeconfig for hub cluster (optional, enables remote exec via oc run)"
+      default: ""
   workspaces:
     - name: source
   steps:
     - name: run-rate-limit-test
-      image: registry.access.redhat.com/ubi9/ubi-minimal
+      image: registry.access.redhat.com/ubi9/ubi
       workingDir: $(workspaces.source.path)
       env:
         - name: HOST
@@ -37,20 +41,100 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
-       
-        TEST_SCRIPT="./edge-integration-cell/rate-limit-test.sh"
 
-        SCRIPT_ARGS=("--host" "$HOST")
+        ENDPOINT_PATH="$(params.endpointPath)"
+        HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
 
-        if [[ "$(params.publicDNS)" == "true" ]]; then
-          SCRIPT_ARGS+=("--public-dns")
+        echo "▶️ Running rate limit test for endpoint: ${ENDPOINT_PATH}"
+
+        if [[ -n "${HUB_KUBECONFIG_SECRET}" ]]; then
+          echo "🔐 Remote exec mode: will run rate-limit test via oc run on remote cluster"
+
+          echo "📦 Installing OpenShift CLI..."
+          curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz -o /tmp/oc.tar.gz
+          tar xzf /tmp/oc.tar.gz -C /tmp
+          mv /tmp/oc /usr/local/bin/
+          rm -f /tmp/oc.tar.gz
+
+          echo "🔐 Extracting hub cluster kubeconfig from secret: ${HUB_KUBECONFIG_SECRET}..."
+          HUB_KUBECONFIG="/tmp/hub-kubeconfig"
+          if kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.kubeconfig}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: kubeconfig)"
+          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.config}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: config)"
+          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.value}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: value)"
+          else
+            echo "❌ Failed to extract kubeconfig from secret '${HUB_KUBECONFIG_SECRET}'"
+            exit 1
+          fi
+          chmod 600 "${HUB_KUBECONFIG}"
+          export KUBECONFIG="${HUB_KUBECONFIG}"
+
+          RESOLVE_OPT=""
+          if [[ "$(params.publicDNS)" != "true" ]]; then
+            if [[ "$INGRESS_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              RESOLVE_OPT="--resolve ${HOST}:443:${INGRESS_IP}"
+            else
+              RESOLVE_OPT="--connect-to ${HOST}:443:${INGRESS_IP}:443"
+            fi
+          fi
+
+          POD_NAME="ratelimit-test-$(date +%s)-${RANDOM}"
+          echo "--- Launching rate-limit test in remote pod ${POD_NAME} ---"
+
+          # Run the full rate-limit test script inside a remote pod with bash+curl
+          oc run "${POD_NAME}" --rm -i --restart=Never \
+            --image=registry.access.redhat.com/ubi9/ubi-minimal \
+            -- bash -c "
+              microdnf install -y curl > /dev/null 2>&1
+              SUCCESS_SIGNAL=/tmp/rate-limit-success
+              trap 'rm -f \${SUCCESS_SIGNAL}; kill \$(jobs -p) &>/dev/null' EXIT
+
+              echo '--- Launching 6 parallel requests to race for a 429 status ---'
+              for i in 1 2 3 4 5 6; do
+                (
+                  echo \"  -> Launching worker #\${i}...\"
+                  HTTP_STATUS=\$(curl --write-out '%{http_code}' --silent --insecure --request GET \
+                    -H 'Authorization: Basic ${AUTH_KEY}' \
+                    ${RESOLVE_OPT} \
+                    --url 'https://${HOST}${ENDPOINT_PATH}')
+                  echo \"  -> Worker #\${i} finished with status: \${HTTP_STATUS}\"
+                  if [[ \"\${HTTP_STATUS}\" -eq 429 ]]; then
+                    echo \"  -> ✅ Worker #\${i} got 429! Creating success signal.\"
+                    touch \${SUCCESS_SIGNAL}
+                  fi
+                ) &
+              done
+
+              echo '--- Waiting for first 429 response or timeout... ---'
+              SECONDS=0
+              while true; do
+                if [[ -f \${SUCCESS_SIGNAL} ]]; then
+                  echo '✅ SUCCESS: Rate limit was triggered correctly.'
+                  exit 0
+                fi
+                if (( SECONDS > 20 )); then
+                  echo '❌ FAILED: Timed out after 20 seconds. No 429 response was received.'
+                  exit 1
+                fi
+                sleep 0.5
+              done
+            "
+        else
+          TEST_SCRIPT="./edge-integration-cell/rate-limit-test.sh"
+
+          SCRIPT_ARGS=("--host" "$HOST")
+
+          if [[ "$(params.publicDNS)" == "true" ]]; then
+            SCRIPT_ARGS+=("--public-dns")
+          fi
+
+          if [[ ! -f "$TEST_SCRIPT" ]]; then
+            echo "❌ Test script not found at $TEST_SCRIPT"
+            exit 1
+          fi
+          chmod +x "$TEST_SCRIPT"
+
+          $TEST_SCRIPT "${SCRIPT_ARGS[@]}" "${ENDPOINT_PATH}"
         fi
-
-        if [[ ! -f "$TEST_SCRIPT" ]]; then
-          echo "❌ Test script not found at $TEST_SCRIPT"
-          exit 1
-        fi
-        chmod +x "$TEST_SCRIPT"
-        
-        echo "▶️ Running rate limit test for endpoint: $(params.endpointPath)"
-        $TEST_SCRIPT "${SCRIPT_ARGS[@]}" "$(params.endpointPath)"
