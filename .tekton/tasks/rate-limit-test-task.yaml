@@ -85,7 +85,7 @@ spec:
           echo "--- Launching rate-limit test in remote pod ${POD_NAME} ---"
 
           # Run the full rate-limit test script inside a remote pod with bash+curl
-          oc run "${POD_NAME}" --rm -i --restart=Never \
+          oc run "${POD_NAME}" -n default --rm -i --restart=Never \
             --image=registry.access.redhat.com/ubi9/ubi-minimal \
             -- bash -c "
               microdnf install -y curl > /dev/null 2>&1

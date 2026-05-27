@@ -102,7 +102,7 @@ spec:
           fi
 
           POD_NAME="curl-test-$(date +%s)-${RANDOM}"
-          ACTUAL_STATUS=$(oc run "${POD_NAME}" --rm -i --restart=Never \
+          ACTUAL_STATUS=$(oc run "${POD_NAME}" -n default --rm -i --restart=Never \
             --image=curlimages/curl \
             -- curl -k -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: Basic ${AUTH_KEY}" \

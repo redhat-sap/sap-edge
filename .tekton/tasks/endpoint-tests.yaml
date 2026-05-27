@@ -81,7 +81,7 @@ spec:
 
           POD_NAME="curl-test-$(date +%s)-${RANDOM}"
           echo "======== Sending request to https://${HOST}${ENDPOINT_PATH} via remote pod ========"
-          RESULT=$(oc run "${POD_NAME}" --rm -i --restart=Never \
+          RESULT=$(oc run "${POD_NAME}" -n default --rm -i --restart=Never \
             --image=curlimages/curl \
             -- curl --fail -k -s --show-error --request GET \
             -H "Authorization: Basic ${AUTH_KEY}" \
