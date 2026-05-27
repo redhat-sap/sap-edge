@@ -109,8 +109,9 @@ spec:
             ${RESOLVE_OPT} \
             "https://${HOST}${ENDPOINT_PATH}")
 
-          # oc run may include pod status lines, extract just the HTTP status code
-          ACTUAL_STATUS=$(echo "${ACTUAL_STATUS}" | grep -oE '[0-9]{3}' | tail -1)
+          # oc run may include pod status lines; extract only lines that are
+          # exactly a 3-digit HTTP status code
+          ACTUAL_STATUS=$(echo "${ACTUAL_STATUS}" | grep -xE '[0-9]{3}' | tail -1)
         else
           ACTUAL_STATUS=$(curl "${CURL_OPTS[@]}" \
             -H "Authorization: Basic ${AUTH_KEY}" \
