@@ -85,7 +85,7 @@ for i in {1..30}; do
     (
         # This sub-process runs independently
         echo "  -> Launching worker #$i..."
-        HTTP_STATUS=$(curl --write-out '%{http_code}' --silent --insecure --request GET \
+        HTTP_STATUS=$(curl --write-out '%{http_code}' --silent --output /dev/null --insecure --request GET \
             -H "Authorization: Basic ${AUTH_KEY}" \
             "${CURL_OPTS[@]}" \
             --url "https://${HOST}${ENDPOINT_PATH}")

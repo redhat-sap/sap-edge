@@ -96,7 +96,7 @@ spec:
               for i in \$(seq 1 30); do
                 (
                   echo \"  -> Launching worker #\${i}...\"
-                  HTTP_STATUS=\$(curl --write-out '%{http_code}' --silent --insecure --request GET \
+                  HTTP_STATUS=\$(curl --write-out '%{http_code}' --silent --output /dev/null --insecure --request GET \
                     -H 'Authorization: Basic ${AUTH_KEY}' \
                     ${RESOLVE_OPT} \
                     --url 'https://${HOST}${ENDPOINT_PATH}')
