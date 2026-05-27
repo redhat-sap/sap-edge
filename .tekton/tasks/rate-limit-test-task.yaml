@@ -92,8 +92,8 @@ spec:
               SUCCESS_SIGNAL=/tmp/rate-limit-success
               trap 'rm -f \${SUCCESS_SIGNAL}; kill \$(jobs -p) &>/dev/null' EXIT
 
-              echo '--- Launching 6 parallel requests to race for a 429 status ---'
-              for i in 1 2 3 4 5 6; do
+              echo '--- Launching 30 parallel requests to race for a 429 status ---'
+              for i in \$(seq 1 30); do
                 (
                   echo \"  -> Launching worker #\${i}...\"
                   HTTP_STATUS=\$(curl --write-out '%{http_code}' --silent --insecure --request GET \

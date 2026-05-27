@@ -78,9 +78,9 @@ echo "--------------------------------------------------"
 
 
 # --- Launch all requests in parallel background jobs ---
-echo "--- Launching 6 parallel requests to race for a 429 status ---"
+echo "--- Launching 30 parallel requests to race for a 429 status ---"
 
-for i in {1..6}; do
+for i in {1..30}; do
     # Each request runs in its own subshell in the background
     (
         # This sub-process runs independently
