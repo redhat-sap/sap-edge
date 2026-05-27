@@ -52,6 +52,7 @@ spec:
           curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz -o /tmp/oc.tar.gz
           tar xzf /tmp/oc.tar.gz -C /tmp
           mv /tmp/oc /usr/local/bin/
+          cp /usr/local/bin/oc /usr/local/bin/kubectl
           rm -f /tmp/oc.tar.gz
 
           echo "🔐 Extracting hub cluster kubeconfig from secret: ${HUB_KUBECONFIG_SECRET}..."
