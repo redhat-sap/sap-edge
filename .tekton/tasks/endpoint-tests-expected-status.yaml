@@ -107,7 +107,7 @@ spec:
             -- curl -k -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: Basic ${AUTH_KEY}" \
             ${RESOLVE_OPT} \
-            "https://${HOST}${ENDPOINT_PATH}")
+            "https://${HOST}${ENDPOINT_PATH}" 2>&1) || true
 
           # oc run may include pod status lines; extract only lines that are
           # exactly a 3-digit HTTP status code
