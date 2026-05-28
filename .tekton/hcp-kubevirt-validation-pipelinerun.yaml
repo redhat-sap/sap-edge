@@ -29,7 +29,7 @@ spec:
     - name: pullRequestNumber
       value: "{{ pull_request_number }}"
     - name: hostedClusterName
-      value: "hcp-kv-pr{{ pull_request_number }}"
+      value: "sap-dm-edge-demo"
     - name: hostedClusterNamespace
       value: "clusters"
     - name: releaseImage
@@ -53,7 +53,7 @@ spec:
     - name: datastoreType
       value: "redis"
     - name: redisClusterType
-      value: "cluster"
+      value: "standard"
     - name: eicAuthSecretName
       value: "eic-auth-secret"
     - name: publicDNS
