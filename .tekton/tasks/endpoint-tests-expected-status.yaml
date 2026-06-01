@@ -102,7 +102,7 @@ spec:
           fi
 
           POD_NAME="curl-test-$(date +%s)-${RANDOM}"
-          ACTUAL_STATUS=$(oc run "${POD_NAME}" -n default --rm -i --restart=Never \
+          OC_OUTPUT=$(oc run "${POD_NAME}" -n default --rm -i --restart=Never \
             --image=curlimages/curl \
             -- curl -k -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: Basic ${AUTH_KEY}" \
@@ -111,7 +111,12 @@ spec:
 
           # oc run may include pod status lines; extract only lines that are
           # exactly a 3-digit HTTP status code
-          ACTUAL_STATUS=$(echo "${ACTUAL_STATUS}" | grep -xE '[0-9]{3}' | tail -1)
+          ACTUAL_STATUS=$(echo "${OC_OUTPUT}" | grep -xE '[0-9]{3}' | tail -1)
+          if [[ -z "${ACTUAL_STATUS}" ]]; then
+            echo "❌ Failed to get HTTP status from remote pod"
+            echo "${OC_OUTPUT}"
+            exit 1
+          fi
         else
           ACTUAL_STATUS=$(curl "${CURL_OPTS[@]}" \
             -H "Authorization: Basic ${AUTH_KEY}" \
