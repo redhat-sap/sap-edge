@@ -10,16 +10,7 @@ param clusterName string
 param pullSecret string
 @description('The domain for the ARO cluster.')
 param domain string
-@description('OpenShift version for the ARO cluster')
-@allowed([
-    '4.16.30'
-    '4.16.39'
-    '4.16.48'
-    '4.17.27'
-    '4.17.44'
-    '4.18.26'
-    '4.19.20'
-])
+@description('OpenShift version for the ARO cluster (validated by Azure at deployment time)')
 param version string
 
 param servicePrincipalClientId string
