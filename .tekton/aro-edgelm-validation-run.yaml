@@ -31,7 +31,7 @@ spec:
     - name: aroLocation
       value: "northeurope"
     - name: aroClusterName
-      value: "sap-eic-pr{{ pull_request_number }}"
+      value: "sap-elm-pr{{ pull_request_number }}"
     - name: aroVersion
       value: "4.20.15"
     - name: azureSecretName

@@ -467,6 +467,7 @@ aro-deploy-only:  ## Deploy ARO cluster only (no PostgreSQL/Redis services)
 	echo "{ \
 		\"clusterName\": { \"value\": \"${ARO_CLUSTER_NAME}\" }, \
 		\"domain\": { \"value\": \"${ARO_CLUSTER_NAME}.${ARO_DOMAIN}\" }, \
+		\"version\": { \"value\": \"${ARO_VERSION}\" }, \
 		\"servicePrincipalClientId\": { \"value\": \"${CLIENT_ID}\" }, \
 		\"servicePrincipalClientSecret\": { \"value\": \"${CLIENT_SECRET}\" }, \
 		\"pullSecret\": { \"value\": \"$$PULL_SECRET_BASE64\" }, \
@@ -515,6 +516,7 @@ aro-deploy-minimal:  ## Deploy ARO cluster with minimal network (no postgres/red
 	echo "{ \
 		\"clusterName\": { \"value\": \"${ARO_CLUSTER_NAME}\" }, \
 		\"domain\": { \"value\": \"${ARO_CLUSTER_NAME}.${ARO_DOMAIN}\" }, \
+		\"version\": { \"value\": \"${ARO_VERSION}\" }, \
 		\"servicePrincipalClientId\": { \"value\": \"${CLIENT_ID}\" }, \
 		\"servicePrincipalClientSecret\": { \"value\": \"${CLIENT_SECRET}\" }, \
 		\"pullSecret\": { \"value\": \"$$PULL_SECRET_BASE64\" } \
