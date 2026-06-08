@@ -1,0 +1,196 @@
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: aro-upgrade-cluster
+spec:
+  description: >-
+    Upgrades an ARO cluster to the latest version matching a target prefix
+    (e.g. "4.21"). Sets the upgrade channel, discovers available versions
+    from the OpenShift update service, triggers the upgrade, and polls
+    until completion.
+  params:
+    - name: aroClusterName
+      type: string
+      description: "ARO cluster name"
+    - name: azureSecretName
+      type: string
+      description: "Name of the Kubernetes Secret containing Azure service principal credentials and ARO resource group"
+      default: "azure-sp-secret"
+    - name: targetVersionPrefix
+      type: string
+      description: "Target version prefix (e.g. '4.21'). The latest available version matching this prefix will be selected."
+  results:
+    - name: upgrade-version
+      description: "The version the cluster was upgraded to"
+  workspaces:
+    - name: source
+  steps:
+    - name: upgrade-cluster
+      image: registry.access.redhat.com/ubi9/ubi
+      timeout: "6h"
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: ARO_CLUSTER_NAME
+          value: "$(params.aroClusterName)"
+        - name: TARGET_VERSION_PREFIX
+          value: "$(params.targetVersionPrefix)"
+      envFrom:
+        - secretRef:
+            name: $(params.azureSecretName)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        echo "=========================================="
+        echo "ARO Cluster Upgrade Task"
+        echo "=========================================="
+        echo "Cluster: ${ARO_CLUSTER_NAME}"
+        echo "Target Version Prefix: ${TARGET_VERSION_PREFIX}"
+        echo "=========================================="
+
+        # Install required tools
+        echo "📦 Installing dependencies..."
+        rpm --import https://packages.microsoft.com/keys/microsoft.asc
+        dnf install -y https://packages.microsoft.com/config/rhel/9.0/packages-microsoft-prod.rpm
+        dnf clean all
+        dnf install -y azure-cli tar jq make libicu
+
+        echo "📦 Installing OpenShift CLI..."
+        curl -L https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/openshift-client-linux.tar.gz | tar -xz -C /usr/local/bin oc
+
+        # Azure login and get cluster credentials
+        echo "🔐 Logging into Azure..."
+        make azure-login
+        make azure-set-subscription
+
+        CLUSTER_URL=$(make --no-print-directory aro-cluster-url | tail -1)
+        CREDENTIALS_JSON=$(make --no-print-directory aro-credentials | grep -v "Variable is not defined" | grep -v "Not all required variables are defined" | grep -v "az aro list-credentials")
+        USERNAME=$(echo "$CREDENTIALS_JSON" | jq -r '.kubeadminUsername')
+        PASSWORD=$(echo "$CREDENTIALS_JSON" | jq -r '.kubeadminPassword')
+
+        echo "🔗 Logging into cluster..."
+        oc login "$CLUSTER_URL" -u "$USERNAME" -p "$PASSWORD" --insecure-skip-tls-verify=true
+
+        # Check current version
+        CURRENT_VERSION=$(oc get clusterversion version -o jsonpath='{.status.desired.version}')
+        echo "📋 Current cluster version: ${CURRENT_VERSION}"
+
+        if [[ "${CURRENT_VERSION}" == ${TARGET_VERSION_PREFIX}* ]]; then
+          echo "✅ Cluster is already on ${TARGET_VERSION_PREFIX}.x (${CURRENT_VERSION}). Skipping upgrade."
+          echo -n "${CURRENT_VERSION}" > $(results.upgrade-version.path)
+          exit 0
+        fi
+
+        # Set upgrade channel
+        CHANNEL="stable-${TARGET_VERSION_PREFIX}"
+        echo "📡 Setting upgrade channel to ${CHANNEL}..."
+        oc adm upgrade channel "${CHANNEL}"
+        echo "✅ Channel set to ${CHANNEL}"
+
+        # Wait for available updates to populate
+        echo "⏳ Waiting for available updates to populate..."
+        START_TIME=$(date +%s)
+        MAX_WAIT=1800  # 30 minutes for updates to appear
+        TARGET_VERSION=""
+
+        while true; do
+          ELAPSED=$(( $(date +%s) - START_TIME ))
+          ELAPSED_MIN=$(( ELAPSED / 60 ))
+          ELAPSED_SEC=$(( ELAPSED % 60 ))
+
+          if [[ ${ELAPSED} -ge ${MAX_WAIT} ]]; then
+            echo ""
+            echo "❌ Timeout waiting for ${TARGET_VERSION_PREFIX}.x updates to appear after ${ELAPSED_MIN}m"
+            echo "Available updates:"
+            oc get clusterversion version -o jsonpath='{.status.availableUpdates[*].version}' | tr ' ' '\n' | sort -V
+            exit 1
+          fi
+
+          TARGET_VERSION=$(oc get clusterversion version -o json | \
+            jq -r --arg prefix "${TARGET_VERSION_PREFIX}" \
+            '[.status.availableUpdates[]? | select(.version | startswith($prefix))] | sort_by(.version | split(".") | map(tonumber)) | last | .version // empty')
+
+          if [[ -n "${TARGET_VERSION}" ]]; then
+            echo ""
+            echo "✅ Found target version: ${TARGET_VERSION}"
+            break
+          fi
+
+          printf "\r  [%dm%ds] Waiting for ${TARGET_VERSION_PREFIX}.x updates..." "${ELAPSED_MIN}" "${ELAPSED_SEC}"
+          sleep 30
+        done
+
+        # Trigger upgrade
+        echo ""
+        echo "🚀 Triggering upgrade: ${CURRENT_VERSION} → ${TARGET_VERSION}"
+        oc adm upgrade --to="${TARGET_VERSION}"
+        echo "✅ Upgrade initiated"
+
+        # Poll until upgrade completes
+        echo ""
+        echo "⏳ Waiting for upgrade to complete..."
+        START_TIME=$(date +%s)
+        MAX_WAIT=14400  # 4 hours
+
+        while true; do
+          ELAPSED=$(( $(date +%s) - START_TIME ))
+          ELAPSED_MIN=$(( ELAPSED / 60 ))
+          ELAPSED_SEC=$(( ELAPSED % 60 ))
+
+          if [[ ${ELAPSED} -ge ${MAX_WAIT} ]]; then
+            echo ""
+            echo "❌ Timeout waiting for upgrade after ${ELAPSED_MIN}m"
+            oc get clusterversion version
+            exit 1
+          fi
+
+          CV_JSON=$(oc get clusterversion version -o json)
+          HISTORY_VERSION=$(echo "$CV_JSON" | jq -r '.status.history[0].version // empty')
+          HISTORY_STATE=$(echo "$CV_JSON" | jq -r '.status.history[0].state // empty')
+          PROGRESSING=$(echo "$CV_JSON" | jq -r '.status.conditions[] | select(.type=="Progressing") | .message // empty')
+
+          if [[ "${HISTORY_VERSION}" == "${TARGET_VERSION}" && "${HISTORY_STATE}" == "Completed" ]]; then
+            echo ""
+            echo "✅ Upgrade to ${TARGET_VERSION} completed successfully! [${ELAPSED_MIN}m${ELAPSED_SEC}s]"
+            break
+          fi
+
+          # Show progress
+          printf "\r  [%dm%ds] %s → %s (state: %s)  " "${ELAPSED_MIN}" "${ELAPSED_SEC}" "${CURRENT_VERSION}" "${HISTORY_VERSION}" "${HISTORY_STATE}"
+
+          # Log detailed progress every 5 minutes
+          if [[ $(( ELAPSED % 300 )) -lt 60 && ${ELAPSED} -gt 0 ]]; then
+            echo ""
+            echo "  Progress: ${PROGRESSING}"
+          fi
+
+          sleep 60
+        done
+
+        # Verify all nodes are ready and updated
+        echo ""
+        echo "🔍 Verifying node status..."
+        oc get nodes -o wide
+        echo ""
+
+        NOT_READY=$(oc get nodes --no-headers | grep -v " Ready " | wc -l | tr -d ' ')
+        if [[ "${NOT_READY}" -gt 0 ]]; then
+          echo "⚠️  ${NOT_READY} node(s) are not Ready. Waiting for nodes to stabilize..."
+          oc wait --for=condition=Ready nodes --all --timeout=600s || true
+        fi
+
+        echo ""
+        echo "=========================================="
+        echo "✅ ARO Cluster Upgrade Complete"
+        echo "=========================================="
+        echo "  From: ${CURRENT_VERSION}"
+        echo "  To:   ${TARGET_VERSION}"
+        echo "  Time: ${ELAPSED_MIN}m${ELAPSED_SEC}s"
+        echo "=========================================="
+
+        echo -n "${TARGET_VERSION}" > $(results.upgrade-version.path)

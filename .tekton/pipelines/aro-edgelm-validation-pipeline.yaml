@@ -58,6 +58,10 @@ spec:
       type: string
       description: "Name of the Secret containing kubeconfig for hub cluster (optional)"
       default: ""
+    - name: targetVersionPrefix
+      type: string
+      description: "Target version prefix for cluster upgrade (e.g. '4.21'). Leave empty to skip upgrade."
+      default: ""
   workspaces:
     - name: source
   tasks:
@@ -114,8 +118,26 @@ spec:
         - name: source
           workspace: source
 
-    - name: deploy-quay
+    - name: upgrade-cluster
       runAfter: [validate-and-get-access]
+      when:
+        - input: $(params.targetVersionPrefix)
+          operator: notin
+          values: [""]
+      taskRef: { name: aro-upgrade-cluster }
+      params:
+        - name: aroClusterName
+          value: $(params.aroClusterName)
+        - name: azureSecretName
+          value: $(params.azureSecretName)
+        - name: targetVersionPrefix
+          value: $(params.targetVersionPrefix)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: deploy-quay
+      runAfter: [validate-and-get-access, upgrade-cluster]
       taskRef: { name: aro-quay-deploy }
       params:
         - name: aroClusterName
