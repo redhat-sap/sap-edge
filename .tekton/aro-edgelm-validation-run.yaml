@@ -41,9 +41,9 @@ spec:
     - name: quayAdminPasswordSecretName
       value: "quay-admin-secret"
     - name: jiraSecretName
-      value: "jira-secret-mj"
+      value: "jira-secret-rb"
     - name: jiraIssueKey
-      value: "SAPOCP-1659"
+      value: "SAPOCP-1976"
     - name: targetVersionPrefix
       value: "4.21"
     - name: skipEdgelmValidation
