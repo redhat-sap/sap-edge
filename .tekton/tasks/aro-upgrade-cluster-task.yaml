@@ -92,6 +92,17 @@ spec:
         oc adm upgrade channel "${CHANNEL}"
         echo "✅ Channel set to ${CHANNEL}"
 
+        # Sigstore admin ack for 4.20 → 4.21 upgrade
+        # 4.21 requires Sigstore signatures for mirrored release images.
+        # ARO clusters have mirrors configured (ICSP/IDMS), so the upgrade
+        # is blocked until the admin ack configmap is patched.
+        if [[ "${CURRENT_VERSION}" == 4.20.* && "${TARGET_VERSION_PREFIX}" == "4.21" ]]; then
+          echo "🔏 Applying Sigstore admin acknowledgment for 4.20 → 4.21 upgrade..."
+          oc -n openshift-config patch configmap admin-acks \
+            --patch '{"data":{"ack-4.20-sigstore-in-4.21":"true"}}' --type=merge
+          echo "✅ Sigstore admin ack applied"
+        fi
+
         # Wait for available updates to populate
         echo "⏳ Waiting for available updates to populate..."
         START_TIME=$(date +%s)
