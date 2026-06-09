@@ -153,3 +153,7 @@ endpointslice
 MGMT
 EOSLICE
 anyuid
+creativecommons
+compatiblelicenses
+sublicensable
+waivable
