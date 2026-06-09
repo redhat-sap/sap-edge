@@ -6,6 +6,7 @@
 
 .venv
 venv
+.tox
 .idea
 .env
 node_modules
