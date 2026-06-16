@@ -88,6 +88,10 @@ spec:
           HUB_KUBECONFIG=""
         fi
 
+        # Detect the pipeline namespace (for storing secrets on the hub cluster)
+        PIPELINE_NS=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null || echo "default")
+        echo "Pipeline namespace: ${PIPELINE_NS}"
+
         # ============================================
         # Phase 2: Discover API Server LoadBalancer IP
         # ============================================
@@ -304,16 +308,16 @@ spec:
 
         # Check if the Secret already exists (from a previous run)
         CERT_ALREADY_EXISTS=false
-        if KUBECONFIG="${MGMT_KUBECONFIG}" oc get secret "${SCC_SECRET_NAME}" &>/dev/null; then
+        if KUBECONFIG="${MGMT_KUBECONFIG}" oc get secret "${SCC_SECRET_NAME}" -n "${PIPELINE_NS}" &>/dev/null; then
           echo "ℹ️  Secret '${SCC_SECRET_NAME}' already exists from a previous run"
           echo "   Reusing existing certificates to avoid invalidating uploaded keypair in Integration Suite"
 
           # Extract existing artifacts from the Secret
-          KUBECONFIG="${MGMT_KUBECONFIG}" oc get secret "${SCC_SECRET_NAME}" \
+          KUBECONFIG="${MGMT_KUBECONFIG}" oc get secret "${SCC_SECRET_NAME}" -n "${PIPELINE_NS}" \
             -o jsonpath="{.data.${CERT_PREFIX}\.key}" 2>/dev/null | base64 -d > "${CERT_KEY}" 2>/dev/null || true
-          KUBECONFIG="${MGMT_KUBECONFIG}" oc get secret "${SCC_SECRET_NAME}" \
+          KUBECONFIG="${MGMT_KUBECONFIG}" oc get secret "${SCC_SECRET_NAME}" -n "${PIPELINE_NS}" \
             -o jsonpath="{.data.${CERT_PREFIX}\.crt}" 2>/dev/null | base64 -d > "${CERT_CRT}" 2>/dev/null || true
-          KUBECONFIG="${MGMT_KUBECONFIG}" oc get secret "${SCC_SECRET_NAME}" \
+          KUBECONFIG="${MGMT_KUBECONFIG}" oc get secret "${SCC_SECRET_NAME}" -n "${PIPELINE_NS}" \
             -o jsonpath="{.data.${CERT_PREFIX}\.p12}" 2>/dev/null | base64 -d > "${CERT_P12}" 2>/dev/null || true
 
           if [[ -s "${CERT_KEY}" ]] && [[ -s "${CERT_CRT}" ]] && [[ -s "${CERT_P12}" ]]; then
@@ -377,10 +381,10 @@ spec:
         echo "📦 Storing Cloud Connector artifacts in a Kubernetes Secret..."
 
         # Delete existing secret and recreate with current artifacts
-        KUBECONFIG="${MGMT_KUBECONFIG}" oc delete secret "${SCC_SECRET_NAME}" --ignore-not-found=true
+        KUBECONFIG="${MGMT_KUBECONFIG}" oc delete secret "${SCC_SECRET_NAME}" -n "${PIPELINE_NS}" --ignore-not-found=true
 
         # Create secret with all artifacts
-        KUBECONFIG="${MGMT_KUBECONFIG}" oc create secret generic "${SCC_SECRET_NAME}" \
+        KUBECONFIG="${MGMT_KUBECONFIG}" oc create secret generic "${SCC_SECRET_NAME}" -n "${PIPELINE_NS}" \
           --from-file=kubeconfig="${OUTPUT_KUBECONFIG}" \
           --from-file=api-root-ca.crt="${API_CA_FILE}" \
           --from-file="${CERT_PREFIX}.p12"="${CERT_P12}" \

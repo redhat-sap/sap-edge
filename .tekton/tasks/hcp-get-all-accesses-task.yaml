@@ -337,6 +337,10 @@ spec:
           fi
         fi
 
+        if [[ -f "edgelm-kubeconfig" ]]; then
+          SECRET_ARGS+=(--from-file=kubeconfig=edgelm-kubeconfig)
+        fi
+
         KUBECONFIG="${MGMT_KUBECONFIG}" oc delete secret "${CREDS_SECRET_NAME}" --ignore-not-found=true
         KUBECONFIG="${MGMT_KUBECONFIG}" oc create secret generic "${CREDS_SECRET_NAME}" "${SECRET_ARGS[@]}"
         echo "✅ Secret '${CREDS_SECRET_NAME}' created on management cluster"
@@ -345,6 +349,7 @@ spec:
         echo "📋 To retrieve credentials:"
         echo "   oc get secret ${CREDS_SECRET_NAME} -o jsonpath='{.data.postgres-password}' | base64 -d"
         echo "   oc get secret ${CREDS_SECRET_NAME} -o jsonpath='{.data.redis-password}' | base64 -d"
+        echo "   oc get secret ${CREDS_SECRET_NAME} -o jsonpath='{.data.kubeconfig}' | base64 -d > kubeconfig.yaml"
         echo "   oc get secret ${CREDS_SECRET_NAME} -o jsonpath='{.data.postgres-tls-root-cert}' | base64 -d > postgres-tls-root-cert.crt"
 
         # Switch back to hosted cluster
