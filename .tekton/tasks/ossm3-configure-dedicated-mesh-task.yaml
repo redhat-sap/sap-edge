@@ -46,6 +46,20 @@ spec:
         HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
         PROXY_SECRET="$(params.proxySecretName)"
 
+        MESH_NS="istio-system-sap-edge"
+        MESH_NAME="sap-mesh-istio"
+        DISCOVERY_LABEL="sap-edge-mesh"
+
+        # Install required tools
+        echo "📦 Installing OpenShift CLI..."
+        curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz -o /tmp/oc.tar.gz
+        tar xzf /tmp/oc.tar.gz -C /tmp
+        mv /tmp/oc /usr/local/bin/
+        cp /usr/local/bin/oc /usr/local/bin/kubectl
+        rm -f /tmp/oc.tar.gz
+        oc version --client
+
+        # Read proxy config (must be after kubectl is installed)
         PROXY_HOST=""
         PROXY_PORT="3128"
         PROXY_IP=""
@@ -58,10 +72,6 @@ spec:
             echo "⚠️ Proxy secret '${PROXY_SECRET}' not found, skipping proxy configuration"
           fi
         fi
-
-        MESH_NS="istio-system-sap-edge"
-        MESH_NAME="sap-mesh-istio"
-        DISCOVERY_LABEL="sap-edge-mesh"
 
         echo "=========================================="
         echo "OSSM3 Configure Dedicated SAP Service Mesh"
@@ -77,15 +87,6 @@ spec:
           echo "Corporate Proxy: disabled"
         fi
         echo "=========================================="
-
-        # Install required tools
-        echo "📦 Installing OpenShift CLI..."
-        curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz -o /tmp/oc.tar.gz
-        tar xzf /tmp/oc.tar.gz -C /tmp
-        mv /tmp/oc /usr/local/bin/
-        cp /usr/local/bin/oc /usr/local/bin/kubectl
-        rm -f /tmp/oc.tar.gz
-        oc version --client
 
         # Configure hub cluster kubeconfig if provided
         if [[ -n "${HUB_KUBECONFIG_SECRET}" ]]; then
