@@ -14,7 +14,7 @@ name: lint
       - reopened
 jobs:
   lint:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,4 +32,4 @@ jobs:
           curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
 
       - name: Run lint
-        run: make lint
+        run: make lint PYTHON=/usr/bin/python3

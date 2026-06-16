@@ -23,7 +23,7 @@ required-environment-variables = \
     $(error Not all required variables are defined) \
    )
 
-PYTHON?=python3.10
+PYTHON?=python3
 export PYTHON
 NPM?=npm
 export NPM

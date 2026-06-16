@@ -8,6 +8,7 @@
 extends: default
 ignore:
   - node_modules
+  - .venv
   - .tekton
   - rosa/terraform/.terraform
   - edge-integration-cell/external-valkey/charts
