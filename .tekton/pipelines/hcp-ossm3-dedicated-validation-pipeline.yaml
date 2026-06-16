@@ -78,18 +78,8 @@ spec:
       description: "S3 key prefix for the restricted-resources zip files"
       default: "restricted-resources/"
     # --- Corporate proxy parameters ---
-    - name: proxyHost
-      type: string
-      description: "Corporate proxy hostname (leave empty to skip proxy configuration)"
-      default: ""
-    - name: proxyPort
-      type: string
-      description: "Corporate proxy port"
-      default: "3128"
-    - name: proxyIP
-      type: string
-      description: "Corporate proxy IP address(es), comma-separated for multiple"
-      default: ""
+    # Proxy config is read from a Secret named {hubClusterName}-proxy-config
+    # containing keys: PROXY_HOST, PROXY_PORT, PROXY_IP
 
     # --- EIC services parameters ---
     - name: postgresVersion
@@ -282,12 +272,8 @@ spec:
           value: $(params.hostedClusterNamespace)
         - name: hubKubeconfigSecretName
           value: $(params.hubClusterName)-kubeconfig
-        - name: proxyHost
-          value: $(params.proxyHost)
-        - name: proxyPort
-          value: $(params.proxyPort)
-        - name: proxyIP
-          value: $(params.proxyIP)
+        - name: proxySecretName
+          value: $(params.hubClusterName)-proxy-config
       workspaces:
         - name: source
           workspace: source
@@ -432,13 +418,13 @@ spec:
             Namespace: $(params.hostedClusterNamespace)
             Workers: $(params.nodePoolReplicas) x ($(params.nodePoolCpuCores) vCPU, $(params.nodePoolMemoryGB)GB RAM)
             Mesh: Dedicated SAP mesh (istio-system-sap-edge / sap-mesh-istio)
-            Proxy: $(params.proxyHost)
+            Proxy: see $(params.hubClusterName)-proxy-config secret
 
             Restricted kubeconfig stored as Secret 'edgelm-kubeconfig-generated-$(params.hostedClusterName)'.
 
             Please complete the following manually:
             1. Register the cluster in ELM (use restricted kubeconfig, check "Restricted Access")
-               - If proxy is configured, select "Enable HTTP Proxy" and set proxy to $(params.proxyHost):$(params.proxyPort)
+               - If proxy is configured, select "Enable HTTP Proxy" and set proxy from $(params.hubClusterName)-proxy-config secret
             2. Deploy Edge Integration Cell (EIC)
             3. Deploy iFlows for testing
             4. After each resource download, re-run label cleanup:
@@ -892,7 +878,7 @@ spec:
             * *Release Image:* $(params.releaseImage)
             * *Worker Nodes:* $(params.nodePoolReplicas) x ($(params.nodePoolCpuCores) vCPU, $(params.nodePoolMemoryGB)GB RAM)
             * *Service Mesh:* Dedicated SAP mesh (istio-system-sap-edge / sap-mesh-istio)
-            * *Corporate Proxy:* $(params.proxyHost)
+            * *Corporate Proxy:* see $(params.hubClusterName)-proxy-config secret
             * *PostgreSQL:* $(params.postgresVersion) (Crunchy Operator)
             * *Datastore:* $(params.datastoreType)
 

@@ -26,17 +26,9 @@ spec:
       type: string
       description: "Name of the Secret containing kubeconfig for hub cluster (optional, uses in-cluster config if empty)"
       default: ""
-    - name: proxyHost
+    - name: proxySecretName
       type: string
-      description: "Corporate proxy hostname (leave empty to skip proxy configuration)"
-      default: ""
-    - name: proxyPort
-      type: string
-      description: "Corporate proxy port"
-      default: "3128"
-    - name: proxyIP
-      type: string
-      description: "Corporate proxy IP address(es), comma-separated for multiple"
+      description: "Name of the Secret containing proxy config (keys: PROXY_HOST, PROXY_PORT, PROXY_IP). Leave empty to skip proxy configuration."
       default: ""
   workspaces:
     - name: source
@@ -52,9 +44,20 @@ spec:
         CLUSTER_NAME="$(params.hostedClusterName)"
         CLUSTER_NS="$(params.hostedClusterNamespace)"
         HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
-        PROXY_HOST="$(params.proxyHost)"
-        PROXY_PORT="$(params.proxyPort)"
-        PROXY_IP="$(params.proxyIP)"
+        PROXY_SECRET="$(params.proxySecretName)"
+
+        PROXY_HOST=""
+        PROXY_PORT="3128"
+        PROXY_IP=""
+        if [[ -n "${PROXY_SECRET}" ]]; then
+          if kubectl get secret "${PROXY_SECRET}" > /dev/null 2>&1; then
+            PROXY_HOST=$(kubectl get secret "${PROXY_SECRET}" -o jsonpath='{.data.PROXY_HOST}' 2>/dev/null | base64 -d 2>/dev/null || true)
+            PROXY_PORT=$(kubectl get secret "${PROXY_SECRET}" -o jsonpath='{.data.PROXY_PORT}' 2>/dev/null | base64 -d 2>/dev/null || echo "3128")
+            PROXY_IP=$(kubectl get secret "${PROXY_SECRET}" -o jsonpath='{.data.PROXY_IP}' 2>/dev/null | base64 -d 2>/dev/null || true)
+          else
+            echo "⚠️ Proxy secret '${PROXY_SECRET}' not found, skipping proxy configuration"
+          fi
+        fi
 
         MESH_NS="istio-system-sap-edge"
         MESH_NAME="sap-mesh-istio"
