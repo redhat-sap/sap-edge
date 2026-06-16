@@ -1,0 +1,148 @@
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: aro-validation-pipeline
+  annotations:
+    description: "ARO validation pipeline without Quay: deploys ARO cluster for generic testing"
+spec:
+  params:
+    - name: repoUrl
+      type: string
+    - name: revision
+      type: string
+    - name: aroLocation
+      type: string
+      description: "ARO location"
+      default: "northeurope"
+    - name: aroClusterName
+      type: string
+      description: "ARO cluster name"
+    - name: aroVersion
+      type: string
+      description: "ARO version"
+      default: "4.15.35"
+    - name: azureSecretName
+      type: string
+      description: "Name of the Kubernetes Secret containing Azure service principal credentials, ARO resource group, and ARO domain"
+      default: "azure-sp-secret"
+    - name: pullSecretName
+      type: string
+      description: "Name of the Kubernetes Secret containing Red Hat pull secret"
+      default: "redhat-pull-secret"
+    - name: hubKubeconfigSecretName
+      type: string
+      description: "Name of the Secret containing kubeconfig for hub cluster (optional)"
+      default: ""
+    - name: targetVersionPrefix
+      type: string
+      description: "Target version prefix for cluster upgrade (e.g. '4.21'). Leave empty to skip upgrade."
+      default: ""
+  workspaces:
+    - name: source
+  tasks:
+    - name: fetch-repository
+      taskRef: { name: git-clone }
+      params:
+        - name: url
+          value: $(params.repoUrl)
+        - name: revision
+          value: $(params.revision)
+      workspaces:
+        - name: output
+          workspace: source
+
+    - name: deploy-aro
+      runAfter: [fetch-repository]
+      taskRef: { name: aro-deploy-with-eic-services }
+      params:
+        - name: aroLocation
+          value: $(params.aroLocation)
+        - name: aroClusterName
+          value: $(params.aroClusterName)
+        - name: aroVersion
+          value: $(params.aroVersion)
+        - name: azureSecretName
+          value: $(params.azureSecretName)
+        - name: pullSecretName
+          value: $(params.pullSecretName)
+        - name: postgresAdminPasswordSecretName
+          value: "azure-postgres-admin-password"
+        - name: deployPostgres
+          value: "false"
+        - name: deployRedis
+          value: "false"
+        - name: deployQuay
+          value: "false"
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: validate-and-get-access
+      runAfter: [deploy-aro]
+      taskRef: { name: aro-validate-and-get-access }
+      params:
+        - name: aroClusterName
+          value: $(params.aroClusterName)
+        - name: azureSecretName
+          value: $(params.azureSecretName)
+        - name: postgresAdminPasswordSecretName
+          value: "azure-postgres-admin-password"
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: upgrade-cluster
+      runAfter: [validate-and-get-access]
+      when:
+        - input: $(params.targetVersionPrefix)
+          operator: notin
+          values: [""]
+      taskRef: { name: aro-upgrade-cluster }
+      params:
+        - name: aroClusterName
+          value: $(params.aroClusterName)
+        - name: azureSecretName
+          value: $(params.azureSecretName)
+        - name: targetVersionPrefix
+          value: $(params.targetVersionPrefix)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: manual-approval-teardown
+      runAfter: [validate-and-get-access, upgrade-cluster]
+      taskRef:
+        apiVersion: openshift-pipelines.org/v1alpha1
+        kind: ApprovalTask
+      params:
+        - name: approvers
+          value:
+            - mjiao
+            - rbhandar
+            - ksatarin
+            - kube:admin
+        - name: description
+          value: "ARO cluster deployed. Approve to tear down ARO cluster and Azure resources when testing is complete."
+        - name: numberOfApprovalsRequired
+          value: '1'
+        - name: timeout
+          value: '336h'
+
+    - name: teardown-aro
+      runAfter: [manual-approval-teardown]
+      taskRef: { name: aro-teardown }
+      params:
+        - name: aroClusterName
+          value: $(params.aroClusterName)
+        - name: azureSecretName
+          value: $(params.azureSecretName)
+      workspaces:
+        - name: source
+          workspace: source

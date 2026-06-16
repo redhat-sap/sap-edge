@@ -1,0 +1,160 @@
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: rosa-validation-pipeline
+  annotations:
+    description: "ROSA validation pipeline without Quay: deploys ROSA HCP cluster (m5.xlarge) for generic testing"
+spec:
+  params:
+    - name: repoUrl
+      type: string
+    - name: revision
+      type: string
+    - name: clusterName
+      type: string
+      description: "ROSA cluster name (max 15 characters)"
+    - name: awsRegion
+      type: string
+      description: "AWS region"
+      default: "us-east-1"
+    - name: rosaVersion
+      type: string
+      description: "ROSA version"
+      default: "4.17.0"
+    - name: awsSecretName
+      type: string
+      description: "Name of the Kubernetes Secret containing AWS credentials"
+      default: "aws-credentials-secret"
+    - name: redhatTokenSecretName
+      type: string
+      description: "Name of the Kubernetes Secret containing Red Hat OCM token"
+      default: "redhat-token-secret"
+    - name: hubKubeconfigSecretName
+      type: string
+      description: "Name of the Secret containing kubeconfig for hub cluster (optional)"
+      default: ""
+    - name: terraformStateS3Bucket
+      type: string
+      description: "S3 bucket name for Terraform state storage"
+      default: "eic-test-rosa-terraform-state"
+    - name: terraformStateS3Key
+      type: string
+      description: "S3 key for Terraform state file (auto-generated as rosa/${CLUSTER_NAME}/terraform.tfstate)"
+      default: "rosa/terraform.tfstate"
+    - name: terraformStateDynamoDBTable
+      type: string
+      description: "DynamoDB table for Terraform state locking"
+      default: "eic-test-rosa-terraform-state-lock"
+  workspaces:
+    - name: source
+  tasks:
+    - name: fetch-repository
+      taskRef: { name: git-clone }
+      params:
+        - name: url
+          value: $(params.repoUrl)
+        - name: revision
+          value: $(params.revision)
+      workspaces:
+        - name: output
+          workspace: source
+
+    - name: deploy-rosa
+      runAfter: [fetch-repository]
+      taskRef: { name: rosa-deploy-with-eic-services }
+      params:
+        - name: clusterName
+          value: $(params.clusterName)
+        - name: awsRegion
+          value: $(params.awsRegion)
+        - name: rosaVersion
+          value: $(params.rosaVersion)
+        - name: awsSecretName
+          value: $(params.awsSecretName)
+        - name: redhatTokenSecretName
+          value: $(params.redhatTokenSecretName)
+        - name: postgresAdminPassword
+          value: "NotDeployed"
+        - name: deployPostgres
+          value: "false"
+        - name: deployRedis
+          value: "false"
+        - name: deployQuay
+          value: "false"
+        - name: terraformStateS3Bucket
+          value: $(params.terraformStateS3Bucket)
+        - name: terraformStateS3Key
+          value: $(params.terraformStateS3Key)
+        - name: terraformStateDynamoDBTable
+          value: $(params.terraformStateDynamoDBTable)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: validate-and-get-access
+      runAfter: [deploy-rosa]
+      taskRef: { name: rosa-validate-and-get-access }
+      params:
+        - name: clusterName
+          value: $(params.clusterName)
+        - name: awsRegion
+          value: $(params.awsRegion)
+        - name: awsSecretName
+          value: $(params.awsSecretName)
+        - name: redhatTokenSecretName
+          value: $(params.redhatTokenSecretName)
+        - name: terraformStateS3Bucket
+          value: $(params.terraformStateS3Bucket)
+        - name: terraformStateS3Key
+          value: $(params.terraformStateS3Key)
+        - name: terraformStateDynamoDBTable
+          value: $(params.terraformStateDynamoDBTable)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: manual-approval-teardown
+      runAfter: [validate-and-get-access]
+      taskRef:
+        apiVersion: openshift-pipelines.org/v1alpha1
+        kind: ApprovalTask
+      params:
+        - name: approvers
+          value:
+            - mjiao
+            - rbhandar
+            - ksatarin
+            - kube:admin
+        - name: description
+          value: "ROSA cluster deployed. Approve to tear down ROSA cluster and AWS resources when testing is complete."
+        - name: numberOfApprovalsRequired
+          value: '1'
+        - name: timeout
+          value: '336h'
+
+    - name: teardown-rosa
+      runAfter: [manual-approval-teardown]
+      taskRef: { name: rosa-teardown }
+      params:
+        - name: clusterName
+          value: $(params.clusterName)
+        - name: awsRegion
+          value: $(params.awsRegion)
+        - name: awsSecretName
+          value: $(params.awsSecretName)
+        - name: redhatTokenSecretName
+          value: $(params.redhatTokenSecretName)
+        - name: terraformStateS3Bucket
+          value: $(params.terraformStateS3Bucket)
+        - name: terraformStateDynamoDBTable
+          value: $(params.terraformStateDynamoDBTable)
+      workspaces:
+        - name: source
+          workspace: source

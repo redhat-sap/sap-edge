@@ -29,7 +29,7 @@ spec:
     - name: pullRequestNumber
       value: "{{ pull_request_number }}"
     - name: clusterName
-      value: "rosa-eic-test"
+      value: "sap-elm-pr{{ pull_request_number }}"
     - name: awsRegion
       value: "us-east-1"
     - name: rosaVersion

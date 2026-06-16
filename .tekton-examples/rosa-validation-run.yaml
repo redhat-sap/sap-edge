@@ -7,7 +7,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: rosa-edgelm-validation-pr{{ pull_request_number }}-
+  generateName: rosa-validation-pr{{ pull_request_number }}-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
@@ -16,7 +16,7 @@ metadata:
     pipelinesascode.tekton.dev/cancel-in-progress: "true"
 spec:
   pipelineRef:
-    name: rosa-edgelm-validation-pipeline
+    name: rosa-validation-pipeline
   timeouts:
     pipeline: "336h"      # Total pipeline timeout (14 days)
     tasks: "335h"         # Individual task timeout (tasks + finally must be <= pipeline)
@@ -26,10 +26,8 @@ spec:
       value: "{{ repo_url }}"
     - name: revision
       value: "{{ revision }}"
-    - name: pullRequestNumber
-      value: "{{ pull_request_number }}"
     - name: clusterName
-      value: "dm-edge-poc"
+      value: "sap-elm-pr{{ pull_request_number }}"
     - name: awsRegion
       value: "eu-north-1"
     - name: rosaVersion
@@ -38,16 +36,8 @@ spec:
       value: "aws-mj"
     - name: redhatTokenSecretName
       value: "mj-rh-token"
-    - name: quayAdminPasswordSecretName
-      value: "quay-admin-secret"
-    - name: jiraSecretName
-      value: "jira-secret-mj"
-    - name: jiraIssueKey
-      value: ""
-    - name: skipEdgelmValidation
-      value: "true"
     - name: hubKubeconfigSecretName
-      value: "eic-kubeconfig"
+      value: "eic-kubeconfig"   # Ensure this secret exists with the hub's kubeconfig
     - name: terraformStateS3Bucket
       value: "eic-test-rosa-terraform-state"
     - name: terraformStateS3Key

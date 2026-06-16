@@ -7,7 +7,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: rosa-edgelm-validation-pr{{ pull_request_number }}-
+  generateName: aro-validation-pr{{ pull_request_number }}-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
@@ -16,7 +16,7 @@ metadata:
     pipelinesascode.tekton.dev/cancel-in-progress: "true"
 spec:
   pipelineRef:
-    name: rosa-edgelm-validation-pipeline
+    name: aro-validation-pipeline
   timeouts:
     pipeline: "336h"      # Total pipeline timeout (14 days)
     tasks: "335h"         # Individual task timeout (tasks + finally must be <= pipeline)
@@ -26,34 +26,20 @@ spec:
       value: "{{ repo_url }}"
     - name: revision
       value: "{{ revision }}"
-    - name: pullRequestNumber
-      value: "{{ pull_request_number }}"
-    - name: clusterName
-      value: "dm-edge-poc"
-    - name: awsRegion
-      value: "eu-north-1"
-    - name: rosaVersion
-      value: "4.21.14"
-    - name: awsSecretName
-      value: "aws-mj"
-    - name: redhatTokenSecretName
-      value: "mj-rh-token"
-    - name: quayAdminPasswordSecretName
-      value: "quay-admin-secret"
-    - name: jiraSecretName
-      value: "jira-secret-mj"
-    - name: jiraIssueKey
-      value: ""
-    - name: skipEdgelmValidation
-      value: "true"
+    - name: aroLocation
+      value: "northeurope"
+    - name: aroClusterName
+      value: "sap-elm-pr{{ pull_request_number }}"
+    - name: aroVersion
+      value: "4.20.15"
+    - name: azureSecretName
+      value: "azure-sp-secret"
+    - name: pullSecretName
+      value: "redhat-pull-secret"
     - name: hubKubeconfigSecretName
-      value: "eic-kubeconfig"
-    - name: terraformStateS3Bucket
-      value: "eic-test-rosa-terraform-state"
-    - name: terraformStateS3Key
-      value: "rosa/terraform.tfstate"
-    - name: terraformStateDynamoDBTable
-      value: "eic-test-rosa-terraform-state-lock"
+      value: ""
+    - name: targetVersionPrefix
+      value: ""
   workspaces:
     - name: source
       volumeClaimTemplate:
