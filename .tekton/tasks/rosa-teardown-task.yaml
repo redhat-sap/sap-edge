@@ -160,12 +160,21 @@ spec:
         echo "   Key: ${TERRAFORM_BACKEND_S3_KEY}"
         echo "   Region: ${AWS_REGION}"
         
-        if ! terraform init \
-          -backend-config="bucket=${TERRAFORM_STATE_S3_BUCKET}" \
-          -backend-config="key=${TERRAFORM_BACKEND_S3_KEY}" \
-          -backend-config="region=${AWS_REGION}" \
-          -backend-config="dynamodb_table=${TERRAFORM_STATE_DYNAMODB_TABLE}" \
-          -backend-config="encrypt=true"; then
+        TF_INIT_SUCCESS=false
+        for TF_INIT_ATTEMPT in 1 2 3; do
+          if terraform init \
+            -backend-config="bucket=${TERRAFORM_STATE_S3_BUCKET}" \
+            -backend-config="key=${TERRAFORM_BACKEND_S3_KEY}" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="dynamodb_table=${TERRAFORM_STATE_DYNAMODB_TABLE}" \
+            -backend-config="encrypt=true"; then
+            TF_INIT_SUCCESS=true
+            break
+          fi
+          echo "⚠️  terraform init attempt ${TF_INIT_ATTEMPT} failed, retrying in 30s..."
+          sleep 30
+        done
+        if [[ "${TF_INIT_SUCCESS}" != "true" ]]; then
           echo "❌ Terraform init failed"
           echo "⚠️  This might mean no Terraform state exists for this cluster"
           echo "🔍 Checking if cluster exists via ROSA CLI..."
@@ -189,9 +198,34 @@ spec:
         terraform state list || echo "No resources found"
         echo ""
         
-        # Show what will be destroyed
+        # Force-unlock stale locks left by crashed deploy pods
+        echo "🔓 Checking for stale Terraform state locks..."
+        echo "   Running terraform plan to detect locks (5 min timeout)..."
+        TF_PLAN_EXIT=0
+        TF_PLAN_OUTPUT=$(timeout 300 terraform plan -destroy -var="redhat_ocm_token=${REDHAT_OCM_TOKEN}" 2>&1) || TF_PLAN_EXIT=$?
+        if [[ "${TF_PLAN_EXIT}" -eq 124 ]]; then
+          echo "   ⚠️  terraform plan timed out — proceeding with destroy anyway"
+        elif [[ "${TF_PLAN_EXIT}" -ne 0 ]]; then
+          echo "   ⚠️  terraform plan failed (exit ${TF_PLAN_EXIT}) — checking for lock..."
+        fi
+        if echo "${TF_PLAN_OUTPUT}" | grep -q "Error acquiring the state lock"; then
+          echo "   🔒 State lock detected. Terraform plan output:"
+          echo "${TF_PLAN_OUTPUT}" | sed 's/\x1b\[[0-9;]*m//g' | tail -20
+          LOCK_ID=$(echo "${TF_PLAN_OUTPUT}" | sed 's/\x1b\[[0-9;]*m//g' | grep 'Lock Info' -A5 | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
+          if [[ -n "${LOCK_ID}" ]]; then
+            echo "   Found stale lock: ${LOCK_ID}"
+            terraform force-unlock -force "${LOCK_ID}"
+            echo "   ✅ Lock released"
+          else
+            echo "   ⚠️  Could not extract lock ID from output"
+          fi
+        elif [[ "${TF_PLAN_EXIT}" -ne 0 ]]; then
+          echo "   Terraform plan error output (last 20 lines):"
+          echo "${TF_PLAN_OUTPUT}" | sed 's/\x1b\[[0-9;]*m//g' | tail -20
+        fi
+
         echo "🔍 Planning destruction..."
-        terraform plan -destroy -var="redhat_ocm_token=${REDHAT_OCM_TOKEN}" || true
+        timeout 300 terraform plan -destroy -var="redhat_ocm_token=${REDHAT_OCM_TOKEN}" || true
         
         # Staged destroy to avoid VPC dependency issues
         # ROSA creates security groups and ENIs in the VPC that are cleaned up asynchronously.
@@ -210,7 +244,7 @@ spec:
 
         # Stage 1: Destroy ROSA cluster first
         echo "🔄 Stage 1: Destroying ROSA cluster..."
-        if terraform destroy -auto-approve -var="redhat_ocm_token=${REDHAT_OCM_TOKEN}" -target=module.rosa-hcp; then
+        if terraform destroy -auto-approve -lock-timeout=60s -var="redhat_ocm_token=${REDHAT_OCM_TOKEN}" -target=module.rosa-hcp; then
           echo "✅ ROSA cluster destroyed"
         else
           echo "⚠️  ROSA cluster destruction had issues, continuing..."
@@ -331,7 +365,7 @@ spec:
         DESTROY_SUCCESS=false
         for ATTEMPT in 1 2 3; do
           echo "   Attempt ${ATTEMPT}/3..."
-          if terraform destroy -auto-approve -var="redhat_ocm_token=${REDHAT_OCM_TOKEN}"; then
+          if terraform destroy -auto-approve -lock-timeout=60s -var="redhat_ocm_token=${REDHAT_OCM_TOKEN}"; then
             echo "✅ Terraform destroy completed successfully"
             echo "✅ All resources cleaned up!"
             DESTROY_SUCCESS=true
