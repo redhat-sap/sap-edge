@@ -37,7 +37,7 @@ variable "rosa_version" {
 variable "compute_machine_type" {
   type        = string
   description = "AWS instance type for ROSA worker nodes (e.g., m5.xlarge, m5.2xlarge)"
-  default     = "m5.2xlarge"
+  default     = "m5.xlarge"
   
   validation {
     condition     = can(regex("^[a-z][0-9][a-z]?\\.[a-z0-9]+$", var.compute_machine_type))

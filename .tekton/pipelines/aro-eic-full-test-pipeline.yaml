@@ -147,6 +147,8 @@ spec:
           value: $(params.azureSecretName)
         - name: quayAdminPasswordSecretName
           value: $(params.quayAdminPasswordSecretName)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
       workspaces:
         - name: source
           workspace: source

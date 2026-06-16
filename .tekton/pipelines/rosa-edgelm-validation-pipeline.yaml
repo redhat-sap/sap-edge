@@ -154,6 +154,8 @@ spec:
           value: $(params.quayAdminPasswordSecretName)
         - name: redhatTokenSecretName
           value: $(params.redhatTokenSecretName)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
       workspaces:
         - name: source
           workspace: source

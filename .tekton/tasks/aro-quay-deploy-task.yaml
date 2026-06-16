@@ -20,6 +20,10 @@ spec:
       type: string
       description: "Name of the Kubernetes Secret containing Quay admin password and email"
       default: "quay-admin-secret"
+    - name: hubKubeconfigSecretName
+      type: string
+      description: "Name of the Secret containing kubeconfig for hub cluster (optional, for storing Quay credentials)"
+      default: ""
   workspaces:
     - name: source
   steps:
@@ -49,6 +53,8 @@ spec:
               key: ARO_RESOURCE_GROUP
         - name: ARO_CLUSTER_NAME
           value: $(params.aroClusterName)
+        - name: HUB_KUBECONFIG_SECRET
+          value: "$(params.hubKubeconfigSecretName)"
         - name: ARO_LOCATION
           value: "northeurope"
         - name: QUAY_ADMIN_PASSWORD
@@ -264,4 +270,101 @@ spec:
             echo "⚠️  Certificate trust may not be fully configured"
             echo "⚠️  You may need to run: make aro-quay-trust-cert"
         fi
+
+        # ================== Store Quay credentials in management cluster Secret ==================
+        echo ""
+        echo "📦 Updating credentials secret with Quay information on management cluster..."
+        CREDS_SECRET_NAME="eic-credentials-aro-${ARO_CLUSTER_NAME}"
+
+        # Extract Quay CA certificate
+        QUAY_CA_CERT=""
+        if oc get configmap trusted-registry-cabundles -n openshift-config >/dev/null 2>&1; then
+          QUAY_CA_CERT=$(oc get configmap trusted-registry-cabundles -n openshift-config -o jsonpath='{.data}' | jq -r 'to_entries[0].value')
+        fi
+
+        # Extract Quay registry endpoint
+        QUAY_ENDPOINT=$(oc get quayregistry test-registry -n openshift-operators -o jsonpath='{.status.registryEndpoint}' 2>/dev/null || echo "")
+
+        # Configure hub cluster kubeconfig for secret patching
+        HUB_KUBECONFIG=""
+        if [[ -n "${HUB_KUBECONFIG_SECRET}" ]]; then
+          echo "🔐 Extracting hub cluster kubeconfig from secret: ${HUB_KUBECONFIG_SECRET}..."
+          HUB_KUBECONFIG="/tmp/hub-kubeconfig"
+          if kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.kubeconfig}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: kubeconfig)"
+          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.config}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: config)"
+          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.value}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: value)"
+          else
+            echo "⚠️  Failed to extract hub kubeconfig, will use in-cluster service account"
+            HUB_KUBECONFIG=""
+          fi
+          if [[ -n "${HUB_KUBECONFIG}" ]]; then
+            chmod 600 "${HUB_KUBECONFIG}"
+          fi
+        fi
+
+        MGMT_KUBECONFIG="${HUB_KUBECONFIG}"
+
+        # Build patch JSON with Quay data
+        PATCH_FIELDS=()
+
+        if [[ -n "${QUAY_ENDPOINT}" ]]; then
+          QUAY_ENDPOINT_B64=$(echo -n "${QUAY_ENDPOINT}" | base64 -w0)
+          PATCH_FIELDS+=("\"quay-endpoint\":\"${QUAY_ENDPOINT_B64}\"")
+        fi
+
+        QUAY_ADMIN_USER_B64=$(echo -n "quayadmin" | base64 -w0)
+        PATCH_FIELDS+=("\"quay-admin-username\":\"${QUAY_ADMIN_USER_B64}\"")
+
+        if [[ -n "${QUAY_ADMIN_PASSWORD:-}" ]]; then
+          QUAY_ADMIN_PASS_B64=$(echo -n "${QUAY_ADMIN_PASSWORD}" | base64 -w0)
+          PATCH_FIELDS+=("\"quay-admin-password\":\"${QUAY_ADMIN_PASS_B64}\"")
+        fi
+
+        if [[ -n "${QUAY_CA_CERT}" ]]; then
+          QUAY_CA_CERT_B64=$(echo -n "${QUAY_CA_CERT}" | base64 -w0)
+          PATCH_FIELDS+=("\"quay-ca-cert\":\"${QUAY_CA_CERT_B64}\"")
+        fi
+
+        # Also include kubeconfig if available in workspace
+        if [[ -f "kubeconfig" ]]; then
+          KUBECONFIG_B64=$(base64 -w0 < kubeconfig)
+          PATCH_FIELDS+=("\"kubeconfig\":\"${KUBECONFIG_B64}\"")
+        fi
+
+        PATCH_JSON="{\"data\":{$(IFS=,; echo "${PATCH_FIELDS[*]}")}}"
+
+        if KUBECONFIG="${MGMT_KUBECONFIG}" oc get secret "${CREDS_SECRET_NAME}" >/dev/null 2>&1; then
+          KUBECONFIG="${MGMT_KUBECONFIG}" oc patch secret "${CREDS_SECRET_NAME}" --type merge -p "${PATCH_JSON}"
+          echo "✅ Secret '${CREDS_SECRET_NAME}' patched with Quay credentials"
+        else
+          echo "⚠️  Secret '${CREDS_SECRET_NAME}' not found — creating new secret with Quay credentials"
+          SECRET_ARGS=()
+          SECRET_ARGS+=(--from-literal=cluster-name="${ARO_CLUSTER_NAME}")
+          if [[ -n "${QUAY_ENDPOINT}" ]]; then
+            SECRET_ARGS+=(--from-literal=quay-endpoint="${QUAY_ENDPOINT}")
+          fi
+          SECRET_ARGS+=(--from-literal=quay-admin-username="quayadmin")
+          if [[ -n "${QUAY_ADMIN_PASSWORD:-}" ]]; then
+            SECRET_ARGS+=(--from-literal=quay-admin-password="${QUAY_ADMIN_PASSWORD}")
+          fi
+          if [[ -n "${QUAY_CA_CERT}" ]]; then
+            echo -n "${QUAY_CA_CERT}" > /tmp/quay-ca-cert.pem
+            SECRET_ARGS+=(--from-file=quay-ca-cert=/tmp/quay-ca-cert.pem)
+          fi
+          if [[ -f "kubeconfig" ]]; then
+            SECRET_ARGS+=(--from-file=kubeconfig=kubeconfig)
+          fi
+          KUBECONFIG="${MGMT_KUBECONFIG}" oc create secret generic "${CREDS_SECRET_NAME}" "${SECRET_ARGS[@]}"
+          echo "✅ Secret '${CREDS_SECRET_NAME}' created with Quay credentials"
+        fi
+
+        echo ""
+        echo "📋 To retrieve Quay credentials:"
+        echo "   oc get secret ${CREDS_SECRET_NAME} -o jsonpath='{.data.quay-endpoint}' | base64 -d"
+        echo "   oc get secret ${CREDS_SECRET_NAME} -o jsonpath='{.data.quay-admin-password}' | base64 -d"
+        echo "   oc get secret ${CREDS_SECRET_NAME} -o jsonpath='{.data.quay-ca-cert}' | base64 -d > quay-ca.pem"
+        echo "   oc get secret ${CREDS_SECRET_NAME} -o jsonpath='{.data.kubeconfig}' | base64 -d > kubeconfig.yaml"
         echo ""

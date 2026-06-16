@@ -310,10 +310,18 @@ spec:
         DEPLOY_REDIS_TF=$(echo "${DEPLOY_REDIS}" | tr '[:upper:]' '[:lower:]')
         DEPLOY_QUAY_TF=$(echo "${DEPLOY_QUAY}" | tr '[:upper:]' '[:lower:]')
         
+        # Auto-select instance type: Quay needs m5.2xlarge, otherwise m5.xlarge is enough
+        if [[ "${DEPLOY_QUAY_TF}" == "true" ]]; then
+          COMPUTE_MACHINE_TYPE="m5.2xlarge"
+        else
+          COMPUTE_MACHINE_TYPE="m5.xlarge"
+        fi
+
         echo "📝 Boolean parameter conversion:"
         echo "  deploy_postgres: ${DEPLOY_POSTGRES} → ${DEPLOY_POSTGRES_TF}"
         echo "  deploy_redis: ${DEPLOY_REDIS} → ${DEPLOY_REDIS_TF}"
         echo "  deploy_quay: ${DEPLOY_QUAY} → ${DEPLOY_QUAY_TF}"
+        echo "  compute_machine_type: ${COMPUTE_MACHINE_TYPE}"
         echo ""
 
         # Create terraform.tfvars using cat (avoids heredoc YAML issues)
@@ -329,9 +337,10 @@ spec:
           echo "private_subnets = [\"10.0.101.0/24\", \"10.0.102.0/24\", \"10.0.103.0/24\"]"
           echo ""
           echo "# ROSA Cluster Configuration"
-          echo "cluster_name     = \"${CLUSTER_NAME}\""
-          echo "rosa_version     = \"${ROSA_VERSION}\""
-          echo "redhat_ocm_token = \"${REDHAT_OCM_TOKEN}\""
+          echo "cluster_name         = \"${CLUSTER_NAME}\""
+          echo "rosa_version         = \"${ROSA_VERSION}\""
+          echo "compute_machine_type = \"${COMPUTE_MACHINE_TYPE}\""
+          echo "redhat_ocm_token     = \"${REDHAT_OCM_TOKEN}\""
           echo ""
           echo "# IAM Role Configuration"
           echo "# Account roles: pre-existing (created once per AWS account)"
@@ -372,12 +381,18 @@ spec:
             
             # Still need to initialize Terraform with backend for state access
             echo "🔧 Initializing Terraform with S3 backend for state access..."
-            terraform init \
-              -backend-config="bucket=${TERRAFORM_STATE_S3_BUCKET}" \
-              -backend-config="key=rosa/${CLUSTER_NAME}/terraform.tfstate" \
-              -backend-config="region=${AWS_REGION}" \
-              -backend-config="dynamodb_table=${TERRAFORM_STATE_DYNAMODB_TABLE}" \
-              -backend-config="encrypt=true"
+            for TF_INIT_ATTEMPT in 1 2 3; do
+              if terraform init \
+                -backend-config="bucket=${TERRAFORM_STATE_S3_BUCKET}" \
+                -backend-config="key=rosa/${CLUSTER_NAME}/terraform.tfstate" \
+                -backend-config="region=${AWS_REGION}" \
+                -backend-config="dynamodb_table=${TERRAFORM_STATE_DYNAMODB_TABLE}" \
+                -backend-config="encrypt=true"; then
+                break
+              fi
+              echo "⚠️  terraform init attempt ${TF_INIT_ATTEMPT} failed, retrying in 30s..."
+              sleep 30
+            done
             
             exit 0
           elif [[ "${CLUSTER_STATE}" == "error" || "${CLUSTER_STATE}" == "failed" ]]; then
@@ -395,12 +410,18 @@ spec:
         
         # Initialize Terraform with S3 backend using environment variables
         echo "🔧 Initializing Terraform with S3 backend..."
-        terraform init \
-          -backend-config="bucket=${TERRAFORM_STATE_S3_BUCKET}" \
-          -backend-config="key=${BACKEND_S3_KEY}" \
-          -backend-config="region=${AWS_REGION}" \
-          -backend-config="dynamodb_table=${TERRAFORM_STATE_DYNAMODB_TABLE}" \
-          -backend-config="encrypt=true"
+        for TF_INIT_ATTEMPT in 1 2 3; do
+          if terraform init \
+            -backend-config="bucket=${TERRAFORM_STATE_S3_BUCKET}" \
+            -backend-config="key=${BACKEND_S3_KEY}" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="dynamodb_table=${TERRAFORM_STATE_DYNAMODB_TABLE}" \
+            -backend-config="encrypt=true"; then
+            break
+          fi
+          echo "⚠️  terraform init attempt ${TF_INIT_ATTEMPT} failed, retrying in 30s..."
+          sleep 30
+        done
         
         # Plan
         echo "📋 Planning Terraform deployment..."
