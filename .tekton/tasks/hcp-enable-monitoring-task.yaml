@@ -9,10 +9,12 @@ metadata:
   name: hcp-enable-monitoring
 spec:
   description: >-
-    Enables User Workload Monitoring (UWM) on the hosted cluster and creates
-    NetworkPolicies to allow Prometheus scraping of SAP EIC namespaces.
+    Enables User Workload Monitoring (UWM) on the hosted cluster.
     This must run before EIC deployment so that ServiceMonitors created by
-    EIC are picked up by Prometheus immediately.
+    EIC are picked up by Prometheus immediately. NetworkPolicies for
+    Prometheus scraping are created later in the verify-monitoring task
+    to avoid breaking intra-namespace traffic before SAP ELM deploys
+    its own NetworkPolicies.
   params:
     - name: hostedClusterName
       type: string
@@ -133,39 +135,9 @@ spec:
           sleep 10
         done
 
-        # Step 2: Create NetworkPolicies for Prometheus scraping
-        echo ""
-        echo "🔒 Step 2: Creating NetworkPolicies for Prometheus scraping..."
-
-        NAMESPACES=("edge-icell" "edge-icell-services" "edgelm")
-
-        for NS in "${NAMESPACES[@]}"; do
-          if oc get namespace "${NS}" &>/dev/null; then
-            echo "📦 Creating NetworkPolicy in ${NS}..."
-            cat <<EONP | oc apply -f -
-        apiVersion: networking.k8s.io/v1
-        kind: NetworkPolicy
-        metadata:
-          name: allow-from-openshift-user-workload-monitoring
-          namespace: ${NS}
-        spec:
-          podSelector: {}
-          ingress:
-          - from:
-            - namespaceSelector:
-                matchLabels:
-                  kubernetes.io/metadata.name: openshift-user-workload-monitoring
-        EONP
-            echo "✅ NetworkPolicy created in ${NS}"
-          else
-            echo "ℹ️  Namespace ${NS} does not exist yet, skipping NetworkPolicy"
-          fi
-        done
-
         echo ""
         echo "=========================================="
         echo "✅ Monitoring Setup Complete"
         echo "=========================================="
         echo "  UWM: Enabled"
-        echo "  NetworkPolicies: Created in ${NAMESPACES[*]}"
         echo "=========================================="

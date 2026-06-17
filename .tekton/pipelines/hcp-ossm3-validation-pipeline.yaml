@@ -288,7 +288,7 @@ spec:
     # Phase 3: Deploy EIC Services
     # =============================================
 
-    # Step 9: Enable User Workload Monitoring and NetworkPolicies (parallel with DB deployment)
+    # Step 9: Enable User Workload Monitoring (parallel with DB deployment)
     - name: enable-monitoring
       runAfter: [generate-sa-based-kubeconfig]
       taskRef: { name: hcp-enable-monitoring }
