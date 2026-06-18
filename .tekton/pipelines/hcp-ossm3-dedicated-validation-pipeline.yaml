@@ -501,6 +501,8 @@ spec:
           workspace: source
 
     # Step 16: Endpoint Tests (run in parallel after EndpointSlice fix and Route creation)
+    # NOTE: httpbinipfilter has an IP filter policy. The hub and managed cluster
+    # pod CIDRs must be whitelisted in the iFlow's IP filter settings.
     - name: test-httpbinipfilter
       runAfter: [fix-endpointslice, create-eic-route]
       taskRef: { name: endpoint-tests }
@@ -762,7 +764,7 @@ spec:
         - name: endpointPath
           value: /httpbinipfilter
         - name: expectedStatus
-          value: "403"
+          value: "200"
         - name: clusterConfigMapName
           value: "route-info-hcp-$(params.hostedClusterName)"
         - name: eicAuthSecretName
@@ -910,7 +912,7 @@ spec:
             * test-ratelimit-slvredis-round2
 
             *Executed Tests (Round 3 - OpenShift Route):*
-            * test-httpbinipfilter-route (expects 403 - source IP not preserved via Route)
+            * test-httpbinipfilter-route
             * test-http-test1-route
             * test-http-testelster-route
             * test-slvredis-route

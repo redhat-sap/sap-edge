@@ -200,6 +200,8 @@ spec:
           workspace: source
 
     # Endpoint tests run after ConfigMap creation
+    # NOTE: httpbinipfilter has an IP filter policy. The cluster pod CIDR
+    # must be whitelisted in the iFlow's IP filter settings.
     - name: test-httpbinipfilter
       runAfter: [validate-and-create-configmap]
       taskRef: { name: endpoint-tests }

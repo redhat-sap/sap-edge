@@ -15,6 +15,12 @@
 #    hosted cluster worker nodes. Create a Secret named '{hubClusterName}-proxy-config'
 #    with keys: PROXY_HOST, PROXY_PORT, PROXY_IP.
 #
+# 4. The httpbinipfilter iFlow has an IP filter (X-Forwarded-For based).
+#    Whitelist both the hub cluster and managed/hosted cluster pod CIDRs
+#    in the iFlow's IP filter policy (e.g. 10.128.0.0/14, 10.132.0.0/14,
+#    100.64.0.0/24). Check each cluster's CIDR with:
+#      oc get network.config cluster -o jsonpath='{.spec.clusterNetwork[*].cidr}'
+#
 # Scenario: Dedicated SAP service mesh with corporate proxy
 #   - Deploys an independent Istio control plane 'sap-mesh-istio'
 #   - Enables DNS capture (ISTIO_META_DNS_CAPTURE / ISTIO_META_DNS_AUTO_ALLOCATE)

@@ -46,6 +46,8 @@ spec:
         - name: output
           workspace: source
 
+    # NOTE: httpbinipfilter has an IP filter policy. The cluster pod CIDR
+    # must be whitelisted in the iFlow's IP filter settings.
     - name: test-httpbinipfilter
       runAfter: [fetch-repository]
       taskRef: { name: endpoint-tests }
