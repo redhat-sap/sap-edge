@@ -12,7 +12,14 @@
 #    (via OperatorHub or CLI before running this pipeline)
 #
 # 3. Ensure a Squid proxy is running on the jumphost and accessible from the
-#    hosted cluster worker nodes. Update proxyHost, proxyPort, and proxyIP below.
+#    hosted cluster worker nodes. Create a Secret named '{hubClusterName}-proxy-config'
+#    with keys: PROXY_HOST, PROXY_PORT, PROXY_IP.
+#
+# 4. The httpbinipfilter iFlow has an IP filter (X-Forwarded-For based).
+#    Whitelist both the hub cluster and managed/hosted cluster pod CIDRs
+#    in the iFlow's IP filter policy (e.g. 10.128.0.0/14, 10.132.0.0/14,
+#    100.64.0.0/24). Check each cluster's CIDR with:
+#      oc get network.config cluster -o jsonpath='{.spec.clusterNetwork[*].cidr}'
 #
 # Scenario: Dedicated SAP service mesh with corporate proxy
 #   - Deploys an independent Istio control plane 'sap-mesh-istio'
@@ -51,7 +58,7 @@ spec:
     # hostedClusterName: include hubClusterName to avoid collisions across hubs
     # Pattern: {prefix}-{hubClusterName}-pr{number}
     - name: hostedClusterName
-      value: "hcp-proxy-eli-pr{{ pull_request_number }}"
+      value: "hcp-proxy-eic-pr{{ pull_request_number }}"
     # hostedClusterName: include hubClusterName to avoid collisions across hubs
     # Pattern: {prefix}-{hubClusterName}-pr{number}
     - name: hostedClusterNamespace
@@ -74,7 +81,7 @@ spec:
     # The pipeline derives the kubeconfig secret as: {hubClusterName}-kubeconfig
     # Ensure a Secret named "{hubClusterName}-kubeconfig" exists with the hub's kubeconfig
     - name: hubClusterName
-      value: "eli"
+      value: "eic"
 
     # --- OSSM3 parameters ---
     - name: ossm3Channel
@@ -83,14 +90,6 @@ spec:
       value: "sap-eic-restricted-cluster-config-resources"
     - name: s3Prefix
       value: "restricted-resources/"
-
-    # --- Corporate proxy parameters ---
-    - name: proxyHost
-      value: "jumphost.example.com"       # TODO: Replace with actual proxy hostname
-    - name: proxyPort
-      value: "3128"
-    - name: proxyIP
-      value: "10.0.0.1"                   # TODO: Replace with actual proxy IP
 
     # --- EIC services parameters ---
     - name: postgresVersion
@@ -112,7 +111,7 @@ spec:
     - name: jiraSecretName
       value: "jira-secret-mj"
     - name: jiraIssueKey
-      value: ""
+      value: "SAPOCP-1978"
 
     # --- Pipeline control ---
     - name: skipTeardown

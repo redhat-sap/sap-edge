@@ -31,7 +31,7 @@ spec:
     # hostedClusterName: include hubClusterName to avoid collisions across hubs
     # Pattern: {prefix}-{hubClusterName}-pr{number}
     - name: hostedClusterName
-      value: "hcp-scc-eli-pr{{ pull_request_number }}"
+      value: "hcp-scc-eic-pr{{ pull_request_number }}"
     # hostedClusterName: include hubClusterName to avoid collisions across hubs
     # Pattern: {prefix}-{hubClusterName}-pr{number}
     - name: hostedClusterNamespace
@@ -72,7 +72,7 @@ spec:
     # The pipeline derives the kubeconfig secret as: {hubClusterName}-kubeconfig
     # Ensure a Secret named "{hubClusterName}-kubeconfig" exists with the hub's kubeconfig
     - name: hubClusterName
-      value: "eli"
+      value: "eic"
   workspaces:
     - name: source
       volumeClaimTemplate:
