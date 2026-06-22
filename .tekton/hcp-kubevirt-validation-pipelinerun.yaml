@@ -60,6 +60,10 @@ spec:
       value: "standard"
     - name: eicAuthSecretName
       value: "eic-auth-secret"
+    # publicDNS=false applies to rounds 1-2 (LoadBalancer tests via --resolve).
+    # Round 3 route tests use public DNS in the pipeline definition.
+    # httpbinipfilter requires hub and hosted cluster pod CIDRs whitelisted
+    # in the iFlow IP filter settings.
     - name: publicDNS
       value: "false"
     - name: jiraSecretName

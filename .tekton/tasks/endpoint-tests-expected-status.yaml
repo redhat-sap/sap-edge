@@ -52,7 +52,7 @@ spec:
         ENDPOINT_PATH="$(params.endpointPath)"
         HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
 
-        CURL_OPTS=("-k" "-s" "-o" "/dev/null" "-w" "%{http_code}")
+        CURL_OPTS=("-k" "-s" "-o" "/dev/null" "-w" "%{http_code}" "--connect-timeout" "10" "--max-time" "30")
 
         if [[ "$(params.publicDNS)" == "true" ]]; then
           echo "Resolution: Public DNS"
@@ -102,19 +102,24 @@ spec:
           fi
 
           POD_NAME="curl-test-$(date +%s)-${RANDOM}"
+          echo "🚀 Running curl via remote pod ${POD_NAME}..."
           OC_OUTPUT=$(oc run "${POD_NAME}" -n default --rm -i --restart=Never \
             --image=curlimages/curl \
             -- curl -k -s -o /dev/null -w "%{http_code}" \
+            --connect-timeout 10 --max-time 30 \
             -H "Authorization: Basic ${AUTH_KEY}" \
             ${RESOLVE_OPT} \
             "https://${HOST}${ENDPOINT_PATH}" 2>&1) || true
+          echo "📋 Remote pod finished"
+          echo "📋 Raw output: ${OC_OUTPUT}"
 
-          # oc run may include pod status lines; extract only lines that are
-          # exactly a 3-digit HTTP status code
-          ACTUAL_STATUS=$(echo "${OC_OUTPUT}" | grep -xE '[0-9]{3}' | tail -1)
+          # Extract HTTP status: try exact 3-digit line first, then leading 3 digits
+          ACTUAL_STATUS=$(echo "${OC_OUTPUT}" | grep -xoE '[0-9]{3}' | tail -1 || true)
+          if [[ -z "${ACTUAL_STATUS}" ]]; then
+            ACTUAL_STATUS=$(echo "${OC_OUTPUT}" | grep -oE '^[0-9]{3}' | tail -1 || true)
+          fi
           if [[ -z "${ACTUAL_STATUS}" ]]; then
             echo "❌ Failed to get HTTP status from remote pod"
-            echo "${OC_OUTPUT}"
             exit 1
           fi
         else
