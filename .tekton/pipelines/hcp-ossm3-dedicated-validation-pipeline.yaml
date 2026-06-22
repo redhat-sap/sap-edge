@@ -107,6 +107,14 @@ spec:
       type: string
       description: "Use public DNS for endpoint tests"
       default: "false"
+    - name: testHttpbinipfilter
+      type: string
+      description: "Run httpbinipfilter endpoint tests (set false to skip)"
+      default: "true"
+    - name: testSlvredis
+      type: string
+      description: "Run slvredis endpoint and rate-limit tests (set false to skip)"
+      default: "true"
 
     # --- Jira parameters ---
     - name: jiraSecretName
@@ -500,11 +508,15 @@ spec:
         - name: source
           workspace: source
 
-    # Step 16: Endpoint Tests (run in parallel after EndpointSlice fix and Route creation)
+    # Step 16: Endpoint Tests (run in parallel with staggered start delays)
     # NOTE: httpbinipfilter has an IP filter policy. The hub and managed cluster
     # pod CIDRs must be whitelisted in the iFlow's IP filter settings.
     - name: test-httpbinipfilter
       runAfter: [fix-endpointslice, create-eic-route]
+      when:
+        - input: "$(params.testHttpbinipfilter)"
+          operator: in
+          values: ["true"]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -517,6 +529,8 @@ spec:
           value: $(params.publicDNS)
         - name: hubKubeconfigSecretName
           value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "2"
       workspaces:
         - name: source
           workspace: source
@@ -535,6 +549,8 @@ spec:
           value: $(params.publicDNS)
         - name: hubKubeconfigSecretName
           value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "4"
       workspaces:
         - name: source
           workspace: source
@@ -553,12 +569,18 @@ spec:
           value: $(params.publicDNS)
         - name: hubKubeconfigSecretName
           value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "6"
       workspaces:
         - name: source
           workspace: source
 
     - name: test-slvredis
       runAfter: [fix-endpointslice, create-eic-route]
+      when:
+        - input: "$(params.testSlvredis)"
+          operator: in
+          values: ["true"]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -577,6 +599,10 @@ spec:
 
     - name: test-ratelimit-slvredis
       runAfter: [test-slvredis]
+      when:
+        - input: "$(params.testSlvredis)"
+          operator: in
+          values: ["true"]
       taskRef: { name: rate-limit-test }
       params:
         - name: endpointPath
@@ -593,6 +619,22 @@ spec:
         - name: source
           workspace: source
 
+    # Cooldown after rate-limit test to let the rate limiter window recover
+    - name: cooldown-after-round1
+      runAfter: [test-ratelimit-slvredis]
+      when:
+        - input: "$(params.testSlvredis)"
+          operator: in
+          values: ["true"]
+      taskSpec:
+        steps:
+          - name: cooldown
+            image: registry.access.redhat.com/ubi9/ubi-minimal
+            script: |
+              echo "⏳ Cooling down for 30s to let rate limiter recover..."
+              sleep 30
+              echo "✅ Cooldown complete."
+
     # Step 15: Manual approval before second round of tests
     - name: approval-second-test-round
       runAfter:
@@ -600,7 +642,7 @@ spec:
         - test-http-test1
         - test-http-testelster
         - test-slvredis
-        - test-ratelimit-slvredis
+        - cooldown-after-round1
       taskRef:
         apiVersion: openshift-pipelines.org/v1alpha1
         kind: ApprovalTask
@@ -627,9 +669,13 @@ spec:
         - name: timeout
           value: '336h'
 
-    # Step 16: Second round of endpoint tests
+    # Step 16: Second round of endpoint tests (staggered)
     - name: test-httpbinipfilter-round2
       runAfter: [approval-second-test-round]
+      when:
+        - input: "$(params.testHttpbinipfilter)"
+          operator: in
+          values: ["true"]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -642,6 +688,8 @@ spec:
           value: $(params.publicDNS)
         - name: hubKubeconfigSecretName
           value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "2"
       workspaces:
         - name: source
           workspace: source
@@ -660,6 +708,8 @@ spec:
           value: $(params.publicDNS)
         - name: hubKubeconfigSecretName
           value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "4"
       workspaces:
         - name: source
           workspace: source
@@ -678,12 +728,18 @@ spec:
           value: $(params.publicDNS)
         - name: hubKubeconfigSecretName
           value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "6"
       workspaces:
         - name: source
           workspace: source
 
     - name: test-slvredis-round2
       runAfter: [approval-second-test-round]
+      when:
+        - input: "$(params.testSlvredis)"
+          operator: in
+          values: ["true"]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -702,6 +758,10 @@ spec:
 
     - name: test-ratelimit-slvredis-round2
       runAfter: [test-slvredis-round2]
+      when:
+        - input: "$(params.testSlvredis)"
+          operator: in
+          values: ["true"]
       taskRef: { name: rate-limit-test }
       params:
         - name: endpointPath
@@ -718,6 +778,22 @@ spec:
         - name: source
           workspace: source
 
+    # Cooldown after rate-limit test to let the rate limiter window recover
+    - name: cooldown-after-round2
+      runAfter: [test-ratelimit-slvredis-round2]
+      when:
+        - input: "$(params.testSlvredis)"
+          operator: in
+          values: ["true"]
+      taskSpec:
+        steps:
+          - name: cooldown
+            image: registry.access.redhat.com/ubi9/ubi-minimal
+            script: |
+              echo "⏳ Cooling down for 30s to let rate limiter recover..."
+              sleep 30
+              echo "✅ Cooldown complete."
+
     # Step 18: Manual approval before Route-based tests (round 3)
     - name: approval-route-test-round
       runAfter:
@@ -725,7 +801,7 @@ spec:
         - test-http-test1-round2
         - test-http-testelster-round2
         - test-slvredis-round2
-        - test-ratelimit-slvredis-round2
+        - cooldown-after-round2
       taskRef:
         apiVersion: openshift-pipelines.org/v1alpha1
         kind: ApprovalTask
@@ -756,9 +832,13 @@ spec:
         - name: timeout
           value: '336h'
 
-    # Step 19: Route-based Endpoint Tests (round 3, via OpenShift Route)
+    # Step 19: Route-based Endpoint Tests (round 3, via OpenShift Route, staggered)
     - name: test-httpbinipfilter-route
       runAfter: [approval-route-test-round]
+      when:
+        - input: "$(params.testHttpbinipfilter)"
+          operator: in
+          values: ["true"]
       taskRef: { name: endpoint-tests-expected-status }
       params:
         - name: endpointPath
@@ -773,6 +853,8 @@ spec:
           value: "true"
         - name: hubKubeconfigSecretName
           value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "2"
       workspaces:
         - name: source
           workspace: source
@@ -791,6 +873,8 @@ spec:
           value: "true"
         - name: hubKubeconfigSecretName
           value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "4"
       workspaces:
         - name: source
           workspace: source
@@ -809,12 +893,18 @@ spec:
           value: "true"
         - name: hubKubeconfigSecretName
           value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "6"
       workspaces:
         - name: source
           workspace: source
 
     - name: test-slvredis-route
       runAfter: [approval-route-test-round]
+      when:
+        - input: "$(params.testSlvredis)"
+          operator: in
+          values: ["true"]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -833,6 +923,10 @@ spec:
 
     - name: test-ratelimit-slvredis-route
       runAfter: [test-slvredis-route]
+      when:
+        - input: "$(params.testSlvredis)"
+          operator: in
+          values: ["true"]
       taskRef: { name: rate-limit-test }
       params:
         - name: endpointPath

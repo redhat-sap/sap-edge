@@ -23,6 +23,10 @@ spec:
       type: string
       description: "Name of the Secret containing kubeconfig for hub cluster (optional, enables remote exec via oc run)"
       default: ""
+    - name: startDelay
+      type: string
+      description: "Seconds to wait before sending the request (stagger parallel tests)"
+      default: "0"
   workspaces:
     - name: source
   steps:
@@ -42,6 +46,12 @@ spec:
 
         ENDPOINT_PATH="$(params.endpointPath)"
         HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
+        START_DELAY="$(params.startDelay)"
+
+        if [[ "${START_DELAY}" -gt 0 ]] 2>/dev/null; then
+          echo "⏳ Stagger delay: waiting ${START_DELAY}s..."
+          sleep "${START_DELAY}"
+        fi
 
         echo "▶️ Testing endpoint: ${ENDPOINT_PATH}"
 

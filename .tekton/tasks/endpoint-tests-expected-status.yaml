@@ -10,9 +10,8 @@ metadata:
 spec:
   description: >-
     Tests a single EIC endpoint and validates against an expected HTTP status
-    code. Use this instead of endpoint-tests when the expected response is not
-    200 (e.g., 403 for IP-filtered endpoints accessed via OpenShift Routes
-    where source IP is not preserved).
+    code. Use this instead of endpoint-tests when you need to assert a
+    specific status code other than 200.
   params:
     - name: clusterConfigMapName
       type: string
@@ -31,6 +30,10 @@ spec:
       type: string
       description: "Name of the Secret containing kubeconfig for hub cluster (optional, enables remote exec via oc run)"
       default: ""
+    - name: startDelay
+      type: string
+      description: "Seconds to wait before sending the request (stagger parallel tests)"
+      default: "0"
   workspaces:
     - name: source
   steps:
@@ -51,6 +54,12 @@ spec:
         EXPECTED_STATUS="$(params.expectedStatus)"
         ENDPOINT_PATH="$(params.endpointPath)"
         HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
+        START_DELAY="$(params.startDelay)"
+
+        if [[ "${START_DELAY}" -gt 0 ]] 2>/dev/null; then
+          echo "⏳ Stagger delay: waiting ${START_DELAY}s..."
+          sleep "${START_DELAY}"
+        fi
 
         CURL_OPTS=("-k" "-s" "-o" "/dev/null" "-w" "%{http_code}" "--connect-timeout" "10" "--max-time" "30")
 
