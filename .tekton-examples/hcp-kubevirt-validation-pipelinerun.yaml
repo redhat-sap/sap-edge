@@ -47,7 +47,7 @@ spec:
     - name: rootDiskSizeGB
       value: "120"
     - name: pullSecretName
-      value: "rb-pull-secret"
+      value: "mj-pull-secret"
     - name: etcdStorageClass
       value: ""
     - name: postgresVersion
@@ -67,7 +67,7 @@ spec:
     - name: publicDNS
       value: "false"
     - name: jiraSecretName
-      value: "jira-secret-rb"
+      value: "jira-secret-mj"
     - name: jiraIssueKey
       value: "SAPOCP-1979"
     - name: skipTeardown
