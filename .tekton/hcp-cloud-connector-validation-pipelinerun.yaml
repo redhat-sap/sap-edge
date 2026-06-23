@@ -47,7 +47,7 @@ spec:
     - name: rootDiskSizeGB
       value: "120"
     - name: pullSecretName
-      value: "mj-pull-secret"
+      value: "rb-pull-secret"
     - name: etcdStorageClass
       value: ""
     - name: postgresVersion
@@ -63,9 +63,9 @@ spec:
     - name: publicDNS
       value: "false"
     - name: jiraSecretName
-      value: "jira-secret-mj"
+      value: "jira-secret-rb"
     - name: jiraIssueKey
-      value: ""
+      value: "SAPOCP-1987"
     - name: skipTeardown
       value: "false"
     # hubClusterName: name of the target hub cluster
