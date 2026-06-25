@@ -66,7 +66,7 @@ fi
 # As a safety net, sweep all namespaced resource types: remove finalizers and attempt force deletion
 echo "Sweeping all namespaced resource types in '$PROJECT' to remove finalizers and delete..."
 oc api-resources --verbs=list --namespaced -o name | while read -r TYPE; do
-  # Remove finalizers from each instance of this TYPE
+  [[ "$TYPE" == packagemanifests* ]] && continue
   oc get "$TYPE" -n "$PROJECT" -o name 2>/dev/null | while read -r RES; do
     echo "Patching $RES to remove finalizers..."
     if ! oc patch "$RES" -n "$PROJECT" --type json -p "$REMOVE_METADATA_FINALIZERS_PATCH" 2>/dev/null; then

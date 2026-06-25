@@ -157,3 +157,4 @@ creativecommons
 compatiblelicenses
 sublicensable
 waivable
+packagemanifests
