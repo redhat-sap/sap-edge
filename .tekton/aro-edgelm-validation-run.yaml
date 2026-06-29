@@ -46,6 +46,8 @@ spec:
       value: "SAPOCP-1976"
     - name: targetVersionPrefix
       value: "4.22.1"
+    - name: hubKubeconfigSecretName
+      value: "mgmt-kubeconfig"
     - name: skipEdgelmValidation
       value: "false"
   workspaces:
