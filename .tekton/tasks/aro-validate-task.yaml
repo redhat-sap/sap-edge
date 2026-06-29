@@ -64,6 +64,7 @@ spec:
         # Install OpenShift CLI
         echo "📦 Installing OpenShift CLI..."
         curl -L https://mirror.openshift.com/pub/openshift-v4/clients/ocp/latest/openshift-client-linux.tar.gz | tar -xz -C /usr/local/bin oc
+        cp /usr/local/bin/oc /usr/local/bin/kubectl
         
         # Environment variables are now directly available from secrets (no conversion needed)
 
