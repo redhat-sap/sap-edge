@@ -24,6 +24,10 @@ spec:
     - name: targetVersionPrefix
       type: string
       description: "Target version prefix (e.g. '4.21'). The latest available version matching this prefix will be selected."
+    - name: upgradeChannel
+      type: string
+      description: "Upgrade channel override (e.g. 'fast-4.22'). If empty, defaults to stable-<targetVersionPrefix>."
+      default: ""
   results:
     - name: upgrade-version
       description: "The version the cluster was upgraded to"
@@ -39,6 +43,8 @@ spec:
           value: "$(params.aroClusterName)"
         - name: TARGET_VERSION_PREFIX
           value: "$(params.targetVersionPrefix)"
+        - name: UPGRADE_CHANNEL
+          value: "$(params.upgradeChannel)"
       envFrom:
         - secretRef:
             name: $(params.azureSecretName)
@@ -87,7 +93,7 @@ spec:
         fi
 
         # Set upgrade channel
-        CHANNEL="stable-${TARGET_VERSION_PREFIX}"
+        CHANNEL="${UPGRADE_CHANNEL:-stable-${TARGET_VERSION_PREFIX}}"
         echo "📡 Setting upgrade channel to ${CHANNEL}..."
         oc adm upgrade channel "${CHANNEL}"
         echo "✅ Channel set to ${CHANNEL}"

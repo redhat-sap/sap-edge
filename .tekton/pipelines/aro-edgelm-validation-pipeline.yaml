@@ -62,6 +62,10 @@ spec:
       type: string
       description: "Target version prefix for cluster upgrade (e.g. '4.21'). Leave empty to skip upgrade."
       default: ""
+    - name: upgradeChannel
+      type: string
+      description: "Upgrade channel override (e.g. 'fast-4.22'). If empty, defaults to stable-<targetVersionPrefix>."
+      default: ""
   workspaces:
     - name: source
   tasks:
@@ -132,6 +136,8 @@ spec:
           value: $(params.azureSecretName)
         - name: targetVersionPrefix
           value: $(params.targetVersionPrefix)
+        - name: upgradeChannel
+          value: $(params.upgradeChannel)
       workspaces:
         - name: source
           workspace: source
