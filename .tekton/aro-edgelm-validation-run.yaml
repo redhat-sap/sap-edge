@@ -45,7 +45,7 @@ spec:
     - name: jiraIssueKey
       value: "SAPOCP-1976"
     - name: targetVersionPrefix
-      value: "4.22.1"
+      value: "4.21"                # major.minor only — used as channel name (stable-X.Y)
     - name: hubKubeconfigSecretName
       value: "mgmt-kubeconfig"
     - name: skipEdgelmValidation
