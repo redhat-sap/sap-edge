@@ -66,6 +66,10 @@ spec:
       type: string
       description: "Upgrade channel override (e.g. 'fast-4.22'). If empty, defaults to stable-<targetVersionPrefix>."
       default: ""
+    - name: deployQuay
+      type: string
+      description: "Deploy Quay registry (true/false)"
+      default: "true"
   workspaces:
     - name: source
   tasks:
@@ -101,7 +105,7 @@ spec:
         - name: deployRedis
           value: "false"
         - name: deployQuay
-          value: "true"
+          value: $(params.deployQuay)
       workspaces:
         - name: source
           workspace: source
@@ -144,6 +148,10 @@ spec:
 
     - name: deploy-quay
       runAfter: [validate-and-get-access, upgrade-cluster]
+      when:
+        - input: $(params.deployQuay)
+          operator: in
+          values: ["true"]
       taskRef: { name: aro-quay-deploy }
       params:
         - name: aroClusterName

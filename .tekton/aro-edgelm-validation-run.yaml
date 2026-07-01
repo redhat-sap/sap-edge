@@ -48,6 +48,8 @@ spec:
       value: "4.22"                # major.minor only — used as default channel (stable-X.Y)
     - name: upgradeChannel
       value: "fast-4.22"           # override when stable-X.Y isn't available yet
+    - name: deployQuay
+      value: "false"
     - name: hubKubeconfigSecretName
       value: "mgmt-kubeconfig"
     - name: skipEdgelmValidation
