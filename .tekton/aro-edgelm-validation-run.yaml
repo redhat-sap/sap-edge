@@ -53,7 +53,7 @@ spec:
     - name: hubKubeconfigSecretName
       value: "mgmt-kubeconfig"
     - name: skipEdgelmValidation
-      value: "false"
+      value: "true"
   workspaces:
     - name: source
       volumeClaimTemplate:
