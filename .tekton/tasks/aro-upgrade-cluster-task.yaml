@@ -109,6 +109,16 @@ spec:
           echo "✅ Sigstore admin ack applied"
         fi
 
+        # Boot image management ack for 4.21 → 4.22 upgrade
+        # Azure/vSphere clusters need to acknowledge the new default behavior
+        # (boot image management enabled) before the upgrade is allowed.
+        if [[ "${CURRENT_VERSION}" == 4.21.* && "${TARGET_VERSION_PREFIX}" == "4.22" ]]; then
+          echo "🖼️ Applying boot image management acknowledgment for 4.21 → 4.22 upgrade..."
+          oc -n openshift-config patch configmap admin-acks \
+            --patch '{"data":{"ack-4.21-boot-image-opt-out-in-4.22":"true"}}' --type=merge
+          echo "✅ Boot image management admin ack applied"
+        fi
+
         # Wait for available updates to populate
         echo "⏳ Waiting for available updates to populate..."
         START_TIME=$(date +%s)
