@@ -43,7 +43,7 @@ spec:
     - name: jiraSecretName
       value: "jira-secret-rb"
     - name: jiraIssueKey
-      value: "SAPOCP-1976"
+      value: "SAPOCP-2104"
     - name: targetVersionPrefix
       value: "4.22"                # major.minor only — used as default channel (stable-X.Y)
     - name: upgradeChannel
