@@ -33,7 +33,7 @@ spec:
     - name: awsRegion
       value: "eu-north-1"
     - name: rosaVersion
-      value: "4.21.14"
+      value: "4.22.1"
     - name: awsSecretName
       value: "aws-rb"
     - name: redhatTokenSecretName
