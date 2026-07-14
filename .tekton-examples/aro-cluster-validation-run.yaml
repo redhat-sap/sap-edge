@@ -29,7 +29,7 @@ spec:
     - name: aroLocation
       value: "northeurope"
     - name: aroClusterName
-      value: "aro-cluster-eic-pr{{ pull_request_number }}"
+      value: "aro-clst-pr{{ pull_request_number }}"
     - name: aroVersion
       value: "4.20.15"
     - name: azureSecretName
