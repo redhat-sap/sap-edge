@@ -27,7 +27,7 @@ spec:
     - name: revision
       value: "{{ revision }}"
     - name: clusterName
-      value: "sap-elm-pr{{ pull_request_number }}"
+      value: "rosa-cluster-eic-pr{{ pull_request_number }}"
     - name: awsRegion
       value: "eu-north-1"
     - name: rosaVersion

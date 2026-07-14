@@ -29,11 +29,11 @@ spec:
     - name: pullRequestNumber
       value: "{{ pull_request_number }}"
     - name: clusterName
-      value: "sap-elm-pr{{ pull_request_number }}"
+      value: "rosa-ossm-eic-pr{{ pull_request_number }}"
     - name: awsRegion
       value: "eu-north-1"
     - name: rosaVersion
-      value: "4.21.14"
+      value: "4.22.3"
     - name: awsSecretName
       value: "aws-mj"
     - name: redhatTokenSecretName
