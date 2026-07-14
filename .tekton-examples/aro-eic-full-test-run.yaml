@@ -11,7 +11,7 @@ metadata:
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
-    pipelinesascode.tekton.dev/task: "[./.tekton/tasks/git-clone.yaml]"
+    pipelinesascode.tekton.dev/task: "[./.tekton/tasks/git-clone.yaml, ./.tekton/tasks/ossm3-preflight-check-task.yaml, ./.tekton/tasks/ossm3-verify-operators-task.yaml, ./.tekton/tasks/ossm3-download-and-apply-rbac-task.yaml, ./.tekton/tasks/ossm3-prepare-namespaces-task.yaml, ./.tekton/tasks/ossm3-configure-mesh-task.yaml, ./.tekton/tasks/ossm3-generate-sa-based-kubeconfig-task.yaml]"
     pipelinesascode.tekton.dev/max-keep-runs: "1"
     pipelinesascode.tekton.dev/cancel-in-progress: "true"
 spec:
@@ -31,11 +31,11 @@ spec:
     - name: aroLocation
       value: "northeurope"
     - name: aroClusterName
-      value: "sap-eic-validation"
+      value: "sap-elm-pr{{ pull_request_number }}"
     - name: aroVersion
-      value: "4.19.20"
+      value: "4.20.15"
     - name: azureSecretName
-      value: "azure-sp-secret"
+      value: "mj-azure-sp"
     - name: pullSecretName
       value: "mj-pull-secret"
     - name: eicAuthSecretName
@@ -49,13 +49,26 @@ spec:
     - name: publicDNS
       value: "false"
     - name: deployQuay
-      value: "true"
+      value: "false"
+    - name: skipEicValidation
+      value: "false"
+    - name: skipAutomatedTests
+      value: "false"
     - name: quayAdminPasswordSecretName
       value: "quay-admin-secret"
     - name: jiraSecretName
       value: "jira-secret-mj"
     - name: jiraIssueKey
-      value: "SAPOCP-1708"
+      value: "SAPOCP-2108"
+    - name: hubClusterName
+      value: "eic"
+    # --- OSSM3 parameters ---
+    - name: ossm3Channel
+      value: "stable-3.2"
+    - name: obcName
+      value: "sap-eic-restricted-cluster-config-resources"
+    - name: s3Prefix
+      value: "restricted-resources/"
   workspaces:
     - name: source
       volumeClaimTemplate:

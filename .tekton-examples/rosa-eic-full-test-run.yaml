@@ -11,7 +11,7 @@ metadata:
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
-    pipelinesascode.tekton.dev/task: "[./.tekton/tasks/git-clone.yaml]"
+    pipelinesascode.tekton.dev/task: "[./.tekton/tasks/git-clone.yaml, ./.tekton/tasks/ossm3-preflight-check-task.yaml, ./.tekton/tasks/ossm3-verify-operators-task.yaml, ./.tekton/tasks/ossm3-download-and-apply-rbac-task.yaml, ./.tekton/tasks/ossm3-prepare-namespaces-task.yaml, ./.tekton/tasks/ossm3-configure-mesh-task.yaml, ./.tekton/tasks/ossm3-generate-sa-based-kubeconfig-task.yaml]"
     pipelinesascode.tekton.dev/max-keep-runs: "1"
     pipelinesascode.tekton.dev/cancel-in-progress: "true"
 spec:
@@ -31,13 +31,13 @@ spec:
     - name: clusterName
       value: "sap-elm-pr{{ pull_request_number }}"
     - name: awsRegion
-      value: "us-east-1"
+      value: "eu-north-1"
     - name: rosaVersion
-      value: "4.20.12"
+      value: "4.21.14"
     - name: awsSecretName
-      value: "aws-credentials-secret"
+      value: "aws-mj"
     - name: redhatTokenSecretName
-      value: "redhat-token-secret"
+      value: "mj-rh-token"
     - name: eicAuthSecretName
       value: "eic-auth-secret"
     - name: postgresAdminPasswordSecretName
@@ -49,13 +49,26 @@ spec:
     - name: deployRedis
       value: "false"
     - name: deployQuay
-      value: "true"
+      value: "false"
     - name: publicDNS
+      value: "false"
+    - name: skipEicValidation
+      value: "true"
+    - name: skipAutomatedTests
       value: "false"
     - name: jiraSecretName
       value: "jira-secret-mj"
     - name: jiraIssueKey
-      value: "SAPOCP-1590"
+      value: "SAPOCP-2107"
+    - name: hubClusterName
+      value: "eic"
+    # --- OSSM3 parameters ---
+    - name: ossm3Channel
+      value: "stable-3.3"
+    - name: obcName
+      value: "sap-eic-restricted-cluster-config-resources"
+    - name: s3Prefix
+      value: "restricted-resources/"
     - name: terraformStateS3Bucket
       value: "eic-test-rosa-terraform-state"
     - name: terraformStateS3Key

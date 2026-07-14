@@ -35,17 +35,23 @@ spec:
     - name: aroVersion
       value: "4.20.15"
     - name: azureSecretName
-      value: "azure-sp-secret"
+      value: "mj-azure-sp"
     - name: pullSecretName
       value: "mj-pull-secret"
     - name: quayAdminPasswordSecretName
       value: "quay-admin-secret"
     - name: jiraSecretName
-      value: "jira-secret-rb"
+      value: "jira-secret"
     - name: jiraIssueKey
-      value: "SAPOCP-1976"
+      value: "SAPOCP-2104"
     - name: targetVersionPrefix
-      value: "4.21"
+      value: "4.22"                # major.minor only — used as default channel (stable-X.Y)
+    - name: upgradeChannel
+      value: "fast-4.22"           # override when stable-X.Y isn't available yet
+    - name: deployQuay
+      value: "false"
+    - name: hubKubeconfigSecretName
+      value: "mgmt-kubeconfig"
     - name: skipEdgelmValidation
       value: "false"
   workspaces:

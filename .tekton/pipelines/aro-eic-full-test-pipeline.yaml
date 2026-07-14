@@ -71,10 +71,30 @@ spec:
     - name: jiraIssueKey
       type: string
       description: "Jira issue key to update with test results"
-    - name: hubKubeconfigSecretName
+    - name: skipEicValidation
       type: string
-      description: "Name of the Secret containing kubeconfig for hub cluster (optional)"
-      default: ""
+      description: "Skip EIC validation and endpoint tests (true/false). When true, skips directly to teardown approval."
+      default: "false"
+    - name: skipAutomatedTests
+      type: string
+      description: "Skip automated endpoint tests for manual execution: httpbinipfilter, slvredis, ratelimit-slvredis (true/false)"
+      default: "false"
+    - name: hubClusterName
+      type: string
+      description: "Name of the hub cluster (used to derive kubeconfig secret name: {hubClusterName}-kubeconfig)"
+    # --- OSSM3 parameters ---
+    - name: ossm3Channel
+      type: string
+      description: "OLM subscription channel for the OSSM3 operator"
+      default: "stable-3.2"
+    - name: obcName
+      type: string
+      description: "Name of the ObjectBucketClaim (OBC) for downloading restricted-access RBAC resources from S3"
+      default: "sap-eic-restricted-cluster-config-resources"
+    - name: s3Prefix
+      type: string
+      description: "S3 key prefix for the restricted-resources zip files"
+      default: "restricted-resources/"
   results:
     - name: cluster-summary
       description: "Brief cluster and services validation summary"
@@ -132,13 +152,17 @@ spec:
         - name: postgresAdminPasswordSecretName
           value: $(params.postgresAdminPasswordSecretName)
         - name: hubKubeconfigSecretName
-          value: $(params.hubKubeconfigSecretName)
+          value: $(params.hubClusterName)-kubeconfig
       workspaces:
         - name: source
           workspace: source
 
     - name: deploy-quay
       runAfter: [validate-and-get-access]
+      when:
+        - input: $(params.deployQuay)
+          operator: in
+          values: ["true"]
       taskRef: { name: aro-quay-deploy }
       params:
         - name: aroClusterName
@@ -148,15 +172,102 @@ spec:
         - name: quayAdminPasswordSecretName
           value: $(params.quayAdminPasswordSecretName)
         - name: hubKubeconfigSecretName
-          value: $(params.hubKubeconfigSecretName)
+          value: $(params.hubClusterName)-kubeconfig
       workspaces:
         - name: source
           workspace: source
 
-    # Manual approval gate after ELM/EIC and iFlow deployment
-    # After Quay is deployed, pause for manual ELM/EIC/iFlow deployment
+    # =============================================
+    # OSSM3 Restricted-Access Setup
+    # =============================================
+
+    # Pre-flight validation (runs in parallel with fetch-repository)
+    - name: preflight-check
+      taskRef: { name: ossm3-preflight-check }
+      params:
+        - name: obcName
+          value: $(params.obcName)
+        - name: pullSecretName
+          value: $(params.pullSecretName)
+
+    # Install Service Mesh 3.x operator on target cluster
+    - name: verify-operators
+      runAfter: [validate-and-get-access]
+      taskRef: { name: ossm3-verify-operators }
+      params:
+        - name: hostedClusterName
+          value: $(params.aroClusterName)
+        - name: ossm3Channel
+          value: $(params.ossm3Channel)
+        - name: useWorkspaceKubeconfig
+          value: "true"
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Download and apply RBAC permissions from S3 (restricted-access resources)
+    - name: apply-rbac
+      runAfter: [verify-operators]
+      taskRef: { name: ossm3-download-and-apply-rbac }
+      params:
+        - name: hostedClusterName
+          value: $(params.aroClusterName)
+        - name: obcName
+          value: $(params.obcName)
+        - name: s3Prefix
+          value: $(params.s3Prefix)
+        - name: useWorkspaceKubeconfig
+          value: "true"
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Prepare namespaces with labels and SCC annotations
+    - name: prepare-namespaces
+      runAfter: [apply-rbac]
+      taskRef: { name: ossm3-prepare-namespaces }
+      params:
+        - name: hostedClusterName
+          value: $(params.aroClusterName)
+        - name: useWorkspaceKubeconfig
+          value: "true"
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Configure OpenShift Service Mesh 3.x
+    - name: configure-mesh
+      runAfter: [prepare-namespaces]
+      taskRef: { name: ossm3-configure-mesh }
+      params:
+        - name: hostedClusterName
+          value: $(params.aroClusterName)
+        - name: useWorkspaceKubeconfig
+          value: "true"
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Generate SA-based restricted kubeconfig for ELM registration
+    - name: generate-sa-based-kubeconfig
+      runAfter: [configure-mesh]
+      taskRef: { name: ossm3-generate-sa-based-kubeconfig }
+      params:
+        - name: hostedClusterName
+          value: $(params.aroClusterName)
+        - name: useWorkspaceKubeconfig
+          value: "true"
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Manual approval gate after OSSM3 setup and Quay deployment
     - name: approval-elm-eic-iflow-deployed
-      runAfter: [deploy-quay]
+      runAfter: [deploy-quay, generate-sa-based-kubeconfig]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
       taskRef:
         apiVersion: openshift-pipelines.org/v1alpha1
         kind: ApprovalTask
@@ -171,10 +282,12 @@ spec:
             - system:admin
         - name: description
           value: |
-            ARO cluster, Azure services (PostgreSQL/Redis), and Quay registry are deployed.
+            ARO cluster, Azure services (PostgreSQL/Redis), Quay registry, and OSSM3 restricted-access setup are complete.
+
+            Restricted kubeconfig stored as Secret 'edgelm-kubeconfig-generated-$(params.aroClusterName)'.
 
             🔧 Please complete the following manually:
-            1. Deploy Edge Lifecycle Management (ELM)
+            1. Register the cluster in ELM (use restricted kubeconfig, check "Restricted Access")
             2. Deploy Edge Integration Cell (EIC)
             3. Deploy iFlows for testing
 
@@ -189,6 +302,10 @@ spec:
     # Create ConfigMap with istio-ingressgateway LoadBalancer IP (after ELM/EIC/iFlow deployment)
     - name: validate-and-create-configmap
       runAfter: [approval-elm-eic-iflow-deployed]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
       taskRef: { name: aro-validate-and-create-configmap }
       params:
         - name: aroClusterName
@@ -204,6 +321,13 @@ spec:
     # must be whitelisted in the iFlow's IP filter settings.
     - name: test-httpbinipfilter
       runAfter: [validate-and-create-configmap]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
+        - input: $(params.skipAutomatedTests)
+          operator: in
+          values: ["false"]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -220,6 +344,10 @@ spec:
 
     - name: test-http-test1
       runAfter: [validate-and-create-configmap]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -236,6 +364,10 @@ spec:
 
     - name: test-http-testelster
       runAfter: [validate-and-create-configmap]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -252,6 +384,13 @@ spec:
 
     - name: test-slvredis
       runAfter: [validate-and-create-configmap]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
+        - input: $(params.skipAutomatedTests)
+          operator: in
+          values: ["false"]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -268,6 +407,13 @@ spec:
 
     - name: test-ratelimit-slvredis
       runAfter: [test-slvredis]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
+        - input: $(params.skipAutomatedTests)
+          operator: in
+          values: ["false"]
       taskRef: { name: rate-limit-test }
       params:
         - name: endpointPath
@@ -290,6 +436,10 @@ spec:
         - test-http-testelster
         - test-slvredis
         - test-ratelimit-slvredis
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
       taskRef:
         apiVersion: openshift-pipelines.org/v1alpha1
         kind: ApprovalTask
@@ -318,6 +468,13 @@ spec:
     # Second round of endpoint tests
     - name: test-httpbinipfilter-round2
       runAfter: [approval-second-test-round]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
+        - input: $(params.skipAutomatedTests)
+          operator: in
+          values: ["false"]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -334,6 +491,10 @@ spec:
 
     - name: test-http-test1-round2
       runAfter: [approval-second-test-round]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -350,6 +511,10 @@ spec:
 
     - name: test-http-testelster-round2
       runAfter: [approval-second-test-round]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -366,6 +531,13 @@ spec:
 
     - name: test-slvredis-round2
       runAfter: [approval-second-test-round]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
+        - input: $(params.skipAutomatedTests)
+          operator: in
+          values: ["false"]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -382,6 +554,13 @@ spec:
 
     - name: test-ratelimit-slvredis-round2
       runAfter: [test-slvredis-round2]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
+        - input: $(params.skipAutomatedTests)
+          operator: in
+          values: ["false"]
       taskRef: { name: rate-limit-test }
       params:
         - name: endpointPath
@@ -403,6 +582,10 @@ spec:
         - test-http-testelster-round2
         - test-slvredis-round2
         - test-ratelimit-slvredis-round2
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
       taskRef:
         name: jira-add-comment-custom
       params:
@@ -503,6 +686,8 @@ spec:
           value: $(params.aroClusterName)
         - name: azureSecretName
           value: $(params.azureSecretName)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
       workspaces:
         - name: source
           workspace: source

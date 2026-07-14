@@ -25,6 +25,10 @@ spec:
       type: string
       description: "Name of the Secret containing kubeconfig for hub cluster (optional, uses in-cluster config if empty)"
       default: ""
+    - name: useWorkspaceKubeconfig
+      type: string
+      description: "Use kubeconfig from workspace instead of HCP extraction (for ARO/ROSA direct cluster access)"
+      default: "false"
   workspaces:
     - name: source
   steps:
@@ -39,12 +43,12 @@ spec:
         CLUSTER_NAME="$(params.hostedClusterName)"
         CLUSTER_NS="$(params.hostedClusterNamespace)"
         HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
+        USE_WORKSPACE_KC="$(params.useWorkspaceKubeconfig)"
 
         echo "=========================================="
         echo "OSSM3 Configure Service Mesh Task"
         echo "=========================================="
-        echo "Hosted Cluster: ${CLUSTER_NAME}"
-        echo "Cluster Namespace: ${CLUSTER_NS}"
+        echo "Cluster: ${CLUSTER_NAME}"
         echo "=========================================="
 
         # Install required tools
@@ -56,49 +60,63 @@ spec:
         rm -f /tmp/oc.tar.gz
         oc version --client
 
-        # Configure hub cluster kubeconfig if provided
-        if [[ -n "${HUB_KUBECONFIG_SECRET}" ]]; then
-          echo "🔐 Extracting hub cluster kubeconfig from secret: ${HUB_KUBECONFIG_SECRET}..."
-          HUB_KUBECONFIG="/tmp/hub-kubeconfig"
-          if kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.kubeconfig}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
-            echo "✅ Kubeconfig extracted (key: kubeconfig)"
-          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.config}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
-            echo "✅ Kubeconfig extracted (key: config)"
-          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.value}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
-            echo "✅ Kubeconfig extracted (key: value)"
-          else
-            echo "❌ Failed to extract kubeconfig from secret '${HUB_KUBECONFIG_SECRET}'"
-            echo "   Secret should have kubeconfig data under key 'kubeconfig', 'config', or 'value'"
+        if [[ "${USE_WORKSPACE_KC}" == "true" ]]; then
+          # Direct cluster access mode (ARO/ROSA)
+          echo "📋 Using kubeconfig from workspace (direct cluster access mode)"
+          if [[ ! -f "$(workspaces.source.path)/kubeconfig" ]]; then
+            echo "❌ useWorkspaceKubeconfig=true but no kubeconfig found in workspace"
             exit 1
           fi
-          chmod 600 "${HUB_KUBECONFIG}"
-          export KUBECONFIG="${HUB_KUBECONFIG}"
-          echo "✅ Using hub kubeconfig for cluster operations"
-          oc whoami
+          export KUBECONFIG="$(workspaces.source.path)/kubeconfig"
+          echo "🔍 Verifying access to cluster..."
+          oc get nodes
+          echo "✅ Successfully connected to cluster"
         else
-          echo "ℹ️  No hub kubeconfig secret provided, using in-cluster service account"
+          # HCP mode: extract kubeconfig from hosted cluster Secret via hub
+          # Configure hub cluster kubeconfig if provided
+          if [[ -n "${HUB_KUBECONFIG_SECRET}" ]]; then
+            echo "🔐 Extracting hub cluster kubeconfig from secret: ${HUB_KUBECONFIG_SECRET}..."
+            HUB_KUBECONFIG="/tmp/hub-kubeconfig"
+            if kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.kubeconfig}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+              echo "✅ Kubeconfig extracted (key: kubeconfig)"
+            elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.config}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+              echo "✅ Kubeconfig extracted (key: config)"
+            elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.value}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+              echo "✅ Kubeconfig extracted (key: value)"
+            else
+              echo "❌ Failed to extract kubeconfig from secret '${HUB_KUBECONFIG_SECRET}'"
+              echo "   Secret should have kubeconfig data under key 'kubeconfig', 'config', or 'value'"
+              exit 1
+            fi
+            chmod 600 "${HUB_KUBECONFIG}"
+            export KUBECONFIG="${HUB_KUBECONFIG}"
+            echo "✅ Using hub kubeconfig for cluster operations"
+            oc whoami
+          else
+            echo "ℹ️  No hub kubeconfig secret provided, using in-cluster service account"
+          fi
+
+          # Extract kubeconfig for hosted cluster
+          echo "🔐 Extracting kubeconfig for hosted cluster..."
+          KUBECONFIG_SECRET="${CLUSTER_NAME}-admin-kubeconfig"
+
+          if ! oc get secret "${KUBECONFIG_SECRET}" -n "${CLUSTER_NS}" > /dev/null 2>&1; then
+            echo "❌ Kubeconfig secret '${KUBECONFIG_SECRET}' not found in namespace '${CLUSTER_NS}'"
+            exit 1
+          fi
+
+          HOSTED_KUBECONFIG="/tmp/hosted-kubeconfig"
+          oc get secret "${KUBECONFIG_SECRET}" -n "${CLUSTER_NS}" \
+            -o jsonpath='{.data.kubeconfig}' | base64 -d > "${HOSTED_KUBECONFIG}"
+          chmod 600 "${HOSTED_KUBECONFIG}"
+
+          export KUBECONFIG="${HOSTED_KUBECONFIG}"
+          [[ -f "$(workspaces.source.path)/.kubeconfig-rewrite.sh" ]] && source "$(workspaces.source.path)/.kubeconfig-rewrite.sh" "${HOSTED_KUBECONFIG}"
+
+          echo "🔍 Verifying access to hosted cluster..."
+          oc get nodes
+          echo "✅ Successfully connected to hosted cluster"
         fi
-
-        # Extract kubeconfig for hosted cluster
-        echo "🔐 Extracting kubeconfig for hosted cluster..."
-        KUBECONFIG_SECRET="${CLUSTER_NAME}-admin-kubeconfig"
-
-        if ! oc get secret "${KUBECONFIG_SECRET}" -n "${CLUSTER_NS}" > /dev/null 2>&1; then
-          echo "❌ Kubeconfig secret '${KUBECONFIG_SECRET}' not found in namespace '${CLUSTER_NS}'"
-          exit 1
-        fi
-
-        HOSTED_KUBECONFIG="/tmp/hosted-kubeconfig"
-        oc get secret "${KUBECONFIG_SECRET}" -n "${CLUSTER_NS}" \
-          -o jsonpath='{.data.kubeconfig}' | base64 -d > "${HOSTED_KUBECONFIG}"
-        chmod 600 "${HOSTED_KUBECONFIG}"
-
-        export KUBECONFIG="${HOSTED_KUBECONFIG}"
-        [[ -f "$(workspaces.source.path)/.kubeconfig-rewrite.sh" ]] && source "$(workspaces.source.path)/.kubeconfig-rewrite.sh" "${HOSTED_KUBECONFIG}"
-
-        echo "🔍 Verifying access to hosted cluster..."
-        oc get nodes
-        echo "✅ Successfully connected to hosted cluster"
 
         # --- Wait for OSSM3 CRDs to be available ---
         echo ""

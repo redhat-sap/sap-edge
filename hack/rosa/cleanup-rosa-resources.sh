@@ -3,8 +3,8 @@
 
 set -e
 
-CLUSTER_NAME="sap-eic-rosa"
-AWS_REGION="eu-north-1"
+CLUSTER_NAME="${CLUSTER_NAME:-sap-eic-rosa}"
+AWS_REGION="${AWS_REGION:-eu-north-1}"
 
 echo "🗑️  Cleaning up ROSA resources..."
 echo "=================================="
@@ -32,33 +32,128 @@ VPC_ID=$(aws ec2 describe-vpcs \
 if [[ -n "${VPC_ID}" && "${VPC_ID}" != "None" ]]; then
   echo "Found VPC: ${VPC_ID}"
   echo "⚠️  Deleting VPC and associated resources..."
-  
+
+  # Delete Load Balancers (ELB/ALB) — these create ENIs in subnets
+  echo "   Deleting load balancers..."
+  aws elbv2 describe-load-balancers --region "${AWS_REGION}" \
+    --query "LoadBalancers[?VpcId=='${VPC_ID}'].LoadBalancerArn" --output text 2>/dev/null | \
+    xargs -r -n1 aws elbv2 delete-load-balancer --region "${AWS_REGION}" --load-balancer-arn || true
+  aws elb describe-load-balancers --region "${AWS_REGION}" \
+    --query "LoadBalancerDescriptions[?VPCId=='${VPC_ID}'].LoadBalancerName" --output text 2>/dev/null | \
+    xargs -r -n1 aws elb delete-load-balancer --region "${AWS_REGION}" --load-balancer-name || true
+
   # Delete NAT Gateways
-  aws ec2 describe-nat-gateways --region "${AWS_REGION}" --filter "Name=vpc-id,Values=${VPC_ID}" \
-    --query "NatGateways[*].NatGatewayId" --output text | xargs -r -n1 aws ec2 delete-nat-gateway --region "${AWS_REGION}" --nat-gateway-id || true
-  
+  echo "   Deleting NAT gateways..."
+  NAT_GW_IDS=$(aws ec2 describe-nat-gateways --region "${AWS_REGION}" \
+    --filter "Name=vpc-id,Values=${VPC_ID}" "Name=state,Values=available,pending" \
+    --query "NatGateways[*].NatGatewayId" --output text 2>/dev/null || echo "")
+  for ngw in ${NAT_GW_IDS}; do
+    aws ec2 delete-nat-gateway --region "${AWS_REGION}" --nat-gateway-id "${ngw}" || true
+  done
+
+  # Wait for NAT Gateways to reach 'deleted' state before touching subnets
+  if [[ -n "${NAT_GW_IDS}" ]]; then
+    echo "   Waiting for NAT gateways to delete (up to 3 minutes)..."
+    for _ in $(seq 1 18); do
+      PENDING=$(aws ec2 describe-nat-gateways --region "${AWS_REGION}" \
+        --filter "Name=vpc-id,Values=${VPC_ID}" "Name=state,Values=available,pending,deleting" \
+        --query "NatGateways | length(@)" --output text 2>/dev/null || echo "0")
+      [[ "${PENDING}" == "0" ]] && break
+      sleep 10
+    done
+  fi
+
+  # Release Elastic IPs associated with the VPC (freed after NAT gateways are gone)
+  echo "   Releasing Elastic IPs..."
+  aws ec2 describe-addresses --region "${AWS_REGION}" \
+    --filters "Name=domain,Values=vpc" \
+    --query "Addresses[?AssociationId==null && AllocationId!=null].AllocationId" --output text 2>/dev/null | \
+    xargs -r -n1 aws ec2 release-address --region "${AWS_REGION}" --allocation-id || true
+
+  # Delete VPC Endpoints
+  echo "   Deleting VPC endpoints..."
+  aws ec2 describe-vpc-endpoints --region "${AWS_REGION}" \
+    --filters "Name=vpc-id,Values=${VPC_ID}" \
+    --query "VpcEndpoints[*].VpcEndpointId" --output text 2>/dev/null | \
+    xargs -r -n1 aws ec2 delete-vpc-endpoints --region "${AWS_REGION}" --vpc-endpoint-ids || true
+
+  # Delete Network Interfaces (ENIs) — the main blocker for subnet deletion
+  echo "   Deleting network interfaces..."
+  ENI_IDS=$(aws ec2 describe-network-interfaces --region "${AWS_REGION}" \
+    --filters "Name=vpc-id,Values=${VPC_ID}" \
+    --query "NetworkInterfaces[*].NetworkInterfaceId" --output text 2>/dev/null || echo "")
+  for eni in ${ENI_IDS}; do
+    # Detach first if attached
+    ATTACH_ID=$(aws ec2 describe-network-interfaces --region "${AWS_REGION}" \
+      --network-interface-ids "${eni}" \
+      --query "NetworkInterfaces[0].Attachment.AttachmentId" --output text 2>/dev/null || echo "None")
+    if [[ -n "${ATTACH_ID}" && "${ATTACH_ID}" != "None" ]]; then
+      aws ec2 detach-network-interface --region "${AWS_REGION}" --attachment-id "${ATTACH_ID}" --force || true
+      sleep 2
+    fi
+    aws ec2 delete-network-interface --region "${AWS_REGION}" --network-interface-id "${eni}" || true
+  done
+
   # Delete Internet Gateways
-  aws ec2 describe-internet-gateways --region "${AWS_REGION}" --filters "Name=attachment.vpc-id,Values=${VPC_ID}" \
-    --query "InternetGateways[*].InternetGatewayId" --output text | xargs -r -n1 -I {} aws ec2 detach-internet-gateway --region "${AWS_REGION}" --internet-gateway-id {} --vpc-id "${VPC_ID}" || true
-  aws ec2 describe-internet-gateways --region "${AWS_REGION}" --filters "Name=attachment.vpc-id,Values=${VPC_ID}" \
-    --query "InternetGateways[*].InternetGatewayId" --output text | xargs -r -n1 aws ec2 delete-internet-gateway --region "${AWS_REGION}" --internet-gateway-id || true
-  
+  echo "   Deleting internet gateways..."
+  IGW_IDS=$(aws ec2 describe-internet-gateways --region "${AWS_REGION}" \
+    --filters "Name=attachment.vpc-id,Values=${VPC_ID}" \
+    --query "InternetGateways[*].InternetGatewayId" --output text 2>/dev/null || echo "")
+  for igw in ${IGW_IDS}; do
+    aws ec2 detach-internet-gateway --region "${AWS_REGION}" --internet-gateway-id "${igw}" --vpc-id "${VPC_ID}" || true
+    aws ec2 delete-internet-gateway --region "${AWS_REGION}" --internet-gateway-id "${igw}" || true
+  done
+
+  # Disassociate and delete route table subnet associations, then delete route tables
+  echo "   Deleting route tables..."
+  RT_IDS=$(aws ec2 describe-route-tables --region "${AWS_REGION}" \
+    --filters "Name=vpc-id,Values=${VPC_ID}" \
+    --query "RouteTables[?Associations[0].Main != \`true\`].RouteTableId" --output text 2>/dev/null || echo "")
+  for rt in ${RT_IDS}; do
+    # Disassociate non-main associations
+    ASSOC_IDS=$(aws ec2 describe-route-tables --region "${AWS_REGION}" \
+      --route-table-ids "${rt}" \
+      --query "RouteTables[0].Associations[?Main != \`true\`].RouteTableAssociationId" --output text 2>/dev/null || echo "")
+    for assoc in ${ASSOC_IDS}; do
+      aws ec2 disassociate-route-table --region "${AWS_REGION}" --association-id "${assoc}" || true
+    done
+    aws ec2 delete-route-table --region "${AWS_REGION}" --route-table-id "${rt}" || true
+  done
+
   # Delete Subnets
+  echo "   Deleting subnets..."
   aws ec2 describe-subnets --region "${AWS_REGION}" --filters "Name=vpc-id,Values=${VPC_ID}" \
     --query "Subnets[*].SubnetId" --output text | xargs -r -n1 aws ec2 delete-subnet --region "${AWS_REGION}" --subnet-id || true
-  
-  # Delete Route Tables (except main)
-  aws ec2 describe-route-tables --region "${AWS_REGION}" --filters "Name=vpc-id,Values=${VPC_ID}" \
-    --query "RouteTables[?Associations[0].Main != \`true\`].RouteTableId" --output text | xargs -r -n1 aws ec2 delete-route-table --region "${AWS_REGION}" --route-table-id || true
-  
-  # Delete Security Groups (except default)
-  aws ec2 describe-security-groups --region "${AWS_REGION}" --filters "Name=vpc-id,Values=${VPC_ID}" \
-    --query "SecurityGroups[?GroupName != 'default'].GroupId" --output text | xargs -r -n1 aws ec2 delete-security-group --region "${AWS_REGION}" --group-id || true
-  
+
+  # Revoke security group ingress/egress rules that reference other SGs, then delete
+  echo "   Deleting security groups..."
+  SG_IDS=$(aws ec2 describe-security-groups --region "${AWS_REGION}" \
+    --filters "Name=vpc-id,Values=${VPC_ID}" \
+    --query "SecurityGroups[?GroupName != 'default'].GroupId" --output text 2>/dev/null || echo "")
+  for sg in ${SG_IDS}; do
+    # Revoke all ingress rules
+    INGRESS_RULES=$(aws ec2 describe-security-groups --region "${AWS_REGION}" --group-ids "${sg}" \
+      --query "SecurityGroups[0].IpPermissions" --output json 2>/dev/null || echo "[]")
+    if echo "${INGRESS_RULES}" | jq -e '. | length > 0' >/dev/null 2>&1; then
+      aws ec2 revoke-security-group-ingress --region "${AWS_REGION}" --group-id "${sg}" \
+        --ip-permissions "${INGRESS_RULES}" || true
+    fi
+    # Revoke all egress rules
+    EGRESS_RULES=$(aws ec2 describe-security-groups --region "${AWS_REGION}" --group-ids "${sg}" \
+      --query "SecurityGroups[0].IpPermissionsEgress" --output json 2>/dev/null || echo "[]")
+    if echo "${EGRESS_RULES}" | jq -e '. | length > 0' >/dev/null 2>&1; then
+      aws ec2 revoke-security-group-egress --region "${AWS_REGION}" --group-id "${sg}" \
+        --ip-permissions "${EGRESS_RULES}" || true
+    fi
+  done
+  for sg in ${SG_IDS}; do
+    aws ec2 delete-security-group --region "${AWS_REGION}" --group-id "${sg}" || true
+  done
+
   # Delete VPC
   aws ec2 delete-vpc --region "${AWS_REGION}" --vpc-id "${VPC_ID}" || echo "⚠️  Could not delete VPC (may have dependencies)"
-  
-  echo "✅ VPC cleanup attempted"
+
+  echo "✅ VPC cleanup completed"
 else
   echo "ℹ️  No VPC found for cluster"
 fi

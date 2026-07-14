@@ -141,6 +141,8 @@ spec:
           elif [[ "$CLUSTER_STATUS" == "Succeeded" ]]; then
             echo "✅ Cluster already exists and is ready!"
             echo "ℹ️  Assuming all Azure services (PostgreSQL, Redis, Quay storage) were deployed with the cluster"
+            echo "🔄 Ensuring domain records exist for ARO..."
+            make domain-records
             echo "✅ Skipping deployment - cluster and services already exist!"
               exit 0
           elif [[ "$CLUSTER_STATUS" == "Creating" || "$CLUSTER_STATUS" == "Updating" ]]; then

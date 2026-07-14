@@ -16,6 +16,10 @@ spec:
       type: string
       description: "Name of the Kubernetes Secret containing Azure service principal credentials and ARO resource group"
       default: "azure-sp-secret"
+    - name: hubKubeconfigSecretName
+      type: string
+      description: "Name of the Secret containing kubeconfig for hub cluster"
+      default: ""
   workspaces:
     - name: source
   steps:
@@ -26,6 +30,8 @@ spec:
       env:
         - name: ARO_CLUSTER_NAME
           value: "$(params.aroClusterName)"
+        - name: HUB_KUBECONFIG_SECRET
+          value: "$(params.hubKubeconfigSecretName)"
       envFrom:
         - secretRef:
             name: $(params.azureSecretName)
@@ -33,6 +39,26 @@ spec:
         #!/usr/bin/env bash
         set -euo pipefail
         
+        # Configure hub cluster kubeconfig if provided
+        HUB_KUBECONFIG=""
+        if [[ -n "${HUB_KUBECONFIG_SECRET}" ]]; then
+          echo "🔐 Extracting hub cluster kubeconfig from secret: ${HUB_KUBECONFIG_SECRET}..."
+          HUB_KUBECONFIG="/tmp/hub-kubeconfig"
+          if kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.kubeconfig}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: kubeconfig)"
+          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.config}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: config)"
+          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.value}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: value)"
+          else
+            echo "⚠️ Failed to extract kubeconfig from secret '${HUB_KUBECONFIG_SECRET}', cleanup of hub artifacts may fail"
+            HUB_KUBECONFIG=""
+          fi
+          if [[ -n "${HUB_KUBECONFIG}" ]]; then
+            chmod 600 "${HUB_KUBECONFIG}"
+          fi
+        fi
+
         echo "📦 Installing required packages..."
         # Install make, libicu, and jq first (needed for makefile operations)
         dnf install -y make libicu jq
@@ -85,12 +111,16 @@ spec:
         # Clean up ARO-related resources only (keeping resource group)
         make aro-cleanup-all-services
         
-        # Clean up ConfigMap and credentials Secret from management cluster
+        # Clean up ConfigMap and credentials Secret from hub/management cluster
         echo "🧹 Cleaning up pipeline artifacts (ConfigMap and credentials Secret)..."
         CONFIGMAP_NAME="cluster-info-aro-${ARO_CLUSTER_NAME}"
         CREDS_SECRET_NAME="eic-credentials-aro-${ARO_CLUSTER_NAME}"
-        oc delete configmap "${CONFIGMAP_NAME}" --ignore-not-found=true && echo "   Deleted configmap: ${CONFIGMAP_NAME}" || true
-        oc delete secret "${CREDS_SECRET_NAME}" --ignore-not-found=true && echo "   Deleted secret: ${CREDS_SECRET_NAME}" || true
+        if [[ -n "${HUB_KUBECONFIG}" ]]; then
+          KUBECONFIG="${HUB_KUBECONFIG}" oc delete configmap "${CONFIGMAP_NAME}" --ignore-not-found=true && echo "   Deleted configmap: ${CONFIGMAP_NAME}" || true
+          KUBECONFIG="${HUB_KUBECONFIG}" oc delete secret "${CREDS_SECRET_NAME}" --ignore-not-found=true && echo "   Deleted secret: ${CREDS_SECRET_NAME}" || true
+        else
+          echo "⚠️ No hub kubeconfig available, skipping hub artifact cleanup"
+        fi
 
         echo "✅ ARO cluster teardown completed successfully!"
         echo "ℹ️ Resource group '$ARO_RESOURCE_GROUP' has been preserved"

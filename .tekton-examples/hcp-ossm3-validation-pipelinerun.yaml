@@ -48,7 +48,7 @@ spec:
     - name: hostedClusterNamespace
       value: "clusters"
     - name: releaseImage
-      value: "quay.io/openshift-release-dev/ocp-release:4.21.7-x86_64"
+      value: "quay.io/openshift-release-dev/ocp-release:4.22.5-x86_64"
     - name: nodePoolReplicas
       value: "3"
     - name: nodePoolCpuCores
@@ -65,7 +65,7 @@ spec:
     # The pipeline derives the kubeconfig secret as: {hubClusterName}-kubeconfig
     # Ensure a Secret named "{hubClusterName}-kubeconfig" exists with the hub's kubeconfig
     - name: hubClusterName
-      value: "eli"
+      value: "eic"
 
     # --- OSSM3 parameters ---
     - name: ossm3Channel
