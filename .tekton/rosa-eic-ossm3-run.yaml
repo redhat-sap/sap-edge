@@ -1,0 +1,86 @@
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: rosa-eic-full-test-pr{{ pull_request_number }}-
+  annotations:
+    pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
+    pipelinesascode.tekton.dev/on-target-branch: "[main]"
+    pipelinesascode.tekton.dev/task: "[./.tekton/tasks/git-clone.yaml, ./.tekton/tasks/ossm3-preflight-check-task.yaml, ./.tekton/tasks/ossm3-verify-operators-task.yaml, ./.tekton/tasks/ossm3-download-and-apply-rbac-task.yaml, ./.tekton/tasks/ossm3-prepare-namespaces-task.yaml, ./.tekton/tasks/ossm3-configure-mesh-task.yaml, ./.tekton/tasks/ossm3-generate-sa-based-kubeconfig-task.yaml]"
+    pipelinesascode.tekton.dev/max-keep-runs: "1"
+    pipelinesascode.tekton.dev/cancel-in-progress: "true"
+spec:
+  pipelineRef:
+    name: rosa-eic-full-test-pipeline
+  timeouts:
+    pipeline: "336h"      # Total pipeline timeout (14 days)
+    tasks: "335h"         # Individual task timeout (tasks + finally must be <= pipeline)
+    finally: "60m"        # Finally tasks timeout
+  params:
+    - name: repoUrl
+      value: "{{ repo_url }}"
+    - name: revision
+      value: "{{ revision }}"
+    - name: pullRequestNumber
+      value: "{{ pull_request_number }}"
+    - name: clusterName
+      value: "sap-elm-pr{{ pull_request_number }}"
+    - name: awsRegion
+      value: "eu-north-1"
+    - name: rosaVersion
+      value: "4.21.14"
+    - name: awsSecretName
+      value: "aws-mj"
+    - name: redhatTokenSecretName
+      value: "mj-rh-token"
+    - name: eicAuthSecretName
+      value: "eic-auth-secret"
+    - name: postgresAdminPasswordSecretName
+      value: "rosa-postgres-admin-password"
+    - name: quayAdminPasswordSecretName
+      value: "quay-admin-secret"
+    - name: deployPostgres
+      value: "false"
+    - name: deployRedis
+      value: "false"
+    - name: deployQuay
+      value: "false"
+    - name: publicDNS
+      value: "false"
+    - name: skipEicValidation
+      value: "false"
+    - name: skipAutomatedTests
+      value: "false"
+    - name: jiraSecretName
+      value: "jira-secret-mj"
+    - name: jiraIssueKey
+      value: "SAPOCP-2107"
+    - name: hubClusterName
+      value: "eic"
+    # --- OSSM3 parameters ---
+    - name: ossm3Channel
+      value: "stable-3.3"
+    - name: obcName
+      value: "sap-eic-restricted-cluster-config-resources"
+    - name: s3Prefix
+      value: "restricted-resources/"
+    - name: terraformStateS3Bucket
+      value: "eic-test-rosa-terraform-state"
+    - name: terraformStateS3Key
+      value: "rosa/terraform.tfstate"
+    - name: terraformStateDynamoDBTable
+      value: "eic-test-rosa-terraform-state-lock"
+  workspaces:
+    - name: source
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteMany]
+          storageClassName: ocs-storagecluster-cephfs
+          resources:
+            requests:
+              storage: 2Gi
