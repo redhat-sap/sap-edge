@@ -76,18 +76,15 @@ spec:
           "Edge LM validation completed"
         )
         
-        # Check if the last comment contains any success marker
+        # Check if the last comment is an exact duplicate of the new comment
+        # (only skip if the full text matches, not just the success marker)
         IS_DUPLICATE=false
-        for MARKER in "${SUCCESS_MARKERS[@]}"; do
-          if echo "$LAST_COMMENT" | grep -q "$MARKER"; then
-            # Also check if the new comment contains the same marker
-            if echo "$COMMENT_TEXT" | grep -q "$MARKER"; then
-              echo "⚠️  Last comment already contains success marker: '$MARKER'"
-              IS_DUPLICATE=true
-              break
-            fi
-          fi
-        done
+        LAST_COMMENT_NORMALIZED=$(echo "$LAST_COMMENT" | tr -s '[:space:]')
+        COMMENT_TEXT_NORMALIZED=$(echo "$COMMENT_TEXT" | tr -s '[:space:]')
+        if [[ "$LAST_COMMENT_NORMALIZED" == "$COMMENT_TEXT_NORMALIZED" ]]; then
+          echo "⚠️  Last comment is an exact duplicate of the new comment"
+          IS_DUPLICATE=true
+        fi
         
         if [ "$IS_DUPLICATE" = true ]; then
           echo "⏭️  Skipping duplicate success message to Jira issue $(params.jiraIssueKey)"

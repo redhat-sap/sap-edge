@@ -310,11 +310,11 @@ spec:
         DEPLOY_REDIS_TF=$(echo "${DEPLOY_REDIS}" | tr '[:upper:]' '[:lower:]')
         DEPLOY_QUAY_TF=$(echo "${DEPLOY_QUAY}" | tr '[:upper:]' '[:lower:]')
         
-        # Auto-select instance type: Quay needs m5.2xlarge, otherwise m5.xlarge is enough
+        # Use m5.2xlarge as baseline; Quay needs m5.4xlarge
         if [[ "${DEPLOY_QUAY_TF}" == "true" ]]; then
-          COMPUTE_MACHINE_TYPE="m5.2xlarge"
+          COMPUTE_MACHINE_TYPE="m5.4xlarge"
         else
-          COMPUTE_MACHINE_TYPE="m5.xlarge"
+          COMPUTE_MACHINE_TYPE="m5.2xlarge"
         fi
 
         echo "📝 Boolean parameter conversion:"
