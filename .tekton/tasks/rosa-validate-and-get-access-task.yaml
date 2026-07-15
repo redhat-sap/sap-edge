@@ -239,26 +239,25 @@ spec:
 
         # Attempt to login with retry logic (ROSA HCP credentials take time to propagate)
         LOGIN_SUCCESS=false
-        MAX_ATTEMPTS=6
-        
+        MAX_ATTEMPTS=12
+
         if [[ -n "${ADMIN_PASSWORD}" ]] && [[ "${ADMIN_PASSWORD}" != "null" ]] && [[ "${ADMIN_PASSWORD}" != "empty" ]]; then
           echo "🔐 Attempting login with admin credentials (with retry logic for ROSA HCP)..."
           echo "Admin Password: ${ADMIN_PASSWORD}"
-          
+
           for attempt in $(seq 1 $MAX_ATTEMPTS); do
             echo ""
             echo "🔐 Login attempt $attempt/$MAX_ATTEMPTS..."
-            
+
             if oc login "${API_URL}" -u "${ADMIN_USERNAME}" -p "${ADMIN_PASSWORD}" --insecure-skip-tls-verify=true; then
               echo "✅ Successfully logged in on attempt $attempt!"
               LOGIN_SUCCESS=true
               break
             else
               echo "❌ Login failed on attempt $attempt"
-              
+
               if [[ $attempt -lt $MAX_ATTEMPTS ]]; then
-                # Exponential backoff: 15s, 30s, 45s, 60s, 75s
-                WAIT_TIME=$((attempt * 15))
+                WAIT_TIME=60
                 echo "⏳ Credentials may still be propagating. Waiting ${WAIT_TIME} seconds before retry..."
                 sleep $WAIT_TIME
               else
