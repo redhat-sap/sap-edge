@@ -33,7 +33,7 @@ spec:
     - name: awsRegion
       value: "eu-north-1"
     - name: rosaVersion
-      value: "4.21.14"
+      value: "4.22.3"
     - name: awsSecretName
       value: "aws-mj"
     - name: redhatTokenSecretName
@@ -53,7 +53,7 @@ spec:
     - name: publicDNS
       value: "false"
     - name: skipEicValidation
-      value: "true"
+      value: "false"
     - name: skipAutomatedTests
       value: "false"
     - name: jiraSecretName
