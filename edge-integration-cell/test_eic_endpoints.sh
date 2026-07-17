@@ -20,6 +20,8 @@ Options:
   -k, --auth-key <key>        The basic authentication key. (Env: AUTH_KEY)
   -i, --ingress-ip <ip>       The Ingress IP for internal resolution mode. (Env: INGRESS_IP)
   -p, --public-dns            Use public DNS for resolution (disables --resolve).
+  -r, --retries <count>       Number of retry attempts (default: 5).
+  -d, --retry-delay <secs>    Seconds between retries (default: 15).
   -h, --help                  Show this help message.
 EOF
   exit 1
@@ -31,6 +33,8 @@ AUTH_KEY="${AUTH_KEY:-}"
 INGRESS_IP="${INGRESS_IP:-}"
 USE_PUBLIC_DNS=false
 ENDPOINT_PATH=""
+MAX_RETRIES=5
+RETRY_DELAY=15
 
 # Parse flags first, then grab the final argument as the endpoint path
 while [[ $# -gt 0 ]]; do
@@ -39,6 +43,8 @@ while [[ $# -gt 0 ]]; do
     -k|--auth-key) AUTH_KEY="$2"; shift 2 ;;
     -i|--ingress-ip) INGRESS_IP="$2"; shift 2 ;;
     -p|--public-dns) USE_PUBLIC_DNS=true; shift 1 ;;
+    -r|--retries) MAX_RETRIES="$2"; shift 2 ;;
+    -d|--retry-delay) RETRY_DELAY="$2"; shift 2 ;;
     -h|--help) usage ;;
     # If it's not a flag, it must be the endpoint path
     -*) echo "❌ Unknown option: $1" >&2; usage ;;
@@ -75,15 +81,23 @@ else
 fi
 echo "--------------------------------------------------"
 
-
-echo "======== Sending New Request to https://${HOST}${ENDPOINT_PATH} ========"
-if curl --fail --insecure --show-error --request GET \
-          -H "Authorization: Basic ${AUTH_KEY}" \
-          "${CURL_OPTS[@]}" \
-          --url "https://${HOST}${ENDPOINT_PATH}"; then
-  echo "✅ Endpoint succeeded: ${ENDPOINT_PATH}"
-  exit 0
-else
-  echo "❌ Endpoint failed: ${ENDPOINT_PATH}"
-  exit 1
-fi
+for attempt in $(seq 1 $MAX_RETRIES); do
+  echo "======== Attempt $attempt/$MAX_RETRIES: https://${HOST}${ENDPOINT_PATH} ========"
+  if curl --fail --insecure --show-error --request GET \
+            --connect-timeout 30 \
+            --max-time 60 \
+            -H "Authorization: Basic ${AUTH_KEY}" \
+            "${CURL_OPTS[@]}" \
+            --url "https://${HOST}${ENDPOINT_PATH}"; then
+    echo ""
+    echo "✅ Endpoint succeeded: ${ENDPOINT_PATH}"
+    exit 0
+  fi
+  if [[ $attempt -lt $MAX_RETRIES ]]; then
+    echo ""
+    echo "⚠️ Attempt $attempt failed, retrying in ${RETRY_DELAY}s..."
+    sleep "$RETRY_DELAY"
+  fi
+done
+echo "❌ Endpoint failed after $MAX_RETRIES attempts: ${ENDPOINT_PATH}"
+exit 1
