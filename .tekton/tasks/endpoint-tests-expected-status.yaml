@@ -55,8 +55,8 @@ spec:
         ENDPOINT_PATH="$(params.endpointPath)"
         HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
         START_DELAY="$(params.startDelay)"
-        MAX_RETRIES=10
-        RETRY_DELAY=20
+        MAX_RETRIES=15
+        RETRY_DELAY=30
 
         if [[ "${START_DELAY}" -gt 0 ]] 2>/dev/null; then
           echo "⏳ Stagger delay: waiting ${START_DELAY}s..."

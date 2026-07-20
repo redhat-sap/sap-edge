@@ -33,8 +33,8 @@ AUTH_KEY="${AUTH_KEY:-}"
 INGRESS_IP="${INGRESS_IP:-}"
 USE_PUBLIC_DNS=false
 ENDPOINT_PATH=""
-MAX_RETRIES=10
-RETRY_DELAY=20
+MAX_RETRIES=15
+RETRY_DELAY=30
 
 # Parse flags first, then grab the final argument as the endpoint path
 while [[ $# -gt 0 ]]; do
