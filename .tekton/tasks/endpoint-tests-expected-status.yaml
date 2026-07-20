@@ -55,13 +55,15 @@ spec:
         ENDPOINT_PATH="$(params.endpointPath)"
         HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
         START_DELAY="$(params.startDelay)"
+        MAX_RETRIES=15
+        RETRY_DELAY=30
 
         if [[ "${START_DELAY}" -gt 0 ]] 2>/dev/null; then
           echo "⏳ Stagger delay: waiting ${START_DELAY}s..."
           sleep "${START_DELAY}"
         fi
 
-        CURL_OPTS=("-k" "-s" "-o" "/dev/null" "-w" "%{http_code}" "--connect-timeout" "10" "--max-time" "30")
+        CURL_OPTS=("-k" "-s" "-o" "/dev/null" "-w" "%{http_code}" "--connect-timeout" "30" "--max-time" "60")
 
         if [[ "$(params.publicDNS)" == "true" ]]; then
           echo "Resolution: Public DNS"
@@ -110,39 +112,51 @@ spec:
             fi
           fi
 
-          POD_NAME="curl-test-$(date +%s)-${RANDOM}"
-          echo "🚀 Running curl via remote pod ${POD_NAME}..."
-          OC_OUTPUT=$(oc run "${POD_NAME}" -n default --rm -i --restart=Never \
-            --image=curlimages/curl \
-            -- curl -k -s -o /dev/null -w "%{http_code}" \
-            --connect-timeout 10 --max-time 30 \
-            -H "Authorization: Basic ${AUTH_KEY}" \
-            ${RESOLVE_OPT} \
-            "https://${HOST}${ENDPOINT_PATH}" 2>&1) || true
-          echo "📋 Remote pod finished"
-          echo "📋 Raw output: ${OC_OUTPUT}"
+          for attempt in $(seq 1 $MAX_RETRIES); do
+            POD_NAME="curl-test-$(date +%s)-${RANDOM}"
+            echo "======== Attempt ${attempt}/${MAX_RETRIES} via remote pod ========"
+            OC_OUTPUT=$(oc run "${POD_NAME}" -n default --rm -i --restart=Never \
+              --image=curlimages/curl \
+              -- curl -k -s -o /dev/null -w "%{http_code}" \
+              --connect-timeout 30 --max-time 60 \
+              -H "Authorization: Basic ${AUTH_KEY}" \
+              ${RESOLVE_OPT} \
+              "https://${HOST}${ENDPOINT_PATH}" 2>&1) || true
 
-          # Extract HTTP status: try exact 3-digit line first, then leading 3 digits
-          ACTUAL_STATUS=$(echo "${OC_OUTPUT}" | grep -xoE '[0-9]{3}' | tail -1 || true)
-          if [[ -z "${ACTUAL_STATUS}" ]]; then
-            ACTUAL_STATUS=$(echo "${OC_OUTPUT}" | grep -oE '^[0-9]{3}' | tail -1 || true)
-          fi
-          if [[ -z "${ACTUAL_STATUS}" ]]; then
-            echo "❌ Failed to get HTTP status from remote pod"
-            exit 1
-          fi
+            ACTUAL_STATUS=$(echo "${OC_OUTPUT}" | grep -xoE '[0-9]{3}' | tail -1 || true)
+            if [[ -z "${ACTUAL_STATUS}" ]]; then
+              ACTUAL_STATUS=$(echo "${OC_OUTPUT}" | grep -oE '^[0-9]{3}' | tail -1 || true)
+            fi
+
+            echo "Actual HTTP status: ${ACTUAL_STATUS:-none}"
+            if [[ "${ACTUAL_STATUS}" == "${EXPECTED_STATUS}" ]]; then
+              echo "✅ Endpoint returned expected status ${EXPECTED_STATUS}: ${ENDPOINT_PATH}"
+              exit 0
+            fi
+            if [[ $attempt -lt $MAX_RETRIES ]]; then
+              echo "⚠️ Attempt ${attempt} failed (got ${ACTUAL_STATUS:-none}, expected ${EXPECTED_STATUS}), retrying in ${RETRY_DELAY}s..."
+              sleep "${RETRY_DELAY}"
+            fi
+          done
+          echo "❌ Endpoint returned ${ACTUAL_STATUS:-none}, expected ${EXPECTED_STATUS} after ${MAX_RETRIES} attempts: ${ENDPOINT_PATH}"
+          exit 1
         else
-          ACTUAL_STATUS=$(curl "${CURL_OPTS[@]}" \
-            -H "Authorization: Basic ${AUTH_KEY}" \
-            --url "https://${HOST}${ENDPOINT_PATH}")
-        fi
+          for attempt in $(seq 1 $MAX_RETRIES); do
+            echo "======== Attempt ${attempt}/${MAX_RETRIES}: https://${HOST}${ENDPOINT_PATH} ========"
+            ACTUAL_STATUS=$(curl "${CURL_OPTS[@]}" \
+              -H "Authorization: Basic ${AUTH_KEY}" \
+              --url "https://${HOST}${ENDPOINT_PATH}" || true)
 
-        echo "Actual HTTP status: ${ACTUAL_STATUS}"
-
-        if [[ "${ACTUAL_STATUS}" == "${EXPECTED_STATUS}" ]]; then
-          echo "✅ Endpoint returned expected status ${EXPECTED_STATUS}: ${ENDPOINT_PATH}"
-          exit 0
-        else
-          echo "❌ Endpoint returned ${ACTUAL_STATUS}, expected ${EXPECTED_STATUS}: ${ENDPOINT_PATH}"
+            echo "Actual HTTP status: ${ACTUAL_STATUS:-none}"
+            if [[ "${ACTUAL_STATUS}" == "${EXPECTED_STATUS}" ]]; then
+              echo "✅ Endpoint returned expected status ${EXPECTED_STATUS}: ${ENDPOINT_PATH}"
+              exit 0
+            fi
+            if [[ $attempt -lt $MAX_RETRIES ]]; then
+              echo "⚠️ Attempt ${attempt} failed (got ${ACTUAL_STATUS:-none}, expected ${EXPECTED_STATUS}), retrying in ${RETRY_DELAY}s..."
+              sleep "${RETRY_DELAY}"
+            fi
+          done
+          echo "❌ Endpoint returned ${ACTUAL_STATUS:-none}, expected ${EXPECTED_STATUS} after ${MAX_RETRIES} attempts: ${ENDPOINT_PATH}"
           exit 1
         fi

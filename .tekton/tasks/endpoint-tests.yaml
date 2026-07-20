@@ -47,6 +47,8 @@ spec:
         ENDPOINT_PATH="$(params.endpointPath)"
         HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
         START_DELAY="$(params.startDelay)"
+        MAX_RETRIES=15
+        RETRY_DELAY=30
 
         if [[ "${START_DELAY}" -gt 0 ]] 2>/dev/null; then
           echo "⏳ Stagger delay: waiting ${START_DELAY}s..."
@@ -89,20 +91,30 @@ spec:
             fi
           fi
 
-          POD_NAME="curl-test-$(date +%s)-${RANDOM}"
-          echo "======== Sending request to https://${HOST}${ENDPOINT_PATH} via remote pod ========"
-          RESULT=$(oc run "${POD_NAME}" -n default --rm -i --restart=Never \
-            --image=curlimages/curl \
-            -- curl --fail -k -s --show-error --request GET \
-            -H "Authorization: Basic ${AUTH_KEY}" \
-            ${RESOLVE_OPT} \
-            "https://${HOST}${ENDPOINT_PATH}" 2>&1) || {
-            echo "❌ Endpoint failed: ${ENDPOINT_PATH}"
-            echo "${RESULT}"
-            exit 1
-          }
+          for attempt in $(seq 1 $MAX_RETRIES); do
+            POD_NAME="curl-test-$(date +%s)-${RANDOM}"
+            echo "======== Attempt ${attempt}/${MAX_RETRIES}: https://${HOST}${ENDPOINT_PATH} via remote pod ========"
+            RESULT=$(oc run "${POD_NAME}" -n default --rm -i --restart=Never \
+              --image=curlimages/curl \
+              -- curl --fail -k -s --show-error --request GET \
+              --connect-timeout 30 \
+              --max-time 60 \
+              -H "Authorization: Basic ${AUTH_KEY}" \
+              ${RESOLVE_OPT} \
+              "https://${HOST}${ENDPOINT_PATH}" 2>&1) && {
+              echo "${RESULT}"
+              echo "✅ Endpoint succeeded: ${ENDPOINT_PATH}"
+              exit 0
+            }
+            if [[ $attempt -lt $MAX_RETRIES ]]; then
+              echo "⚠️ Attempt ${attempt} failed, retrying in ${RETRY_DELAY}s..."
+              echo "${RESULT}"
+              sleep "${RETRY_DELAY}"
+            fi
+          done
+          echo "❌ Endpoint failed after ${MAX_RETRIES} attempts: ${ENDPOINT_PATH}"
           echo "${RESULT}"
-          echo "✅ Endpoint succeeded: ${ENDPOINT_PATH}"
+          exit 1
         else
           TEST_SCRIPT="./edge-integration-cell/test_eic_endpoints.sh"
 
