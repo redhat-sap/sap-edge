@@ -20,8 +20,8 @@ Options:
   -k, --auth-key <key>        The basic authentication key. (Env: AUTH_KEY)
   -i, --ingress-ip <ip>       The Ingress IP for internal resolution mode. (Env: INGRESS_IP)
   -p, --public-dns            Use public DNS for resolution (disables --resolve).
-  -r, --retries <count>       Number of retry attempts (default: 5).
-  -d, --retry-delay <secs>    Seconds between retries (default: 15).
+  -r, --retries <count>       Number of retry attempts (default: 10).
+  -d, --retry-delay <secs>    Seconds between retries (default: 20).
   -h, --help                  Show this help message.
 EOF
   exit 1
@@ -33,8 +33,8 @@ AUTH_KEY="${AUTH_KEY:-}"
 INGRESS_IP="${INGRESS_IP:-}"
 USE_PUBLIC_DNS=false
 ENDPOINT_PATH=""
-MAX_RETRIES=5
-RETRY_DELAY=15
+MAX_RETRIES=10
+RETRY_DELAY=20
 
 # Parse flags first, then grab the final argument as the endpoint path
 while [[ $# -gt 0 ]]; do
