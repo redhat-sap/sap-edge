@@ -120,7 +120,7 @@ spec:
 
         wait_for_version() {
           local version_prefix=$1
-          echo "⏳ Waiting for ${version_prefix}.x updates to populate..."
+          echo "⏳ Waiting for ${version_prefix}.x updates to populate..." >&2
           local start_time elapsed elapsed_min elapsed_sec found_version
           start_time=$(date +%s)
           local max_wait=1800
@@ -131,13 +131,13 @@ spec:
             elapsed_sec=$(( elapsed % 60 ))
 
             if [[ ${elapsed} -ge ${max_wait} ]]; then
-              echo ""
-              echo "❌ Timeout waiting for ${version_prefix}.x updates to appear after ${elapsed_min}m"
-              echo "Available updates:"
-              oc get clusterversion version -o jsonpath='{.status.availableUpdates[*].version}' | tr ' ' '\n' | sort -V
-              echo ""
-              echo "Conditional updates:"
-              oc get clusterversion version -o json | jq -r '.status.conditionalUpdates[]? | "\(.release.version) — \(.conditions[0].message // "no message")"'
+              echo "" >&2
+              echo "❌ Timeout waiting for ${version_prefix}.x updates to appear after ${elapsed_min}m" >&2
+              echo "Available updates:" >&2
+              oc get clusterversion version -o jsonpath='{.status.availableUpdates[*].version}' | tr ' ' '\n' | sort -V >&2
+              echo "" >&2
+              echo "Conditional updates:" >&2
+              oc get clusterversion version -o json | jq -r '.status.conditionalUpdates[]? | "\(.release.version) — \(.conditions[0].message // "no message")"' >&2
               exit 1
             fi
 
@@ -146,13 +146,13 @@ spec:
               '[.status.availableUpdates[]? | select(.version | startswith($prefix))] | sort_by(.version | split(".") | map(tonumber)) | last | .version // empty')
 
             if [[ -n "${found_version}" ]]; then
-              echo ""
-              echo "✅ Found target version: ${found_version}"
+              echo "" >&2
+              echo "✅ Found target version: ${found_version}" >&2
               echo "${found_version}"
               return
             fi
 
-            printf "\r  [%dm%ds] Waiting for ${version_prefix}.x updates..." "${elapsed_min}" "${elapsed_sec}"
+            printf "\r  [%dm%ds] Waiting for ${version_prefix}.x updates..." "${elapsed_min}" "${elapsed_sec}" >&2
             sleep 30
           done
         }
