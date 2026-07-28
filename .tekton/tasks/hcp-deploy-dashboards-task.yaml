@@ -1,0 +1,319 @@
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: hcp-deploy-dashboards
+spec:
+  description: >-
+    Deploys Perses dashboards on the hosted cluster using the Cluster
+    Observability Operator (COO). Sets up the Monitoring UIPlugin, creates
+    a PersesDatasource pointing to the platform Thanos Querier, and applies
+    the community Istio dashboards from the perses/community-mixins project.
+  params:
+    - name: hostedClusterName
+      type: string
+      description: "Name of the hosted cluster"
+    - name: hostedClusterNamespace
+      type: string
+      description: "Namespace for HostedCluster resources"
+      default: "clusters"
+    - name: hubKubeconfigSecretName
+      type: string
+      description: "Name of the Secret containing kubeconfig for hub cluster (optional, uses in-cluster config if empty)"
+      default: ""
+  workspaces:
+    - name: source
+  steps:
+    - name: deploy-dashboards
+      image: registry.access.redhat.com/ubi9/ubi
+      timeout: "30m"
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        CLUSTER_NAME="$(params.hostedClusterName)"
+        CLUSTER_NS="$(params.hostedClusterNamespace)"
+        HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
+
+        echo "=========================================="
+        echo "HCP Deploy Dashboards Task"
+        echo "=========================================="
+        echo "Hosted Cluster: ${CLUSTER_NAME}"
+        echo "=========================================="
+
+        # Install required tools
+        echo "📦 Installing required packages..."
+        dnf install -y jq > /dev/null 2>&1
+
+        echo "📦 Installing OpenShift CLI..."
+        curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz -o /tmp/oc.tar.gz
+        tar xzf /tmp/oc.tar.gz -C /tmp
+        mv /tmp/oc /usr/local/bin/
+        cp /usr/local/bin/oc /usr/local/bin/kubectl
+        rm -f /tmp/oc.tar.gz
+        oc version --client
+
+        # Configure hub cluster kubeconfig if provided
+        if [[ -n "${HUB_KUBECONFIG_SECRET}" ]]; then
+          echo "🔐 Extracting hub cluster kubeconfig from secret: ${HUB_KUBECONFIG_SECRET}..."
+          HUB_KUBECONFIG="/tmp/hub-kubeconfig"
+          if kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.kubeconfig}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: kubeconfig)"
+          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.config}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: config)"
+          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.value}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: value)"
+          else
+            echo "❌ Failed to extract kubeconfig from secret '${HUB_KUBECONFIG_SECRET}'"
+            exit 1
+          fi
+          chmod 600 "${HUB_KUBECONFIG}"
+          export KUBECONFIG="${HUB_KUBECONFIG}"
+          echo "✅ Using hub kubeconfig for cluster operations"
+          oc whoami
+        else
+          echo "ℹ️  No hub kubeconfig secret provided, using in-cluster service account"
+        fi
+
+        # Extract hosted cluster kubeconfig
+        echo ""
+        echo "🔐 Extracting kubeconfig for hosted cluster..."
+        HOSTED_KUBECONFIG="/tmp/hosted-kubeconfig"
+        kubectl get secret "${CLUSTER_NAME}-admin-kubeconfig" -n "${CLUSTER_NS}" \
+          -o jsonpath='{.data.kubeconfig}' | base64 -d > "${HOSTED_KUBECONFIG}"
+        chmod 600 "${HOSTED_KUBECONFIG}"
+        export KUBECONFIG="${HOSTED_KUBECONFIG}"
+        [[ -f "$(workspaces.source.path)/.kubeconfig-rewrite.sh" ]] && source "$(workspaces.source.path)/.kubeconfig-rewrite.sh" "${HOSTED_KUBECONFIG}"
+        echo "✅ Successfully connected to hosted cluster"
+        oc whoami
+
+        # =============================================
+        # Step 1: Install Cluster Observability Operator (idempotent)
+        # =============================================
+        echo ""
+        echo "📦 Step 1: Installing Cluster Observability Operator..."
+
+        COO_CHANNEL=$(oc get packagemanifest cluster-observability-operator -o jsonpath='{.status.defaultChannel}' 2>/dev/null || echo "")
+        if [[ -z "${COO_CHANNEL}" ]]; then
+          echo "❌ Cluster Observability Operator not available in catalog"
+          echo "   Cannot deploy Perses dashboards without COO"
+          exit 1
+        fi
+
+        echo "   Using channel: ${COO_CHANNEL}"
+
+        oc apply -f - <<EOF
+        apiVersion: operators.coreos.com/v1alpha1
+        kind: Subscription
+        metadata:
+          name: cluster-observability-operator
+          namespace: openshift-operators
+        spec:
+          channel: ${COO_CHANNEL}
+          installPlanApproval: Automatic
+          name: cluster-observability-operator
+          source: redhat-operators
+          sourceNamespace: openshift-marketplace
+        EOF
+
+        echo "⏳ Waiting for Cluster Observability Operator CSV to succeed..."
+        COO_CSV=""
+        for i in $(seq 1 60); do
+          COO_CSV=$(oc get csv -n openshift-operators -l operators.coreos.com/cluster-observability-operator.openshift-operators -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
+          if [[ "${COO_CSV}" == "Succeeded" ]]; then
+            echo "✅ Cluster Observability Operator installed successfully"
+            break
+          fi
+          if [[ ${i} -eq 60 ]]; then
+            echo "❌ Timeout waiting for Cluster Observability Operator (current phase: ${COO_CSV})"
+            exit 1
+          fi
+          echo "   [${i}/60] COO CSV phase: ${COO_CSV:-Pending}"
+          sleep 10
+        done
+
+        # =============================================
+        # Step 2: Enable the Perses UIPlugin (Monitoring type)
+        # =============================================
+        echo ""
+        echo "🖥️  Step 2: Enabling Perses UIPlugin (Monitoring)..."
+
+        UIPLUGIN_APPLIED=false
+        for API_VERSION in "observability.openshift.io/v1alpha1" "observability.openshift.io/v1"; do
+          if oc api-resources --api-group=observability.openshift.io 2>/dev/null | grep -q "UIPlugin"; then
+            if oc apply -f - <<EOF 2>/dev/null
+        apiVersion: ${API_VERSION}
+        kind: UIPlugin
+        metadata:
+          name: monitoring
+        spec:
+          type: Monitoring
+          monitoring:
+            perses:
+              enabled: true
+        EOF
+            then
+              UIPLUGIN_APPLIED=true
+              echo "✅ UIPlugin 'monitoring' created (${API_VERSION})"
+              break
+            fi
+          fi
+        done
+
+        if [[ "${UIPLUGIN_APPLIED}" != "true" ]]; then
+          echo "❌ UIPlugin CRD not available — cannot enable Perses dashboards"
+          exit 1
+        fi
+
+        echo "⏳ Waiting for UIPlugin to reconcile..."
+        for i in $(seq 1 30); do
+          RECONCILED=$(oc get uiplugin monitoring -o jsonpath='{range .status.conditions[*]}{.type}={.status}{"\n"}{end}' 2>/dev/null | grep -c "=True" || echo "0")
+          if [[ "${RECONCILED}" -ge 1 ]]; then
+            echo "✅ UIPlugin reconciled"
+            oc get uiplugin monitoring -o jsonpath='{range .status.conditions[*]}{.type}={.status}{"\n"}{end}' 2>/dev/null || true
+            break
+          fi
+          if [[ ${i} -eq 30 ]]; then
+            echo "⚠️  UIPlugin not fully reconciled yet — continuing anyway"
+          fi
+          echo "   [${i}/30] Waiting for UIPlugin conditions..."
+          sleep 10
+        done
+
+        # =============================================
+        # Step 3: Create perses-dev namespace and ServiceAccount
+        # =============================================
+        echo ""
+        echo "📂 Step 3: Setting up perses-dev namespace and ServiceAccount..."
+
+        oc create namespace perses-dev --dry-run=client -o yaml | oc apply -f -
+
+        oc create serviceaccount perses-sa -n perses-dev --dry-run=client -o yaml | oc apply -f -
+
+        oc adm policy add-cluster-role-to-user cluster-monitoring-view -z perses-sa -n perses-dev
+        echo "✅ ServiceAccount 'perses-sa' created and cluster-monitoring-view role bound"
+
+        # =============================================
+        # Step 4: Create bearer token secret for Thanos Querier
+        # =============================================
+        echo ""
+        echo "🔐 Step 4: Creating bearer token secret for Thanos Querier..."
+
+        TOKEN=$(oc create token perses-sa -n perses-dev --duration=8760h)
+
+        oc apply -f - <<EOF
+        apiVersion: v1
+        kind: Secret
+        metadata:
+          name: prometheus-datasource-secret
+          namespace: perses-dev
+        stringData:
+          Authorization: "Bearer ${TOKEN}"
+        type: Opaque
+        EOF
+
+        echo "✅ Token secret 'prometheus-datasource-secret' created (valid for 1 year)"
+
+        # =============================================
+        # Step 5: Create PersesDatasource
+        # =============================================
+        echo ""
+        echo "📊 Step 5: Creating PersesDatasource..."
+
+        oc apply -f - <<EOF
+        apiVersion: perses.dev/v1alpha1
+        kind: PersesDatasource
+        metadata:
+          name: prometheus-datasource
+          namespace: perses-dev
+        spec:
+          config:
+            display:
+              name: "Thanos Querier Datasource"
+            default: true
+            plugin:
+              kind: "PrometheusDatasource"
+              spec:
+                proxy:
+                  kind: HTTPProxy
+                  spec:
+                    url: https://thanos-querier.openshift-monitoring.svc.cluster.local:9091
+                    secret: prometheus-datasource-secret
+          client:
+            tls:
+              enable: true
+              caCert:
+                type: file
+                certPath: /ca/service-ca.crt
+        EOF
+
+        echo "✅ PersesDatasource 'prometheus-datasource' created"
+
+        # =============================================
+        # Step 6: Apply community Istio dashboards
+        # =============================================
+        echo ""
+        echo "📊 Step 6: Applying community Istio dashboards..."
+
+        MIXIN_BASE="https://raw.githubusercontent.com/perses/community-mixins/refs/heads/main/examples/dashboards/operator/istio"
+
+        DASHBOARDS=(
+          "istio-mesh.yaml"
+          "istio-service-dashboard.yaml"
+          "istio-workload-dashboard.yaml"
+          "istio-control-plane.yaml"
+          "istio-performance.yaml"
+          "istio-ztunnel-dashboard.yaml"
+        )
+
+        APPLIED=0
+        FAILED=0
+        for DASHBOARD in "${DASHBOARDS[@]}"; do
+          echo "   Applying ${DASHBOARD}..."
+          if oc apply -f "${MIXIN_BASE}/${DASHBOARD}" 2>/dev/null; then
+            APPLIED=$((APPLIED + 1))
+            echo "   ✅ ${DASHBOARD}"
+          else
+            FAILED=$((FAILED + 1))
+            echo "   ⚠️  Failed to apply ${DASHBOARD}"
+          fi
+        done
+
+        echo ""
+        echo "📊 Dashboards applied: ${APPLIED}/${#DASHBOARDS[@]}"
+        if [[ ${FAILED} -gt 0 ]]; then
+          echo "⚠️  ${FAILED} dashboard(s) failed to apply"
+        fi
+
+        # =============================================
+        # Step 7: Verification
+        # =============================================
+        echo ""
+        echo "🔍 Step 7: Verifying Perses deployment..."
+
+        echo ""
+        echo "📋 UIPlugin status:"
+        oc get uiplugin monitoring 2>/dev/null || echo "   UIPlugin not found"
+
+        echo ""
+        echo "📋 PersesDatasource:"
+        oc get persesdatasource -n perses-dev 2>/dev/null || echo "   No PersesDatasource found"
+
+        echo ""
+        echo "📋 PersesDashboards:"
+        oc get persesdashboard -n perses-dev 2>/dev/null || echo "   No PersesDashboard found"
+
+        echo ""
+        echo "=========================================="
+        echo "✅ Perses dashboards deployed successfully!"
+        echo "=========================================="
+        echo "UIPlugin: monitoring (type: Monitoring)"
+        echo "Datasource: prometheus-datasource (Thanos Querier)"
+        echo "Dashboards: ${APPLIED} Istio community dashboards"
+        echo "Console: Observe → Dashboards (Perses)"
+        echo "=========================================="

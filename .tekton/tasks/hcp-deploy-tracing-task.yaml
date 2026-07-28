@@ -1,0 +1,800 @@
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: hcp-deploy-tracing
+spec:
+  description: Deploy distributed tracing (TempoStack, OpenTelemetry, Kiali) on the hosted cluster with OBC-backed S3 storage from the hub
+  params:
+    - name: hostedClusterName
+      type: string
+      description: "Name of the hosted cluster"
+    - name: hostedClusterNamespace
+      type: string
+      description: "Namespace for HostedCluster resources"
+      default: "clusters"
+    - name: hubKubeconfigSecretName
+      type: string
+      description: "Name of the Secret containing kubeconfig for hub cluster (optional, uses in-cluster config if empty)"
+      default: ""
+    - name: istioNamespace
+      type: string
+      description: "Namespace where Istio control plane and OTel collector are deployed"
+      default: "istio-system"
+    - name: istioCRName
+      type: string
+      description: "Name of the Istio CR to patch with tracing extension providers"
+      default: "default"
+  workspaces:
+    - name: source
+  steps:
+    - name: deploy-tracing
+      image: registry.access.redhat.com/ubi9/ubi
+      timeout: "336h"
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        # Parameters
+        CLUSTER_NAME="$(params.hostedClusterName)"
+        CLUSTER_NS="$(params.hostedClusterNamespace)"
+        HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
+        ISTIO_NS="$(params.istioNamespace)"
+        ISTIO_CR_NAME="$(params.istioCRName)"
+
+        echo "=========================================="
+        echo "HCP Deploy Tracing Task"
+        echo "=========================================="
+        echo "Hosted Cluster: ${CLUSTER_NAME}"
+        echo "Cluster Namespace: ${CLUSTER_NS}"
+        echo "Istio Namespace: ${ISTIO_NS}"
+        echo "Istio CR Name: ${ISTIO_CR_NAME}"
+        echo "=========================================="
+
+        # Install required tools
+        echo "📦 Installing required packages..."
+        dnf install -y jq > /dev/null 2>&1
+
+        echo "📦 Installing OpenShift CLI..."
+        curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz -o /tmp/oc.tar.gz
+        tar xzf /tmp/oc.tar.gz -C /tmp
+        mv /tmp/oc /usr/local/bin/
+        cp /usr/local/bin/oc /usr/local/bin/kubectl
+        rm -f /tmp/oc.tar.gz
+        oc version --client
+
+        # Configure hub cluster kubeconfig if provided
+        if [[ -n "${HUB_KUBECONFIG_SECRET}" ]]; then
+          echo "🔐 Extracting hub cluster kubeconfig from secret: ${HUB_KUBECONFIG_SECRET}..."
+          HUB_KUBECONFIG="/tmp/hub-kubeconfig"
+          if kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.kubeconfig}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: kubeconfig)"
+          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.config}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: config)"
+          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.value}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: value)"
+          else
+            echo "❌ Failed to extract kubeconfig from secret '${HUB_KUBECONFIG_SECRET}'"
+            echo "   Secret should have kubeconfig data under key 'kubeconfig', 'config', or 'value'"
+            exit 1
+          fi
+          chmod 600 "${HUB_KUBECONFIG}"
+          export KUBECONFIG="${HUB_KUBECONFIG}"
+          echo "✅ Using hub kubeconfig for cluster operations"
+          oc whoami
+        else
+          echo "ℹ️  No hub kubeconfig secret provided, using in-cluster service account"
+        fi
+
+        # =============================================
+        # Step 1: Create per-cluster OBC on hub for Tempo S3 storage
+        # =============================================
+        OBC_NAME="tempo-${CLUSTER_NAME}"
+        OBC_NAMESPACE="openshift-storage"
+
+        echo ""
+        echo "📦 Creating ObjectBucketClaim '${OBC_NAME}' on hub cluster..."
+
+        oc apply -f - <<EOF
+        apiVersion: objectbucket.io/v1alpha1
+        kind: ObjectBucketClaim
+        metadata:
+          name: ${OBC_NAME}
+          namespace: ${OBC_NAMESPACE}
+          labels:
+            app: tempo-tracing
+            cluster: ${CLUSTER_NAME}
+        spec:
+          generateBucketName: ${OBC_NAME}
+          storageClassName: openshift-storage.noobaa.io
+        EOF
+
+        echo "⏳ Waiting for OBC to become Bound..."
+        for i in $(seq 1 60); do
+          OBC_PHASE=$(oc get objectbucketclaim "${OBC_NAME}" -n "${OBC_NAMESPACE}" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+          if [[ "${OBC_PHASE}" == "Bound" ]]; then
+            echo "✅ OBC is Bound"
+            break
+          fi
+          if [[ ${i} -eq 60 ]]; then
+            echo "❌ Timeout waiting for OBC to become Bound (current phase: ${OBC_PHASE})"
+            exit 1
+          fi
+          echo "   [${i}/60] OBC phase: ${OBC_PHASE:-Pending}"
+          sleep 10
+        done
+
+        # Extract S3 credentials from OBC-generated Secret and ConfigMap
+        echo "🔐 Extracting S3 credentials from OBC..."
+        S3_ACCESS_KEY=$(oc get secret "${OBC_NAME}" -n "${OBC_NAMESPACE}" -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' | base64 -d)
+        S3_SECRET_KEY=$(oc get secret "${OBC_NAME}" -n "${OBC_NAMESPACE}" -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' | base64 -d)
+        S3_BUCKET_NAME=$(oc get configmap "${OBC_NAME}" -n "${OBC_NAMESPACE}" -o jsonpath='{.data.BUCKET_NAME}')
+
+        # Use the external S3 route (not the internal svc) since TempoStack
+        # runs on the hosted cluster and can't reach hub-internal services
+        S3_ROUTE_HOST=$(oc get route s3 -n openshift-storage -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+        if [[ -z "${S3_ROUTE_HOST}" ]]; then
+          echo "❌ Could not find S3 route in openshift-storage namespace"
+          echo "   Available routes:"
+          oc get route -n openshift-storage 2>/dev/null || echo "   None found"
+          exit 1
+        fi
+        S3_ENDPOINT="https://${S3_ROUTE_HOST}"
+
+        echo "✅ S3 credentials extracted"
+        echo "   Endpoint: ${S3_ENDPOINT} (external route)"
+        echo "   Bucket: ${S3_BUCKET_NAME}"
+        echo "   Access Key: ${S3_ACCESS_KEY:0:4}****"
+
+        # Extract hub ingress CA so the hosted cluster can trust the S3 route TLS cert
+        echo "🔐 Extracting hub ingress CA certificate..."
+        HUB_CA_CERT="/tmp/hub-ingress-ca.crt"
+        oc get secret router-certs-default -n openshift-ingress \
+          -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d > "${HUB_CA_CERT}" || true
+        if [[ ! -s "${HUB_CA_CERT}" ]]; then
+          oc get configmap default-ingress-cert -n openshift-config-managed \
+            -o jsonpath='{.data.ca-bundle\.crt}' > "${HUB_CA_CERT}" 2>/dev/null || true
+        fi
+        if [[ -s "${HUB_CA_CERT}" ]]; then
+          echo "✅ Hub ingress CA extracted"
+        else
+          echo "⚠️  Could not extract hub ingress CA — TempoStack may fail TLS to S3 route"
+        fi
+
+        # =============================================
+        # Step 2: Switch to hosted cluster kubeconfig
+        # =============================================
+        echo ""
+        echo "🔐 Extracting kubeconfig for hosted cluster..."
+        KUBECONFIG_SECRET="${CLUSTER_NAME}-admin-kubeconfig"
+
+        if ! oc get secret "${KUBECONFIG_SECRET}" -n "${CLUSTER_NS}" > /dev/null 2>&1; then
+          echo "❌ Kubeconfig secret '${KUBECONFIG_SECRET}' not found in namespace '${CLUSTER_NS}'"
+          exit 1
+        fi
+
+        HOSTED_KUBECONFIG="/tmp/hosted-kubeconfig"
+        oc get secret "${KUBECONFIG_SECRET}" -n "${CLUSTER_NS}" \
+          -o jsonpath='{.data.kubeconfig}' | base64 -d > "${HOSTED_KUBECONFIG}"
+        chmod 600 "${HOSTED_KUBECONFIG}"
+
+        export KUBECONFIG="${HOSTED_KUBECONFIG}"
+        [[ -f "$(workspaces.source.path)/.kubeconfig-rewrite.sh" ]] && source "$(workspaces.source.path)/.kubeconfig-rewrite.sh" "${HOSTED_KUBECONFIG}"
+
+        echo "🔍 Verifying access to hosted cluster..."
+        oc get nodes
+        echo "✅ Successfully connected to hosted cluster"
+
+        # =============================================
+        # Step 3: Create tempo namespace and CA ConfigMap
+        # =============================================
+        echo ""
+        echo "📂 Creating tempo namespace..."
+        oc create namespace tempo --dry-run=client -o yaml | oc apply -f -
+
+        TEMPO_CA_NAME=""
+        if [[ -s "${HUB_CA_CERT}" ]]; then
+          echo "🔐 Creating CA ConfigMap for S3 storage TLS trust..."
+          oc create configmap tempo-s3-ca \
+            --from-file=service-ca.crt="${HUB_CA_CERT}" \
+            -n tempo --dry-run=client -o yaml | oc apply -f -
+          TEMPO_CA_NAME="tempo-s3-ca"
+          echo "✅ CA ConfigMap 'tempo-s3-ca' created in tempo namespace"
+        fi
+
+        # =============================================
+        # Step 4: Install Tempo Operator
+        # =============================================
+        echo ""
+        echo "📦 Installing Tempo Operator..."
+
+        TEMPO_CHANNEL=$(oc get packagemanifest tempo-product -o jsonpath='{.status.defaultChannel}' 2>/dev/null || echo "")
+        if [[ -z "${TEMPO_CHANNEL}" ]]; then
+          echo "❌ Could not detect Tempo Operator channel from PackageManifest"
+          oc get packagemanifest 2>/dev/null | grep -i tempo || echo "   None found"
+          exit 1
+        fi
+        echo "   Using channel: ${TEMPO_CHANNEL}"
+
+        oc create namespace openshift-tempo-operator --dry-run=client -o yaml | oc apply -f -
+
+        if ! oc get operatorgroup -n openshift-tempo-operator --no-headers 2>/dev/null | grep -q .; then
+          oc apply -f - <<EOF
+        apiVersion: operators.coreos.com/v1
+        kind: OperatorGroup
+        metadata:
+          name: openshift-tempo-operator
+          namespace: openshift-tempo-operator
+        spec: {}
+        EOF
+        fi
+
+        oc apply -f - <<EOF
+        apiVersion: operators.coreos.com/v1alpha1
+        kind: Subscription
+        metadata:
+          name: tempo-product
+          namespace: openshift-tempo-operator
+        spec:
+          channel: ${TEMPO_CHANNEL}
+          installPlanApproval: Automatic
+          name: tempo-product
+          source: redhat-operators
+          sourceNamespace: openshift-marketplace
+        EOF
+
+        echo "⏳ Waiting for Tempo Operator CSV to succeed..."
+        for i in $(seq 1 60); do
+          TEMPO_CSV=$(oc get csv -n openshift-tempo-operator -l operators.coreos.com/tempo-product.openshift-tempo-operator -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
+          if [[ "${TEMPO_CSV}" == "Succeeded" ]]; then
+            echo "✅ Tempo Operator installed successfully"
+            break
+          fi
+          if [[ ${i} -eq 60 ]]; then
+            echo "❌ Timeout waiting for Tempo Operator (current phase: ${TEMPO_CSV})"
+            exit 1
+          fi
+          echo "   [${i}/60] Tempo Operator CSV phase: ${TEMPO_CSV:-Pending}"
+          sleep 10
+        done
+
+        # =============================================
+        # Step 5: Install OpenTelemetry Operator
+        # =============================================
+        echo ""
+        echo "📦 Installing OpenTelemetry Operator..."
+
+        OTEL_CHANNEL=$(oc get packagemanifest opentelemetry-product -o jsonpath='{.status.defaultChannel}' 2>/dev/null || echo "")
+        if [[ -z "${OTEL_CHANNEL}" ]]; then
+          echo "❌ Could not detect OpenTelemetry Operator channel from PackageManifest"
+          oc get packagemanifest 2>/dev/null | grep -i opentelemetry || echo "   None found"
+          exit 1
+        fi
+        echo "   Using channel: ${OTEL_CHANNEL}"
+
+        oc create namespace openshift-opentelemetry-operator --dry-run=client -o yaml | oc apply -f -
+
+        if ! oc get operatorgroup -n openshift-opentelemetry-operator --no-headers 2>/dev/null | grep -q .; then
+          oc apply -f - <<EOF
+        apiVersion: operators.coreos.com/v1
+        kind: OperatorGroup
+        metadata:
+          name: openshift-opentelemetry-operator
+          namespace: openshift-opentelemetry-operator
+        spec: {}
+        EOF
+        fi
+
+        oc apply -f - <<EOF
+        apiVersion: operators.coreos.com/v1alpha1
+        kind: Subscription
+        metadata:
+          name: opentelemetry-product
+          namespace: openshift-opentelemetry-operator
+        spec:
+          channel: ${OTEL_CHANNEL}
+          installPlanApproval: Automatic
+          name: opentelemetry-product
+          source: redhat-operators
+          sourceNamespace: openshift-marketplace
+        EOF
+
+        echo "⏳ Waiting for OpenTelemetry Operator CSV to succeed..."
+        for i in $(seq 1 60); do
+          OTEL_CSV=$(oc get csv -n openshift-opentelemetry-operator -l operators.coreos.com/opentelemetry-product.openshift-opentelemetry-operator -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
+          if [[ "${OTEL_CSV}" == "Succeeded" ]]; then
+            echo "✅ OpenTelemetry Operator installed successfully"
+            break
+          fi
+          if [[ ${i} -eq 60 ]]; then
+            echo "❌ Timeout waiting for OpenTelemetry Operator (current phase: ${OTEL_CSV})"
+            exit 1
+          fi
+          echo "   [${i}/60] OpenTelemetry Operator CSV phase: ${OTEL_CSV:-Pending}"
+          sleep 10
+        done
+
+        # =============================================
+        # Step 6: Install Kiali Operator
+        # =============================================
+        echo ""
+        echo "📦 Installing Kiali Operator..."
+
+        KIALI_CHANNEL=$(oc get packagemanifest kiali-ossm -o jsonpath='{.status.defaultChannel}' 2>/dev/null || echo "")
+        if [[ -z "${KIALI_CHANNEL}" ]]; then
+          echo "❌ Could not detect Kiali Operator channel from PackageManifest"
+          oc get packagemanifest 2>/dev/null | grep -i kiali || echo "   None found"
+          exit 1
+        fi
+        echo "   Using channel: ${KIALI_CHANNEL}"
+
+        oc apply -f - <<EOF
+        apiVersion: operators.coreos.com/v1alpha1
+        kind: Subscription
+        metadata:
+          name: kiali-ossm
+          namespace: openshift-operators
+        spec:
+          channel: ${KIALI_CHANNEL}
+          installPlanApproval: Automatic
+          name: kiali-ossm
+          source: redhat-operators
+          sourceNamespace: openshift-marketplace
+        EOF
+
+        echo "⏳ Waiting for Kiali Operator CSV to succeed..."
+        for i in $(seq 1 60); do
+          KIALI_CSV=$(oc get csv -n openshift-operators -l operators.coreos.com/kiali-ossm.openshift-operators -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
+          if [[ "${KIALI_CSV}" == "Succeeded" ]]; then
+            echo "✅ Kiali Operator installed successfully"
+            break
+          fi
+          if [[ ${i} -eq 60 ]]; then
+            echo "❌ Timeout waiting for Kiali Operator (current phase: ${KIALI_CSV})"
+            exit 1
+          fi
+          echo "   [${i}/60] Kiali Operator CSV phase: ${KIALI_CSV:-Pending}"
+          sleep 10
+        done
+
+        # =============================================
+        # Step 7: Create S3 Secret and Deploy TempoStack (KBA Step 1)
+        # =============================================
+        echo ""
+        echo "🔐 Creating S3 storage secret for TempoStack..."
+
+        oc apply -f - <<EOF
+        apiVersion: v1
+        kind: Secret
+        metadata:
+          name: tempo-storage-s3
+          namespace: tempo
+        stringData:
+          bucket: "${S3_BUCKET_NAME}"
+          endpoint: "${S3_ENDPOINT}"
+          access_key_id: "${S3_ACCESS_KEY}"
+          access_key_secret: "${S3_SECRET_KEY}"
+        type: Opaque
+        EOF
+
+        echo "✅ S3 storage secret created"
+
+        echo ""
+        echo "📦 Deploying TempoStack..."
+
+        TEMPOSTACK_YAML=$(cat <<EOYAML
+        apiVersion: tempo.grafana.com/v1alpha1
+        kind: TempoStack
+        metadata:
+          name: sample
+          namespace: tempo
+        spec:
+          managementState: Managed
+          tenants:
+            mode: openshift
+            authentication:
+            - tenantName: dev
+              tenantId: dev
+          template:
+            gateway:
+              enabled: true
+            queryFrontend:
+              jaegerQuery:
+                enabled: true
+          storage:
+            secret:
+              name: tempo-storage-s3
+              type: s3
+        EOYAML
+        )
+
+        if [[ -n "${TEMPO_CA_NAME}" ]]; then
+          TEMPOSTACK_YAML+="
+            tls:
+              caName: ${TEMPO_CA_NAME}"
+        fi
+
+        echo "${TEMPOSTACK_YAML}" | oc apply -f -
+
+        echo "⏳ Waiting for TempoStack pods to be running..."
+        for i in $(seq 1 90); do
+          READY_PODS=$(oc get pods -n tempo -l app.kubernetes.io/instance=sample --no-headers 2>/dev/null | grep -c "Running" || true)
+          TOTAL_PODS=$(oc get pods -n tempo -l app.kubernetes.io/instance=sample --no-headers 2>/dev/null | wc -l | tr -d ' ')
+          if [[ "${TOTAL_PODS}" -gt 0 && "${READY_PODS}" -eq "${TOTAL_PODS}" ]]; then
+            echo "✅ All TempoStack pods are running (${READY_PODS}/${TOTAL_PODS})"
+            break
+          fi
+          if [[ ${i} -eq 90 ]]; then
+            echo "⚠️  Timeout waiting for all TempoStack pods (${READY_PODS}/${TOTAL_PODS} running)"
+            echo "   Continuing anyway — pods may still be starting up"
+            oc get pods -n tempo -l app.kubernetes.io/instance=sample
+          fi
+          echo "   [${i}/90] TempoStack pods: ${READY_PODS}/${TOTAL_PODS} running"
+          sleep 10
+        done
+
+        # =============================================
+        # Step 8: Configure trace access RBAC (KBA Step 1 cont.)
+        # =============================================
+        echo ""
+        echo "🔐 Configuring trace access RBAC..."
+
+        oc apply -f - <<EOF
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: ClusterRole
+        metadata:
+          name: tempostack-traces-reader
+        rules:
+        - apiGroups:
+          - tempo.grafana.com
+          resources:
+          - dev
+          resourceNames:
+          - traces
+          verbs:
+          - get
+        ---
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: ClusterRoleBinding
+        metadata:
+          name: tempostack-traces-reader
+        roleRef:
+          apiGroup: rbac.authorization.k8s.io
+          kind: ClusterRole
+          name: tempostack-traces-reader
+        subjects:
+        - kind: Group
+          apiGroup: rbac.authorization.k8s.io
+          name: system:authenticated
+        ---
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: ClusterRole
+        metadata:
+          name: tempostack-traces-write
+        rules:
+        - apiGroups:
+          - tempo.grafana.com
+          resources:
+          - dev
+          resourceNames:
+          - traces
+          verbs:
+          - create
+        ---
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: ClusterRoleBinding
+        metadata:
+          name: tempostack-traces-write
+        roleRef:
+          apiGroup: rbac.authorization.k8s.io
+          kind: ClusterRole
+          name: tempostack-traces-write
+        subjects:
+        - kind: ServiceAccount
+          name: otel-collector
+          namespace: ${ISTIO_NS}
+        EOF
+
+        echo "✅ Trace access RBAC configured"
+
+        # =============================================
+        # Step 9: Deploy OpenTelemetry Collector (KBA Step 2)
+        # =============================================
+        echo ""
+        echo "📡 Deploying OpenTelemetry Collector in ${ISTIO_NS}..."
+
+        oc apply -f - <<EOF
+        kind: OpenTelemetryCollector
+        apiVersion: opentelemetry.io/v1beta1
+        metadata:
+          name: otel
+          namespace: ${ISTIO_NS}
+        spec:
+          observability:
+            metrics: {}
+          deploymentUpdateStrategy: {}
+          config:
+            exporters:
+              otlp:
+                endpoint: tempo-sample-gateway.tempo.svc.cluster.local:8090
+                tls:
+                  insecure: false
+                  ca_file: /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt
+                auth:
+                  authenticator: bearertokenauth
+                headers:
+                  X-Scope-OrgID: dev
+            extensions:
+              bearertokenauth:
+                filename: /var/run/secrets/kubernetes.io/serviceaccount/token
+            receivers:
+              otlp:
+                protocols:
+                  grpc:
+                    endpoint: 0.0.0.0:4317
+                  http: {}
+            service:
+              extensions:
+              - bearertokenauth
+              pipelines:
+                traces:
+                  exporters:
+                  - otlp
+                  receivers:
+                  - otlp
+        EOF
+
+        echo "⏳ Waiting for OTel Collector pod to be running..."
+        for i in $(seq 1 60); do
+          OTEL_PODS=$(oc get pods -n "${ISTIO_NS}" -l app.kubernetes.io/name=otel-collector --no-headers 2>/dev/null | grep -c "Running" || true)
+          if [[ "${OTEL_PODS}" -gt 0 ]]; then
+            echo "✅ OTel Collector pod is running"
+            break
+          fi
+          if [[ ${i} -eq 60 ]]; then
+            echo "⚠️  Timeout waiting for OTel Collector pod"
+            oc get pods -n "${ISTIO_NS}" -l app.kubernetes.io/name=otel-collector 2>/dev/null || true
+          fi
+          echo "   [${i}/60] Waiting for OTel Collector..."
+          sleep 10
+        done
+
+        # =============================================
+        # Step 10: Disable mTLS for OTel collector (no sidecar)
+        # =============================================
+        echo ""
+        echo "🔒 Creating DestinationRule to disable mTLS for OTel collector..."
+
+        oc apply -f - <<EOF
+        apiVersion: networking.istio.io/v1
+        kind: DestinationRule
+        metadata:
+          name: otel-collector-disable-mtls
+          namespace: ${ISTIO_NS}
+        spec:
+          host: otel-collector.${ISTIO_NS}.svc.cluster.local
+          trafficPolicy:
+            tls:
+              mode: DISABLE
+        EOF
+
+        echo "✅ DestinationRule created — mesh sidecars will use plaintext gRPC to OTel collector"
+
+        # =============================================
+        # Step 11: Patch Istio CR with tracing provider (KBA Step 3)
+        # =============================================
+        echo ""
+        echo "🔧 Patching Istio CR '${ISTIO_CR_NAME}' with tracing extension provider..."
+
+        oc patch istio "${ISTIO_CR_NAME}" -n "${ISTIO_NS}" --type merge -p "
+        spec:
+          values:
+            meshConfig:
+              extensionProviders:
+                - name: otel-tracing
+                  opentelemetry:
+                    port: 4317
+                    service: otel-collector.${ISTIO_NS}.svc.cluster.local
+        "
+
+        echo "✅ Istio CR patched"
+
+        echo "📋 Creating Telemetry resource..."
+
+        oc apply -f - <<EOF
+        apiVersion: telemetry.istio.io/v1
+        kind: Telemetry
+        metadata:
+          name: otel-tracing
+          namespace: ${ISTIO_NS}
+        spec:
+          tracing:
+          - providers:
+            - name: otel-tracing
+            randomSamplingPercentage: 100
+        EOF
+
+        echo "✅ Telemetry resource created (100% sampling)"
+
+        # =============================================
+        # Step 12: Deploy Kiali (KBA Step 4)
+        # =============================================
+        echo ""
+        echo "🔐 Creating Kiali monitoring RBAC..."
+
+        oc apply -f - <<EOF
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: ClusterRoleBinding
+        metadata:
+          name: kiali-monitoring-rbac
+        roleRef:
+          apiGroup: rbac.authorization.k8s.io
+          kind: ClusterRole
+          name: cluster-monitoring-view
+        subjects:
+        - kind: ServiceAccount
+          name: kiali-service-account
+          namespace: ${ISTIO_NS}
+        EOF
+
+        echo "✅ Kiali monitoring RBAC created"
+
+        echo ""
+        echo "📦 Deploying Kiali CR..."
+
+        TEMPO_ROUTE_HOST=$(oc get route tempo-sample-gateway -n tempo -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+
+        oc apply -f - <<EOF
+        apiVersion: kiali.io/v1alpha1
+        kind: Kiali
+        metadata:
+          name: kiali
+          namespace: ${ISTIO_NS}
+        spec:
+          external_services:
+            prometheus:
+              auth:
+                ca_file: /kiali-cabundle/service-ca.crt
+                insecure_skip_verify: false
+                type: bearer
+                use_kiali_token: true
+              thanos_proxy:
+                enabled: true
+              url: https://thanos-querier.openshift-monitoring.svc.cluster.local:9091
+            tracing:
+              enabled: true
+              provider: tempo
+              use_grpc: false
+              internal_url: https://tempo-sample-gateway.tempo.svc.cluster.local:8080/api/traces/v1/dev/tempo
+              auth:
+                ca_file: /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt
+                insecure_skip_verify: false
+                type: bearer
+                use_kiali_token: true
+              tempo_config:
+                url_format: jaeger
+        EOF
+
+        if [[ -n "${TEMPO_ROUTE_HOST}" ]]; then
+          echo "🔗 Setting Tempo external URL for 'View in Tracing' link..."
+          oc patch kiali kiali -n "${ISTIO_NS}" --type merge -p "
+        spec:
+          external_services:
+            tracing:
+              url: https://${TEMPO_ROUTE_HOST}/api/traces/v1/dev
+        "
+          echo "✅ Tempo external URL: https://${TEMPO_ROUTE_HOST}/api/traces/v1/dev"
+        else
+          echo "⚠️  Tempo gateway route not found — 'View in Tracing' link will not work"
+        fi
+
+        echo "⏳ Waiting for Kiali pod to be running..."
+        for i in $(seq 1 60); do
+          KIALI_PODS=$(oc get pods -n "${ISTIO_NS}" -l app.kubernetes.io/name=kiali --no-headers 2>/dev/null | grep -c "Running" || true)
+          if [[ "${KIALI_PODS}" -gt 0 ]]; then
+            echo "✅ Kiali pod is running"
+            break
+          fi
+          if [[ ${i} -eq 60 ]]; then
+            echo "⚠️  Timeout waiting for Kiali pod"
+            oc get pods -n "${ISTIO_NS}" -l app.kubernetes.io/name=kiali 2>/dev/null || true
+          fi
+          echo "   [${i}/60] Waiting for Kiali..."
+          sleep 10
+        done
+
+        # =============================================
+        # Step 13: Deploy OSSMC Plugin (KBA Step 5)
+        # =============================================
+        echo ""
+        echo "🖥️  Deploying OpenShift Service Mesh Console plugin..."
+
+        oc apply -f - <<EOF
+        apiVersion: kiali.io/v1alpha1
+        kind: OSSMConsole
+        metadata:
+          name: ossmconsole
+          namespace: ${ISTIO_NS}
+        spec:
+          kiali:
+            serviceName: kiali
+            serviceNamespace: ${ISTIO_NS}
+        EOF
+
+        echo "⏳ Waiting for OSSMC plugin to reconcile..."
+        for i in $(seq 1 60); do
+          OSSMC_STATUS=$(oc get ossmconsole ossmconsole -n "${ISTIO_NS}" -o jsonpath='{.status.conditions[?(@.type=="Successful")].status}' 2>/dev/null || echo "")
+          if [[ "${OSSMC_STATUS}" == "True" ]]; then
+            echo "✅ OSSMC plugin reconciled — Service Mesh menu available in console"
+            break
+          fi
+          if [[ ${i} -eq 60 ]]; then
+            echo "⚠️  Timeout waiting for OSSMC plugin reconciliation"
+            oc get ossmconsole ossmconsole -n "${ISTIO_NS}" -o yaml 2>/dev/null | grep -A 5 conditions || true
+          fi
+          echo "   [${i}/60] OSSMC status: ${OSSMC_STATUS:-Pending}"
+          sleep 10
+        done
+
+        # =============================================
+        # Step 14: Verification
+        # =============================================
+        echo ""
+        echo "🔍 Verifying tracing stack deployment..."
+        echo ""
+
+        echo "📋 Operator CSVs:"
+        oc get csv -n openshift-tempo-operator 2>/dev/null | grep -i tempo || echo "   No Tempo CSV found"
+        oc get csv -n openshift-opentelemetry-operator 2>/dev/null | grep -i opentelemetry || echo "   No OpenTelemetry CSV found"
+        oc get csv -n openshift-operators 2>/dev/null | grep -i kiali || echo "   No Kiali CSV found"
+
+        echo ""
+        echo "📋 TempoStack pods:"
+        oc get pods -n tempo -l app.kubernetes.io/instance=sample --no-headers 2>/dev/null || echo "   No TempoStack pods"
+
+        echo ""
+        echo "📋 OTel Collector pods:"
+        oc get pods -n "${ISTIO_NS}" -l app.kubernetes.io/name=otel-collector --no-headers 2>/dev/null || echo "   No OTel Collector pods"
+
+        echo ""
+        echo "📋 Kiali pods:"
+        oc get pods -n "${ISTIO_NS}" -l app.kubernetes.io/name=kiali --no-headers 2>/dev/null || echo "   No Kiali pods"
+
+        echo ""
+        echo "📋 Kiali route:"
+        KIALI_URL=$(oc get route kiali -n "${ISTIO_NS}" -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+        if [[ -n "${KIALI_URL}" ]]; then
+          echo "   https://${KIALI_URL}"
+        else
+          echo "   No Kiali route found"
+        fi
+
+        echo ""
+        echo "📋 Istio extensionProviders:"
+        oc get istio "${ISTIO_CR_NAME}" -n "${ISTIO_NS}" -o jsonpath='{.spec.values.meshConfig.extensionProviders}' 2>/dev/null || echo "   Not configured"
+
+        echo ""
+        echo "📋 Telemetry resource:"
+        oc get telemetry otel-tracing -n "${ISTIO_NS}" 2>/dev/null || echo "   Not found"
+
+        echo ""
+        echo "📋 OSSMC plugin:"
+        oc get ossmconsole ossmconsole -n "${ISTIO_NS}" 2>/dev/null || echo "   Not found"
+
+        echo ""
+        echo "=========================================="
+        echo "✅ Tracing stack deployed successfully!"
+        echo "=========================================="
+        echo "OBC: tempo-${CLUSTER_NAME} (hub cluster, namespace: openshift-storage)"
+        echo "S3 Bucket: ${S3_BUCKET_NAME}"
+        echo "TempoStack: sample (namespace: tempo)"
+        echo "OTel Collector: otel (namespace: ${ISTIO_NS})"
+        echo "Kiali UI: https://${KIALI_URL:-<pending>}"
+        echo "OSSMC: Service Mesh menu in OpenShift console"
+        echo "Sampling: 100% (adjust Telemetry resource for production)"
+        echo "=========================================="

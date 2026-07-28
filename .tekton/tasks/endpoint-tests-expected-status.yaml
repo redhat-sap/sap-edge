@@ -110,6 +110,11 @@ spec:
             fi
           fi
 
+          echo ""
+          echo "📋 Manual curl command:"
+          echo "curl -k -s -o /dev/null -w '%{http_code}' --connect-timeout 10 --max-time 30 -H 'Authorization: Basic <AUTH_KEY>' ${RESOLVE_OPT} 'https://${HOST}${ENDPOINT_PATH}'"
+          echo ""
+
           POD_NAME="curl-test-$(date +%s)-${RANDOM}"
           echo "🚀 Running curl via remote pod ${POD_NAME}..."
           OC_OUTPUT=$(oc run "${POD_NAME}" -n default --rm -i --restart=Never \
@@ -132,6 +137,20 @@ spec:
             exit 1
           fi
         else
+          RESOLVE_PRINT=""
+          if [[ "$(params.publicDNS)" != "true" ]]; then
+            if [[ "$INGRESS_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              RESOLVE_PRINT="--resolve ${HOST}:443:${INGRESS_IP}"
+            else
+              RESOLVE_PRINT="--connect-to ${HOST}:443:${INGRESS_IP}:443"
+            fi
+          fi
+
+          echo ""
+          echo "📋 Manual curl command:"
+          echo "curl -k -s -o /dev/null -w '%{http_code}' --connect-timeout 10 --max-time 30 -H 'Authorization: Basic <AUTH_KEY>' ${RESOLVE_PRINT} 'https://${HOST}${ENDPOINT_PATH}'"
+          echo ""
+
           ACTUAL_STATUS=$(curl "${CURL_OPTS[@]}" \
             -H "Authorization: Basic ${AUTH_KEY}" \
             --url "https://${HOST}${ENDPOINT_PATH}")

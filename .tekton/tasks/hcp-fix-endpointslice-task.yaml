@@ -9,11 +9,15 @@ metadata:
   name: hcp-fix-endpointslice
 spec:
   description: >-
-    Workaround for Hypershift KubeVirt bug on OpenShift 4.21 where the
-    service-sync controller fails to create EndpointSlice objects for
-    LoadBalancer services in the guest cluster, breaking MetalLB ingress
-    routing. Checks if EndpointSlices exist for the management service
-    and creates them manually if missing.
+    Workaround for HyperShift KubeVirt EndpointSlice bugs affecting MetalLB
+    ingress routing. On OCP 4.21, the control-plane-operator failed to create
+    EndpointSlices at all; on OCP 4.22+, it creates them but includes both VMI
+    network interface IPs per endpoint (management cluster IP + guest cluster
+    internal IP). Since kube-proxy load-balances across all addresses, ~50% of
+    connections are routed to the unreachable guest-cluster IP, causing
+    intermittent failures from external clients. This task patches any dual-IP
+    EndpointSlices to keep only the management cluster IP per endpoint, and
+    creates EndpointSlices from scratch if none exist.
   params:
     - name: hostedClusterName
       type: string
@@ -103,7 +107,13 @@ spec:
         fi
         echo "   Found management service: ${MGMT_SVC_NAME}"
 
-        # Check if EndpointSlices already exist
+        # Check EndpointSlices for OCPBUGS-95615: control-plane-operator on OCP <4.22.z
+        # includes both VMI interface IPs per endpoint (management cluster IP + guest
+        # cluster ovn-k8s-mp0 IP). kube-proxy load-balances across all addresses, so
+        # ~50% of connections reach an unreachable IP. Fix: patch each slice to keep
+        # only addresses[0], which CAPK always orders first (the management cluster IP).
+        # This mirrors the upstream fix in HyperShift machine.go (OCPBUGS-95615).
+        # Once that fix ships in the OCP release the task becomes a no-op.
         echo ""
         echo "🔍 Checking EndpointSlices for ${MGMT_SVC_NAME}..."
         SLICE_COUNT=$(oc get endpointslice -n "${MGMT_NS}" \
@@ -111,11 +121,35 @@ spec:
           -o json | jq '.items | length')
 
         if [[ "${SLICE_COUNT}" -gt 0 ]]; then
-          echo "✅ EndpointSlices already exist (${SLICE_COUNT} found). Routing is working. Skipping workaround."
+          echo "   Found ${SLICE_COUNT} EndpointSlice(s). Checking for dual-IP endpoints (OCPBUGS-95615)..."
+          PATCHED_ANY=false
+          for SLICE_NAME in $(oc get endpointslice -n "${MGMT_NS}" \
+              -l "kubernetes.io/service-name=${MGMT_SVC_NAME}" \
+              -o jsonpath='{.items[*].metadata.name}'); do
+            SLICE_JSON=$(oc get endpointslice "${SLICE_NAME}" -n "${MGMT_NS}" -o json)
+            MAX_ADDRS=$(echo "${SLICE_JSON}" | jq '[.endpoints[].addresses | length] | max // 0')
+            if [[ "${MAX_ADDRS}" -gt 1 ]]; then
+              PATCHED_ANY=true
+              echo "   ⚠️  ${SLICE_NAME}: ${MAX_ADDRS} IPs/endpoint — patching to keep addresses[0] only..."
+              CLEAN=$(echo "${SLICE_JSON}" | jq '[.endpoints[] | .addresses = [.addresses[0]]]')
+              oc patch endpointslice "${SLICE_NAME}" -n "${MGMT_NS}" \
+                --type=merge -p "{\"endpoints\": ${CLEAN}}"
+              echo "   ✅ Patched ${SLICE_NAME}"
+            else
+              echo "   ✅ ${SLICE_NAME}: already single-IP per endpoint"
+            fi
+          done
+          if [[ "${PATCHED_ANY}" == "true" ]]; then
+            echo ""
+            echo "⚠️  Note: control-plane-operator owns these slices and will reconcile"
+            echo "   them back on the next Machine event. Run endpoint tests promptly."
+          else
+            echo "✅ All EndpointSlices already clean. No action needed."
+          fi
           exit 0
         fi
 
-        echo "🚨 Bug detected: No EndpointSlices found for ${MGMT_SVC_NAME}. Applying manual fix..."
+        echo "🚨 Bug detected: No EndpointSlices found for ${MGMT_SVC_NAME}. Applying manual fix (OCP 4.21 path)..."
 
         # Get the targetPort from the management service (https port)
         TARGET_PORT=$(oc get svc "${MGMT_SVC_NAME}" -n "${MGMT_NS}" \

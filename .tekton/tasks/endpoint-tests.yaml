@@ -89,6 +89,11 @@ spec:
             fi
           fi
 
+          echo ""
+          echo "📋 Manual curl command:"
+          echo "curl --fail -k -s --show-error --request GET -H 'Authorization: Basic <AUTH_KEY>' ${RESOLVE_OPT} 'https://${HOST}${ENDPOINT_PATH}'"
+          echo ""
+
           POD_NAME="curl-test-$(date +%s)-${RANDOM}"
           echo "======== Sending request to https://${HOST}${ENDPOINT_PATH} via remote pod ========"
           RESULT=$(oc run "${POD_NAME}" -n default --rm -i --restart=Never \
@@ -104,6 +109,20 @@ spec:
           echo "${RESULT}"
           echo "✅ Endpoint succeeded: ${ENDPOINT_PATH}"
         else
+          RESOLVE_OPT=""
+          if [[ "$(params.publicDNS)" != "true" ]]; then
+            if [[ "$INGRESS_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              RESOLVE_OPT="--resolve ${HOST}:443:${INGRESS_IP}"
+            else
+              RESOLVE_OPT="--connect-to ${HOST}:443:${INGRESS_IP}:443"
+            fi
+          fi
+
+          echo ""
+          echo "📋 Manual curl command:"
+          echo "curl --fail -k -s --show-error --request GET -H 'Authorization: Basic <AUTH_KEY>' ${RESOLVE_OPT} 'https://${HOST}${ENDPOINT_PATH}'"
+          echo ""
+
           TEST_SCRIPT="./edge-integration-cell/test_eic_endpoints.sh"
 
           SCRIPT_ARGS=("--host" "$HOST")

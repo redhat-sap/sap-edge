@@ -114,6 +114,22 @@ spec:
       description: "Jira issue key to update with deployment results"
       default: ""
 
+    # --- Logging parameters ---
+    - name: lokiSize
+      type: string
+      description: "LokiStack size (1x.extra-small for test/validation, 1x.small for production)"
+      default: "1x.extra-small"
+
+    # --- Tracing parameters ---
+    - name: istioNamespace
+      type: string
+      description: "Namespace where Istio control plane is deployed"
+      default: "istio-system"
+    - name: istioCRName
+      type: string
+      description: "Name of the Istio CR to patch with tracing extension providers"
+      default: "default"
+
     # --- Pipeline control ---
     - name: skipTeardown
       type: string
@@ -364,9 +380,60 @@ spec:
         - name: source
           workspace: source
 
-    # Step 12: Get all credentials and display them
+    # Step 12a: Deploy LokiStack logging on hosted cluster (parallel with DB deployment)
+    - name: deploy-logging
+      runAfter: [generate-sa-based-kubeconfig]
+      taskRef: { name: hcp-deploy-logging }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: lokiSize
+          value: $(params.lokiSize)
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 12b: Deploy distributed tracing on hosted cluster (parallel with DB deployment)
+    - name: deploy-tracing
+      runAfter: [generate-sa-based-kubeconfig]
+      taskRef: { name: hcp-deploy-tracing }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: istioNamespace
+          value: $(params.istioNamespace)
+        - name: istioCRName
+          value: $(params.istioCRName)
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 12c: Deploy Perses dashboards on hosted cluster (parallel with DB deployment)
+    - name: deploy-dashboards
+      runAfter: [generate-sa-based-kubeconfig]
+      taskRef: { name: hcp-deploy-dashboards }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 13: Get all credentials and display them
     - name: get-all-accesses
-      runAfter: [deploy-postgres, deploy-redis, deploy-valkey]
+      runAfter: [deploy-postgres, deploy-redis, deploy-valkey, deploy-logging, deploy-tracing, deploy-dashboards]
       taskRef: { name: hcp-get-all-accesses }
       params:
         - name: hostedClusterName
@@ -454,9 +521,11 @@ spec:
         - name: source
           workspace: source
 
-    # Step 16: Fix EndpointSlice for Hypershift KubeVirt OCP 4.21 bug
-    #          The service-sync controller may fail to create EndpointSlice
-    #          objects for LoadBalancer services, breaking MetalLB routing.
+    # Step 16: Fix EndpointSlice for OCPBUGS-95615 (HyperShift KubeVirt)
+    #          control-plane-operator puts both VMI IPs per endpoint; kube-proxy
+    #          load-balances to the unreachable guest-cluster IP ~50% of the time.
+    #          Must run before each LoadBalancer test round (CPO reconciles it back
+    #          during long approval gates). Round 3 (Route-based) is unaffected.
     - name: fix-endpointslice
       runAfter: [validate-and-create-configmap]
       taskRef: { name: hcp-fix-endpointslice }
@@ -486,11 +555,11 @@ spec:
         - name: source
           workspace: source
 
-    # Step 18: Endpoint Tests (run in parallel after EndpointSlice fix and Route creation)
+    # Step 18: Endpoint Tests (sequential to avoid MetalLB flakiness on bare-metal KubeVirt)
     # NOTE: httpbinipfilter has an IP filter policy. The hub and managed cluster
     # pod CIDRs must be whitelisted in the iFlow's IP filter settings.
     - name: test-httpbinipfilter
-      runAfter: [fix-endpointslice, create-eic-route]
+      runAfter: [test-http-testelster]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -522,7 +591,7 @@ spec:
           workspace: source
 
     - name: test-http-testelster
-      runAfter: [fix-endpointslice, create-eic-route]
+      runAfter: [test-http-test1]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -538,7 +607,7 @@ spec:
           workspace: source
 
     - name: test-slvredis
-      runAfter: [fix-endpointslice, create-eic-route]
+      runAfter: [test-httpbinipfilter]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -571,12 +640,7 @@ spec:
 
     # Step 19: Manual approval before second round of tests
     - name: approval-second-test-round
-      runAfter:
-        - test-httpbinipfilter
-        - test-http-test1
-        - test-http-testelster
-        - test-slvredis
-        - test-ratelimit-slvredis
+      runAfter: [test-ratelimit-slvredis]
       taskRef:
         apiVersion: openshift-pipelines.org/v1alpha1
         kind: ApprovalTask
@@ -602,9 +666,25 @@ spec:
         - name: timeout
           value: '336h'
 
-    # Step 20: Second round of endpoint tests (LoadBalancer)
-    - name: test-httpbinipfilter-round2
+    # Step 20: Re-apply EndpointSlice fix before Round 2 (CPO may have reconciled
+    #          dual IPs back during the approval gate — OCPBUGS-95615)
+    - name: fix-endpointslice-round2
       runAfter: [approval-second-test-round]
+      taskRef: { name: hcp-fix-endpointslice }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Second round of endpoint tests (LoadBalancer)
+    - name: test-httpbinipfilter-round2
+      runAfter: [test-http-testelster-round2]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -620,7 +700,7 @@ spec:
           workspace: source
 
     - name: test-http-test1-round2
-      runAfter: [approval-second-test-round]
+      runAfter: [fix-endpointslice-round2]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -636,7 +716,7 @@ spec:
           workspace: source
 
     - name: test-http-testelster-round2
-      runAfter: [approval-second-test-round]
+      runAfter: [test-http-test1-round2]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -652,7 +732,7 @@ spec:
           workspace: source
 
     - name: test-slvredis-round2
-      runAfter: [approval-second-test-round]
+      runAfter: [test-httpbinipfilter-round2]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -685,12 +765,7 @@ spec:
 
     # Step 21: Manual approval before Route-based tests (round 3)
     - name: approval-route-test-round
-      runAfter:
-        - test-httpbinipfilter-round2
-        - test-http-test1-round2
-        - test-http-testelster-round2
-        - test-slvredis-round2
-        - test-ratelimit-slvredis-round2
+      runAfter: [test-ratelimit-slvredis-round2]
       taskRef:
         apiVersion: openshift-pipelines.org/v1alpha1
         kind: ApprovalTask
@@ -722,7 +797,7 @@ spec:
 
     # Step 22: Route-based Endpoint Tests (round 3, via OpenShift Route)
     - name: test-httpbinipfilter-route
-      runAfter: [approval-route-test-round]
+      runAfter: [test-http-testelster-route]
       taskRef: { name: endpoint-tests-expected-status }
       params:
         - name: endpointPath
@@ -756,7 +831,7 @@ spec:
           workspace: source
 
     - name: test-http-testelster-route
-      runAfter: [approval-route-test-round]
+      runAfter: [test-http-test1-route]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -772,7 +847,7 @@ spec:
           workspace: source
 
     - name: test-slvredis-route
-      runAfter: [approval-route-test-round]
+      runAfter: [test-httpbinipfilter-route]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -805,12 +880,7 @@ spec:
 
     # Step 23: Update Jira with test results
     - name: update-jira-test-results
-      runAfter:
-        - test-httpbinipfilter-route
-        - test-http-test1-route
-        - test-http-testelster-route
-        - test-slvredis-route
-        - test-ratelimit-slvredis-route
+      runAfter: [test-ratelimit-slvredis-route]
       when:
         - input: "$(params.jiraIssueKey)"
           operator: notin

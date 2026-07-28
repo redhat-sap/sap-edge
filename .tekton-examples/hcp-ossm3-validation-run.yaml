@@ -42,7 +42,7 @@ spec:
     # hostedClusterName: include hubClusterName to avoid collisions across hubs
     # Pattern: {prefix}-{hubClusterName}-pr{number}
     - name: hostedClusterName
-      value: "hcp-ossm-eli-pr{{ pull_request_number }}"
+      value: "hcp-ossm-eic-pr{{ pull_request_number }}"
     # hostedClusterName: include hubClusterName to avoid collisions across hubs
     # Pattern: {prefix}-{hubClusterName}-pr{number}
     - name: hostedClusterNamespace
@@ -81,7 +81,7 @@ spec:
     - name: postgresHA
       value: "false"
     - name: datastoreType
-      value: "redis"
+      value: "valkey-cluster"
     - name: redisClusterType
       value: "standard"
 

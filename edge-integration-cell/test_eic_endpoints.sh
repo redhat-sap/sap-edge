@@ -77,7 +77,7 @@ echo "--------------------------------------------------"
 
 
 echo "======== Sending New Request to https://${HOST}${ENDPOINT_PATH} ========"
-if curl --fail --insecure --show-error --request GET \
+if curl --fail --insecure --silent --show-error --request GET \
           -H "Authorization: Basic ${AUTH_KEY}" \
           "${CURL_OPTS[@]}" \
           --url "https://${HOST}${ENDPOINT_PATH}"; then

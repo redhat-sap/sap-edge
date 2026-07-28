@@ -1,0 +1,606 @@
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: hcp-deploy-logging
+spec:
+  description: Deploy LokiStack logging on the hosted cluster with OBC-backed S3 storage from the hub
+  params:
+    - name: hostedClusterName
+      type: string
+      description: "Name of the hosted cluster"
+    - name: hostedClusterNamespace
+      type: string
+      description: "Namespace for HostedCluster resources"
+      default: "clusters"
+    - name: hubKubeconfigSecretName
+      type: string
+      description: "Name of the Secret containing kubeconfig for hub cluster (optional, uses in-cluster config if empty)"
+      default: ""
+    - name: lokiSize
+      type: string
+      description: "LokiStack size (1x.extra-small for test/validation, 1x.small for production)"
+      default: "1x.extra-small"
+    - name: storageClassName
+      type: string
+      description: "StorageClass for LokiStack PVCs (auto-detected if empty)"
+      default: ""
+  workspaces:
+    - name: source
+  steps:
+    - name: deploy-logging
+      image: registry.access.redhat.com/ubi9/ubi
+      timeout: "336h"
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        # Parameters
+        CLUSTER_NAME="$(params.hostedClusterName)"
+        CLUSTER_NS="$(params.hostedClusterNamespace)"
+        HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
+        LOKI_SIZE="$(params.lokiSize)"
+        STORAGE_CLASS="$(params.storageClassName)"
+
+        echo "=========================================="
+        echo "HCP Deploy Logging Task"
+        echo "=========================================="
+        echo "Hosted Cluster: ${CLUSTER_NAME}"
+        echo "Cluster Namespace: ${CLUSTER_NS}"
+        echo "LokiStack Size: ${LOKI_SIZE}"
+        echo "StorageClass: ${STORAGE_CLASS:-auto-detect}"
+        echo "=========================================="
+
+        # Install required tools
+        echo "📦 Installing required packages..."
+        dnf install -y jq > /dev/null 2>&1
+
+        echo "📦 Installing OpenShift CLI..."
+        curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz -o /tmp/oc.tar.gz
+        tar xzf /tmp/oc.tar.gz -C /tmp
+        mv /tmp/oc /usr/local/bin/
+        cp /usr/local/bin/oc /usr/local/bin/kubectl
+        rm -f /tmp/oc.tar.gz
+        oc version --client
+
+        # Configure hub cluster kubeconfig if provided
+        if [[ -n "${HUB_KUBECONFIG_SECRET}" ]]; then
+          echo "🔐 Extracting hub cluster kubeconfig from secret: ${HUB_KUBECONFIG_SECRET}..."
+          HUB_KUBECONFIG="/tmp/hub-kubeconfig"
+          if kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.kubeconfig}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: kubeconfig)"
+          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.config}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: config)"
+          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.value}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: value)"
+          else
+            echo "❌ Failed to extract kubeconfig from secret '${HUB_KUBECONFIG_SECRET}'"
+            echo "   Secret should have kubeconfig data under key 'kubeconfig', 'config', or 'value'"
+            exit 1
+          fi
+          chmod 600 "${HUB_KUBECONFIG}"
+          export KUBECONFIG="${HUB_KUBECONFIG}"
+          echo "✅ Using hub kubeconfig for cluster operations"
+          oc whoami
+        else
+          echo "ℹ️  No hub kubeconfig secret provided, using in-cluster service account"
+        fi
+
+        # =============================================
+        # Step 1: Create per-cluster OBC on hub for Loki S3 storage
+        # =============================================
+        OBC_NAME="loki-${CLUSTER_NAME}"
+        OBC_NAMESPACE="openshift-storage"
+
+        echo ""
+        echo "📦 Creating ObjectBucketClaim '${OBC_NAME}' on hub cluster..."
+
+        oc apply -f - <<EOF
+        apiVersion: objectbucket.io/v1alpha1
+        kind: ObjectBucketClaim
+        metadata:
+          name: ${OBC_NAME}
+          namespace: ${OBC_NAMESPACE}
+          labels:
+            app: loki-logging
+            cluster: ${CLUSTER_NAME}
+        spec:
+          generateBucketName: ${OBC_NAME}
+          storageClassName: openshift-storage.noobaa.io
+        EOF
+
+        echo "⏳ Waiting for OBC to become Bound..."
+        for i in $(seq 1 60); do
+          OBC_PHASE=$(oc get objectbucketclaim "${OBC_NAME}" -n "${OBC_NAMESPACE}" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+          if [[ "${OBC_PHASE}" == "Bound" ]]; then
+            echo "✅ OBC is Bound"
+            break
+          fi
+          if [[ ${i} -eq 60 ]]; then
+            echo "❌ Timeout waiting for OBC to become Bound (current phase: ${OBC_PHASE})"
+            exit 1
+          fi
+          echo "   [${i}/60] OBC phase: ${OBC_PHASE:-Pending}"
+          sleep 10
+        done
+
+        # Extract S3 credentials from OBC-generated Secret and ConfigMap
+        echo "🔐 Extracting S3 credentials from OBC..."
+        S3_ACCESS_KEY=$(oc get secret "${OBC_NAME}" -n "${OBC_NAMESPACE}" -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' | base64 -d)
+        S3_SECRET_KEY=$(oc get secret "${OBC_NAME}" -n "${OBC_NAMESPACE}" -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' | base64 -d)
+        S3_BUCKET_NAME=$(oc get configmap "${OBC_NAME}" -n "${OBC_NAMESPACE}" -o jsonpath='{.data.BUCKET_NAME}')
+
+        # Use the external S3 route (not the internal svc) since LokiStack
+        # runs on the hosted cluster and can't reach hub-internal services
+        S3_ROUTE_HOST=$(oc get route s3 -n openshift-storage -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+        if [[ -z "${S3_ROUTE_HOST}" ]]; then
+          echo "❌ Could not find S3 route in openshift-storage namespace"
+          echo "   Available routes:"
+          oc get route -n openshift-storage 2>/dev/null || echo "   None found"
+          exit 1
+        fi
+        S3_ENDPOINT="https://${S3_ROUTE_HOST}"
+
+        echo "✅ S3 credentials extracted"
+        echo "   Endpoint: ${S3_ENDPOINT} (external route)"
+        echo "   Bucket: ${S3_BUCKET_NAME}"
+        echo "   Access Key: ${S3_ACCESS_KEY:0:4}****"
+
+        # Extract hub ingress CA so the hosted cluster can trust the S3 route TLS cert
+        echo "🔐 Extracting hub ingress CA certificate..."
+        HUB_CA_CERT="/tmp/hub-ingress-ca.crt"
+        oc get secret router-certs-default -n openshift-ingress \
+          -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d > "${HUB_CA_CERT}" || true
+        if [[ ! -s "${HUB_CA_CERT}" ]]; then
+          # Fall back to the default ingress controller CA
+          oc get configmap default-ingress-cert -n openshift-config-managed \
+            -o jsonpath='{.data.ca-bundle\.crt}' > "${HUB_CA_CERT}" 2>/dev/null || true
+        fi
+        if [[ -s "${HUB_CA_CERT}" ]]; then
+          echo "✅ Hub ingress CA extracted"
+        else
+          echo "⚠️  Could not extract hub ingress CA — LokiStack may fail TLS to S3 route"
+        fi
+
+        # =============================================
+        # Step 2: Switch to hosted cluster kubeconfig
+        # =============================================
+        echo ""
+        echo "🔐 Extracting kubeconfig for hosted cluster..."
+        KUBECONFIG_SECRET="${CLUSTER_NAME}-admin-kubeconfig"
+
+        if ! oc get secret "${KUBECONFIG_SECRET}" -n "${CLUSTER_NS}" > /dev/null 2>&1; then
+          echo "❌ Kubeconfig secret '${KUBECONFIG_SECRET}' not found in namespace '${CLUSTER_NS}'"
+          exit 1
+        fi
+
+        HOSTED_KUBECONFIG="/tmp/hosted-kubeconfig"
+        oc get secret "${KUBECONFIG_SECRET}" -n "${CLUSTER_NS}" \
+          -o jsonpath='{.data.kubeconfig}' | base64 -d > "${HOSTED_KUBECONFIG}"
+        chmod 600 "${HOSTED_KUBECONFIG}"
+
+        export KUBECONFIG="${HOSTED_KUBECONFIG}"
+        [[ -f "$(workspaces.source.path)/.kubeconfig-rewrite.sh" ]] && source "$(workspaces.source.path)/.kubeconfig-rewrite.sh" "${HOSTED_KUBECONFIG}"
+
+        echo "🔍 Verifying access to hosted cluster..."
+        oc get nodes
+        echo "✅ Successfully connected to hosted cluster"
+
+        # =============================================
+        # Step 3: Create openshift-logging namespace
+        # =============================================
+        echo ""
+        echo "📂 Ensuring openshift-logging namespace exists..."
+        oc create namespace openshift-logging --dry-run=client -o yaml | oc apply -f -
+
+        # Also ensure openshift-operators-redhat namespace for Loki Operator
+        echo "📂 Ensuring openshift-operators-redhat namespace exists..."
+        oc create namespace openshift-operators-redhat --dry-run=client -o yaml | oc apply -f -
+
+        # Create CA ConfigMap for S3 route TLS trust (if we extracted the hub CA)
+        LOKI_CA_NAME=""
+        if [[ -s "${HUB_CA_CERT}" ]]; then
+          echo "🔐 Creating CA ConfigMap for S3 storage TLS trust..."
+          oc create configmap loki-s3-ca \
+            --from-file=service-ca.crt="${HUB_CA_CERT}" \
+            -n openshift-logging --dry-run=client -o yaml | oc apply -f -
+          LOKI_CA_NAME="loki-s3-ca"
+          echo "✅ CA ConfigMap 'loki-s3-ca' created in openshift-logging"
+        fi
+
+        # =============================================
+        # Step 4: Install Loki Operator
+        # =============================================
+        echo ""
+        echo "📦 Installing Loki Operator..."
+
+        # Auto-detect the default channel from the PackageManifest
+        LOKI_CHANNEL=$(oc get packagemanifest loki-operator -o jsonpath='{.status.defaultChannel}' 2>/dev/null || echo "")
+        AVAILABLE_CHANNELS=$(oc get packagemanifest loki-operator -o jsonpath='{.status.channels[*].name}' 2>/dev/null || echo "")
+        echo "   defaultChannel: '${LOKI_CHANNEL}', available: '${AVAILABLE_CHANNELS}'"
+
+        # Prefer the latest stable-* channel; fall back to defaultChannel if none exist
+        STABLE_CHANNEL=$(echo "${AVAILABLE_CHANNELS}" | tr ' ' '\n' | grep '^stable-' | sort -rV | head -1 || true)
+        if [[ -n "${STABLE_CHANNEL}" ]]; then
+          LOKI_CHANNEL="${STABLE_CHANNEL}"
+        elif [[ -z "${LOKI_CHANNEL}" ]]; then
+          echo "❌ No channel found for loki-operator (available: ${AVAILABLE_CHANNELS})"
+          exit 1
+        else
+          echo "⚠️  No stable-* channel available — using defaultChannel '${LOKI_CHANNEL}'"
+        fi
+        echo "   Using channel: ${LOKI_CHANNEL}"
+
+        # Create OperatorGroup for openshift-operators-redhat if needed
+        if ! oc get operatorgroup -n openshift-operators-redhat --no-headers 2>/dev/null | grep -q .; then
+          oc apply -f - <<EOF
+        apiVersion: operators.coreos.com/v1
+        kind: OperatorGroup
+        metadata:
+          name: openshift-operators-redhat
+          namespace: openshift-operators-redhat
+        spec: {}
+        EOF
+        fi
+
+        oc apply -f - <<EOF
+        apiVersion: operators.coreos.com/v1alpha1
+        kind: Subscription
+        metadata:
+          name: loki-operator
+          namespace: openshift-operators-redhat
+        spec:
+          channel: ${LOKI_CHANNEL}
+          installPlanApproval: Automatic
+          name: loki-operator
+          source: redhat-operators
+          sourceNamespace: openshift-marketplace
+        EOF
+
+        echo "⏳ Waiting for Loki Operator CSV to succeed..."
+        for i in $(seq 1 60); do
+          LOKI_CSV=$(oc get csv -n openshift-operators-redhat -l operators.coreos.com/loki-operator.openshift-operators-redhat -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
+          if [[ "${LOKI_CSV}" == "Succeeded" ]]; then
+            echo "✅ Loki Operator installed successfully"
+            break
+          fi
+          if [[ ${i} -eq 60 ]]; then
+            echo "❌ Timeout waiting for Loki Operator (current phase: ${LOKI_CSV})"
+            exit 1
+          fi
+          echo "   [${i}/60] Loki Operator CSV phase: ${LOKI_CSV:-Pending}"
+          sleep 10
+        done
+
+        # =============================================
+        # Step 5: Install Red Hat OpenShift Logging Operator
+        # =============================================
+        echo ""
+        echo "📦 Installing Red Hat OpenShift Logging Operator..."
+
+        # Auto-detect the default channel from the PackageManifest
+        LOGGING_CHANNEL=$(oc get packagemanifest cluster-logging -o jsonpath='{.status.defaultChannel}' 2>/dev/null || echo "")
+        if [[ -z "${LOGGING_CHANNEL}" ]]; then
+          echo "❌ Could not detect Logging Operator channel from PackageManifest"
+          echo "   Available packagemanifests:"
+          oc get packagemanifest 2>/dev/null | grep -i logging || echo "   None found"
+          exit 1
+        fi
+        echo "   Using channel: ${LOGGING_CHANNEL}"
+
+        # Create OperatorGroup for openshift-logging if needed
+        if ! oc get operatorgroup -n openshift-logging --no-headers 2>/dev/null | grep -q .; then
+          oc apply -f - <<EOF
+        apiVersion: operators.coreos.com/v1
+        kind: OperatorGroup
+        metadata:
+          name: openshift-logging
+          namespace: openshift-logging
+        spec:
+          targetNamespaces:
+            - openshift-logging
+        EOF
+        fi
+
+        oc apply -f - <<EOF
+        apiVersion: operators.coreos.com/v1alpha1
+        kind: Subscription
+        metadata:
+          name: cluster-logging
+          namespace: openshift-logging
+        spec:
+          channel: ${LOGGING_CHANNEL}
+          installPlanApproval: Automatic
+          name: cluster-logging
+          source: redhat-operators
+          sourceNamespace: openshift-marketplace
+        EOF
+
+        echo "⏳ Waiting for OpenShift Logging Operator CSV to succeed..."
+        for i in $(seq 1 60); do
+          LOGGING_CSV=$(oc get csv -n openshift-logging -l operators.coreos.com/cluster-logging.openshift-logging -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
+          if [[ "${LOGGING_CSV}" == "Succeeded" ]]; then
+            echo "✅ OpenShift Logging Operator installed successfully"
+            break
+          fi
+          if [[ ${i} -eq 60 ]]; then
+            echo "❌ Timeout waiting for OpenShift Logging Operator (current phase: ${LOGGING_CSV})"
+            exit 1
+          fi
+          echo "   [${i}/60] Logging Operator CSV phase: ${LOGGING_CSV:-Pending}"
+          sleep 10
+        done
+
+        # =============================================
+        # Step 6: Create S3 Secret for LokiStack (KBA Step 1)
+        # =============================================
+        echo ""
+        echo "🔐 Creating S3 storage secret for LokiStack..."
+
+        oc apply -f - <<EOF
+        apiVersion: v1
+        kind: Secret
+        metadata:
+          name: logging-loki-s3
+          namespace: openshift-logging
+        stringData:
+          endpoint: "${S3_ENDPOINT}"
+          bucketnames: "${S3_BUCKET_NAME}"
+          access_key_id: "${S3_ACCESS_KEY}"
+          access_key_secret: "${S3_SECRET_KEY}"
+        type: Opaque
+        EOF
+
+        echo "✅ S3 storage secret created"
+
+        # =============================================
+        # Step 7: Deploy LokiStack (KBA Step 2)
+        # =============================================
+        echo ""
+        echo "📦 Deploying LokiStack (size: ${LOKI_SIZE})..."
+
+        # Auto-detect StorageClass if not provided
+        if [[ -z "${STORAGE_CLASS}" ]]; then
+          STORAGE_CLASS=$(oc get sc -o jsonpath='{.items[?(@.metadata.annotations.storageclass\.kubernetes\.io/is-default-class=="true")].metadata.name}' 2>/dev/null || echo "")
+          if [[ -z "${STORAGE_CLASS}" ]]; then
+            STORAGE_CLASS=$(oc get sc -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "gp3-csi")
+          fi
+          echo "   Auto-detected StorageClass: ${STORAGE_CLASS}"
+        fi
+
+        # Build LokiStack manifest with optional TLS CA reference
+        LOKISTACK_YAML=$(cat <<EOYAML
+        apiVersion: loki.grafana.com/v1
+        kind: LokiStack
+        metadata:
+          name: logging-loki
+          namespace: openshift-logging
+        spec:
+          size: ${LOKI_SIZE}
+          storage:
+            schemas:
+            - version: v13
+              effectiveDate: "2024-10-25"
+            secret:
+              name: logging-loki-s3
+              type: s3
+        EOYAML
+        )
+
+        if [[ -n "${LOKI_CA_NAME}" ]]; then
+          LOKISTACK_YAML+="
+            tls:
+              caName: ${LOKI_CA_NAME}"
+        fi
+
+        LOKISTACK_YAML+="
+          storageClassName: ${STORAGE_CLASS}
+          tenants:
+            mode: openshift-logging"
+
+        echo "${LOKISTACK_YAML}" | oc apply -f -
+
+        echo "⏳ Waiting for LokiStack pods to be running..."
+        for i in $(seq 1 90); do
+          READY_PODS=$(oc get pods -n openshift-logging -l app.kubernetes.io/instance=logging-loki --no-headers 2>/dev/null | grep -c "Running" || true)
+          TOTAL_PODS=$(oc get pods -n openshift-logging -l app.kubernetes.io/instance=logging-loki --no-headers 2>/dev/null | wc -l | tr -d ' ')
+          if [[ "${TOTAL_PODS}" -gt 0 && "${READY_PODS}" -eq "${TOTAL_PODS}" ]]; then
+            echo "✅ All LokiStack pods are running (${READY_PODS}/${TOTAL_PODS})"
+            break
+          fi
+          if [[ ${i} -eq 90 ]]; then
+            echo "⚠️  Timeout waiting for all LokiStack pods (${READY_PODS}/${TOTAL_PODS} running)"
+            echo "   Continuing anyway — pods may still be starting up"
+            oc get pods -n openshift-logging -l app.kubernetes.io/instance=logging-loki
+          fi
+          echo "   [${i}/90] LokiStack pods: ${READY_PODS}/${TOTAL_PODS} running"
+          sleep 10
+        done
+
+        # =============================================
+        # Step 8: Create Log Collector ServiceAccount (KBA Step 3)
+        # =============================================
+        echo ""
+        echo "👤 Creating log collector ServiceAccount..."
+
+        oc create sa eic-log-collector -n openshift-logging --dry-run=client -o yaml | oc apply -f -
+
+        oc adm policy add-cluster-role-to-user collect-application-logs \
+          -z eic-log-collector -n openshift-logging
+
+        oc adm policy add-cluster-role-to-user cluster-logging-write-application-logs \
+          -z eic-log-collector -n openshift-logging
+
+        echo "✅ ServiceAccount created and roles bound"
+
+        # =============================================
+        # Step 9: Deploy ClusterLogForwarder (KBA Step 4)
+        # =============================================
+        echo ""
+        echo "📋 Deploying ClusterLogForwarder for EIC namespaces..."
+
+        oc apply -f - <<EOF
+        apiVersion: observability.openshift.io/v1
+        kind: ClusterLogForwarder
+        metadata:
+          name: eic-log-collector
+          namespace: openshift-logging
+        spec:
+          serviceAccount:
+            name: eic-log-collector
+          inputs:
+          - name: eic-application-logs
+            type: application
+            application:
+              includes:
+              - namespace: edgelm
+              - namespace: edge-icell
+              - namespace: edge-icell-services
+              - namespace: edge-icell-secrets
+              - namespace: edge-icell-ela
+              - namespace: istio-gateways
+          outputs:
+          - name: loki-output
+            type: lokiStack
+            lokiStack:
+              target:
+                name: logging-loki
+                namespace: openshift-logging
+              dataModel: Otel
+              authentication:
+                token:
+                  from: serviceAccount
+            tls:
+              ca:
+                configMapName: logging-loki-gateway-ca-bundle
+                key: service-ca.crt
+          pipelines:
+          - name: eic-logs-pipeline
+            inputRefs:
+            - eic-application-logs
+            outputRefs:
+            - loki-output
+        EOF
+
+        echo "✅ ClusterLogForwarder deployed"
+
+        # =============================================
+        # Step 10: Install Cluster Observability Operator (for UIPlugin CRD)
+        # =============================================
+        echo ""
+        echo "📦 Installing Cluster Observability Operator..."
+
+        COO_CHANNEL=$(oc get packagemanifest cluster-observability-operator -o jsonpath='{.status.defaultChannel}' 2>/dev/null || echo "")
+        if [[ -z "${COO_CHANNEL}" ]]; then
+          echo "⚠️  Cluster Observability Operator not available in catalog — skipping UIPlugin"
+        else
+          echo "   Using channel: ${COO_CHANNEL}"
+
+          oc apply -f - <<EOF
+        apiVersion: operators.coreos.com/v1alpha1
+        kind: Subscription
+        metadata:
+          name: cluster-observability-operator
+          namespace: openshift-operators
+        spec:
+          channel: ${COO_CHANNEL}
+          installPlanApproval: Automatic
+          name: cluster-observability-operator
+          source: redhat-operators
+          sourceNamespace: openshift-marketplace
+        EOF
+
+          echo "⏳ Waiting for Cluster Observability Operator CSV to succeed..."
+          for i in $(seq 1 60); do
+            COO_CSV=$(oc get csv -n openshift-operators -l operators.coreos.com/cluster-observability-operator.openshift-operators -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
+            if [[ "${COO_CSV}" == "Succeeded" ]]; then
+              echo "✅ Cluster Observability Operator installed successfully"
+              break
+            fi
+            if [[ ${i} -eq 60 ]]; then
+              echo "⚠️  Timeout waiting for Cluster Observability Operator — skipping UIPlugin"
+              break
+            fi
+            echo "   [${i}/60] COO CSV phase: ${COO_CSV:-Pending}"
+            sleep 10
+          done
+
+          # =============================================
+          # Step 11: Enable Console Log Viewer (KBA Step 5)
+          # =============================================
+          if [[ "${COO_CSV}" == "Succeeded" ]]; then
+            echo ""
+            echo "🖥️  Enabling console log viewer (UIPlugin)..."
+
+            UIPLUGIN_APPLIED=false
+            for API_VERSION in "observability.openshift.io/v1alpha1" "observability.openshift.io/v1"; do
+              if oc api-resources --api-group=observability.openshift.io 2>/dev/null | grep -q "UIPlugin"; then
+                if oc apply -f - <<EOF 2>/dev/null
+        apiVersion: ${API_VERSION}
+        kind: UIPlugin
+        metadata:
+          name: logging
+        spec:
+          type: Logging
+          logging:
+            lokiStack:
+              name: logging-loki
+        EOF
+                then
+                  UIPLUGIN_APPLIED=true
+                  echo "✅ UIPlugin created (${API_VERSION}) — Observe → Logs will be available after console refresh"
+                  break
+                fi
+              fi
+            done
+
+            if [[ "${UIPLUGIN_APPLIED}" != "true" ]]; then
+              echo "⚠️  UIPlugin CRD not available — skipping console log viewer"
+              echo "   Logs can still be queried via the Loki API directly"
+            fi
+          fi
+        fi
+
+        # =============================================
+        # Step 11: Verification
+        # =============================================
+        echo ""
+        echo "🔍 Verifying logging stack deployment..."
+        echo ""
+
+        echo "📋 Operator CSVs:"
+        oc get csv -n openshift-operators-redhat 2>/dev/null | grep -i loki || echo "   No Loki CSV found"
+        oc get csv -n openshift-logging 2>/dev/null | grep -i logging || echo "   No Logging CSV found"
+
+        echo ""
+        echo "📋 LokiStack status:"
+        oc get lokistack logging-loki -n openshift-logging 2>/dev/null || echo "   LokiStack not found"
+
+        echo ""
+        echo "📋 LokiStack pods:"
+        oc get pods -n openshift-logging -l app.kubernetes.io/instance=logging-loki --no-headers 2>/dev/null || echo "   No LokiStack pods"
+
+        echo ""
+        echo "📋 Log collector pods:"
+        oc get pods -n openshift-logging -l app.kubernetes.io/instance=eic-log-collector --no-headers 2>/dev/null || echo "   No collector pods yet (may take a moment to start)"
+
+        echo ""
+        echo "📋 ClusterLogForwarder conditions:"
+        oc get clusterlogforwarder eic-log-collector -n openshift-logging -o yaml 2>/dev/null | grep -A 5 conditions || echo "   No conditions available yet"
+
+        echo ""
+        echo "=========================================="
+        echo "✅ Logging stack deployed successfully!"
+        echo "=========================================="
+        echo "OBC: ${OBC_NAME} (hub cluster, namespace: ${OBC_NAMESPACE})"
+        echo "S3 Bucket: ${S3_BUCKET_NAME}"
+        echo "LokiStack Size: ${LOKI_SIZE}"
+        echo "StorageClass: ${STORAGE_CLASS}"
+        echo "Collecting logs from: edgelm, edge-icell, edge-icell-services, edge-icell-secrets, edge-icell-ela, istio-gateways"
+        echo "Console: Observe → Logs (after refresh)"
+        echo "=========================================="

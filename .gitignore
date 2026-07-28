@@ -19,4 +19,5 @@ rosa/terraform/.terraform.lock.hcl
 
 CLAUDE.md
 .claude/
+.tekton/kba*.md
 rosa/terraform/create-approvers-simple.sh
