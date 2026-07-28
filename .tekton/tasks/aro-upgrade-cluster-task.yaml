@@ -92,111 +92,159 @@ spec:
           exit 0
         fi
 
-        # Set upgrade channel
-        CHANNEL="${UPGRADE_CHANNEL:-stable-${TARGET_VERSION_PREFIX}}"
-        echo "📡 Setting upgrade channel to ${CHANNEL}..."
-        oc adm upgrade channel "${CHANNEL}"
-        echo "✅ Channel set to ${CHANNEL}"
+        CURRENT_MINOR=$(echo "${CURRENT_VERSION}" | cut -d. -f2)
+        TARGET_MINOR=$(echo "${TARGET_VERSION_PREFIX}" | cut -d. -f2)
 
-        # Sigstore admin ack for 4.20 → 4.21 upgrade
-        # 4.21 requires Sigstore signatures for mirrored release images.
-        # ARO clusters have mirrors configured (ICSP/IDMS), so the upgrade
-        # is blocked until the admin ack configmap is patched.
-        if [[ "${CURRENT_VERSION}" == 4.20.* && "${TARGET_VERSION_PREFIX}" == "4.21" ]]; then
-          echo "🔏 Applying Sigstore admin acknowledgment for 4.20 → 4.21 upgrade..."
-          oc -n openshift-config patch configmap admin-acks \
-            --patch '{"data":{"ack-4.20-sigstore-in-4.21":"true"}}' --type=merge
-          echo "✅ Sigstore admin ack applied"
-        fi
+        # Admin acks required for specific version transitions.
+        # Declared as: "from_minor:to_minor:ack_key"
+        ADMIN_ACKS=(
+          "20:21:ack-4.20-sigstore-in-4.21"
+          "21:22:ack-4.21-boot-image-opt-out-in-4.22"
+        )
 
-        # Boot image management ack for 4.21 → 4.22 upgrade
-        # Azure/vSphere clusters need to acknowledge the new default behavior
-        # (boot image management enabled) before the upgrade is allowed.
-        if [[ "${CURRENT_VERSION}" == 4.21.* && "${TARGET_VERSION_PREFIX}" == "4.22" ]]; then
-          echo "🖼️ Applying boot image management acknowledgment for 4.21 → 4.22 upgrade..."
-          oc -n openshift-config patch configmap admin-acks \
-            --patch '{"data":{"ack-4.21-boot-image-opt-out-in-4.22":"true"}}' --type=merge
-          echo "✅ Boot image management admin ack applied"
-        fi
+        apply_admin_acks() {
+          local from_minor=$1 to_minor=$2
+          for entry in "${ADMIN_ACKS[@]}"; do
+            local ack_from=${entry%%:*}
+            local rest=${entry#*:}
+            local ack_to=${rest%%:*}
+            local ack_key=${rest#*:}
+            if [[ "${from_minor}" == "${ack_from}" && "${to_minor}" == "${ack_to}" ]]; then
+              echo "🔏 Applying admin ack: ${ack_key} (4.${from_minor} → 4.${to_minor})..."
+              oc -n openshift-config patch configmap admin-acks \
+                --patch "{\"data\":{\"${ack_key}\":\"true\"}}" --type=merge
+              echo "✅ Admin ack applied"
+            fi
+          done
+        }
 
-        # Wait for available updates to populate
-        echo "⏳ Waiting for available updates to populate..."
-        START_TIME=$(date +%s)
-        MAX_WAIT=1800  # 30 minutes for updates to appear
-        TARGET_VERSION=""
+        wait_for_version() {
+          local version_prefix=$1
+          echo "⏳ Waiting for ${version_prefix}.x updates to populate..."
+          local start_time elapsed elapsed_min elapsed_sec found_version
+          start_time=$(date +%s)
+          local max_wait=1800
 
-        while true; do
-          ELAPSED=$(( $(date +%s) - START_TIME ))
-          ELAPSED_MIN=$(( ELAPSED / 60 ))
-          ELAPSED_SEC=$(( ELAPSED % 60 ))
+          while true; do
+            elapsed=$(( $(date +%s) - start_time ))
+            elapsed_min=$(( elapsed / 60 ))
+            elapsed_sec=$(( elapsed % 60 ))
 
-          if [[ ${ELAPSED} -ge ${MAX_WAIT} ]]; then
-            echo ""
-            echo "❌ Timeout waiting for ${TARGET_VERSION_PREFIX}.x updates to appear after ${ELAPSED_MIN}m"
-            echo "Available updates:"
-            oc get clusterversion version -o jsonpath='{.status.availableUpdates[*].version}' | tr ' ' '\n' | sort -V
-            exit 1
-          fi
+            if [[ ${elapsed} -ge ${max_wait} ]]; then
+              echo ""
+              echo "❌ Timeout waiting for ${version_prefix}.x updates to appear after ${elapsed_min}m"
+              echo "Available updates:"
+              oc get clusterversion version -o jsonpath='{.status.availableUpdates[*].version}' | tr ' ' '\n' | sort -V
+              echo ""
+              echo "Conditional updates:"
+              oc get clusterversion version -o json | jq -r '.status.conditionalUpdates[]? | "\(.release.version) — \(.conditions[0].message // "no message")"'
+              exit 1
+            fi
 
-          TARGET_VERSION=$(oc get clusterversion version -o json | \
-            jq -r --arg prefix "${TARGET_VERSION_PREFIX}" \
-            '[.status.availableUpdates[]? | select(.version | startswith($prefix))] | sort_by(.version | split(".") | map(tonumber)) | last | .version // empty')
+            found_version=$(oc get clusterversion version -o json | \
+              jq -r --arg prefix "${version_prefix}" \
+              '[.status.availableUpdates[]? | select(.version | startswith($prefix))] | sort_by(.version | split(".") | map(tonumber)) | last | .version // empty')
 
-          if [[ -n "${TARGET_VERSION}" ]]; then
-            echo ""
-            echo "✅ Found target version: ${TARGET_VERSION}"
-            break
-          fi
+            if [[ -n "${found_version}" ]]; then
+              echo ""
+              echo "✅ Found target version: ${found_version}"
+              echo "${found_version}"
+              return
+            fi
 
-          printf "\r  [%dm%ds] Waiting for ${TARGET_VERSION_PREFIX}.x updates..." "${ELAPSED_MIN}" "${ELAPSED_SEC}"
-          sleep 30
+            printf "\r  [%dm%ds] Waiting for ${version_prefix}.x updates..." "${elapsed_min}" "${elapsed_sec}"
+            sleep 30
+          done
+        }
+
+        do_upgrade() {
+          local from_version=$1 to_version=$2
+          echo ""
+          echo "🚀 Triggering upgrade: ${from_version} → ${to_version}"
+          oc adm upgrade --to="${to_version}"
+          echo "✅ Upgrade initiated"
+
+          echo ""
+          echo "⏳ Waiting for upgrade to complete..."
+          local start_time elapsed elapsed_min elapsed_sec
+          start_time=$(date +%s)
+          local max_wait=14400
+
+          while true; do
+            elapsed=$(( $(date +%s) - start_time ))
+            elapsed_min=$(( elapsed / 60 ))
+            elapsed_sec=$(( elapsed % 60 ))
+
+            if [[ ${elapsed} -ge ${max_wait} ]]; then
+              echo ""
+              echo "❌ Timeout waiting for upgrade after ${elapsed_min}m"
+              oc get clusterversion version
+              exit 1
+            fi
+
+            CV_JSON=$(oc get clusterversion version -o json)
+            HISTORY_VERSION=$(echo "$CV_JSON" | jq -r '.status.history[0].version // empty')
+            HISTORY_STATE=$(echo "$CV_JSON" | jq -r '.status.history[0].state // empty')
+            PROGRESSING=$(echo "$CV_JSON" | jq -r '.status.conditions[] | select(.type=="Progressing") | .message // empty')
+
+            if [[ "${HISTORY_VERSION}" == "${to_version}" && "${HISTORY_STATE}" == "Completed" ]]; then
+              echo ""
+              echo "✅ Upgrade to ${to_version} completed successfully! [${elapsed_min}m${elapsed_sec}s]"
+              return
+            fi
+
+            printf "\r  [%dm%ds] %s → %s (state: %s)  " "${elapsed_min}" "${elapsed_sec}" "${from_version}" "${HISTORY_VERSION}" "${HISTORY_STATE}"
+
+            if [[ $(( elapsed % 300 )) -lt 60 && ${elapsed} -gt 0 ]]; then
+              echo ""
+              echo "  Progress: ${PROGRESSING}"
+            fi
+
+            sleep 60
+          done
+        }
+
+        # Build the list of minor version hops required
+        HOPS=()
+        for (( m = CURRENT_MINOR + 1; m <= TARGET_MINOR; m++ )); do
+          HOPS+=("$m")
         done
 
-        # Trigger upgrade
-        echo ""
-        echo "🚀 Triggering upgrade: ${CURRENT_VERSION} → ${TARGET_VERSION}"
-        oc adm upgrade --to="${TARGET_VERSION}"
-        echo "✅ Upgrade initiated"
+        if [[ ${#HOPS[@]} -eq 0 ]]; then
+          echo "❌ Current minor ${CURRENT_MINOR} is already at or beyond target minor ${TARGET_MINOR}"
+          exit 1
+        fi
 
-        # Poll until upgrade completes
-        echo ""
-        echo "⏳ Waiting for upgrade to complete..."
-        START_TIME=$(date +%s)
-        MAX_WAIT=14400  # 4 hours
+        echo "📋 Upgrade path: 4.${CURRENT_MINOR} → $(printf '4.%s → ' "${HOPS[@]}" | sed 's/ → $//')"
 
-        while true; do
-          ELAPSED=$(( $(date +%s) - START_TIME ))
-          ELAPSED_MIN=$(( ELAPSED / 60 ))
-          ELAPSED_SEC=$(( ELAPSED % 60 ))
+        ORIGINAL_VERSION="${CURRENT_VERSION}"
+        for HOP_MINOR in "${HOPS[@]}"; do
+          HOP_PREFIX="4.${HOP_MINOR}"
+          PREV_MINOR=$(( HOP_MINOR - 1 ))
 
-          if [[ ${ELAPSED} -ge ${MAX_WAIT} ]]; then
-            echo ""
-            echo "❌ Timeout waiting for upgrade after ${ELAPSED_MIN}m"
-            oc get clusterversion version
-            exit 1
+          echo ""
+          echo "=========================================="
+          echo "  Hop: 4.${PREV_MINOR} → ${HOP_PREFIX}"
+          echo "=========================================="
+
+          # Use the caller-provided channel only for the final hop
+          if [[ "${HOP_MINOR}" -eq "${TARGET_MINOR}" ]]; then
+            CHANNEL="${UPGRADE_CHANNEL:-stable-${HOP_PREFIX}}"
+          else
+            CHANNEL="fast-${HOP_PREFIX}"
           fi
 
-          CV_JSON=$(oc get clusterversion version -o json)
-          HISTORY_VERSION=$(echo "$CV_JSON" | jq -r '.status.history[0].version // empty')
-          HISTORY_STATE=$(echo "$CV_JSON" | jq -r '.status.history[0].state // empty')
-          PROGRESSING=$(echo "$CV_JSON" | jq -r '.status.conditions[] | select(.type=="Progressing") | .message // empty')
+          echo "📡 Setting upgrade channel to ${CHANNEL}..."
+          oc adm upgrade channel "${CHANNEL}"
+          echo "✅ Channel set to ${CHANNEL}"
 
-          if [[ "${HISTORY_VERSION}" == "${TARGET_VERSION}" && "${HISTORY_STATE}" == "Completed" ]]; then
-            echo ""
-            echo "✅ Upgrade to ${TARGET_VERSION} completed successfully! [${ELAPSED_MIN}m${ELAPSED_SEC}s]"
-            break
-          fi
+          apply_admin_acks "${PREV_MINOR}" "${HOP_MINOR}"
 
-          # Show progress
-          printf "\r  [%dm%ds] %s → %s (state: %s)  " "${ELAPSED_MIN}" "${ELAPSED_SEC}" "${CURRENT_VERSION}" "${HISTORY_VERSION}" "${HISTORY_STATE}"
+          TARGET_VERSION=$(wait_for_version "${HOP_PREFIX}")
 
-          # Log detailed progress every 5 minutes
-          if [[ $(( ELAPSED % 300 )) -lt 60 && ${ELAPSED} -gt 0 ]]; then
-            echo ""
-            echo "  Progress: ${PROGRESSING}"
-          fi
+          do_upgrade "${CURRENT_VERSION}" "${TARGET_VERSION}"
 
-          sleep 60
+          CURRENT_VERSION="${TARGET_VERSION}"
         done
 
         # Verify all nodes are ready and updated
@@ -215,9 +263,9 @@ spec:
         echo "=========================================="
         echo "✅ ARO Cluster Upgrade Complete"
         echo "=========================================="
-        echo "  From: ${CURRENT_VERSION}"
-        echo "  To:   ${TARGET_VERSION}"
-        echo "  Time: ${ELAPSED_MIN}m${ELAPSED_SEC}s"
+        echo "  From: ${ORIGINAL_VERSION}"
+        echo "  To:   ${CURRENT_VERSION}"
+        echo "  Hops: ${#HOPS[@]}"
         echo "=========================================="
 
-        echo -n "${TARGET_VERSION}" > $(results.upgrade-version.path)
+        echo -n "${CURRENT_VERSION}" > $(results.upgrade-version.path)
