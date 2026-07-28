@@ -422,7 +422,7 @@ spec:
           echo "⚠️  terraform init attempt ${TF_INIT_ATTEMPT} failed, retrying in 30s..."
           sleep 30
         done
-        
+
         # Plan
         echo "📋 Planning Terraform deployment..."
         terraform plan -out=tfplan

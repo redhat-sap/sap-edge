@@ -29,11 +29,11 @@ spec:
     - name: pullRequestNumber
       value: "{{ pull_request_number }}"
     - name: clusterName
-      value: "dm-edge-poc"
+      value: "rosa-elm-pr{{ pull_request_number }}"
     - name: awsRegion
       value: "eu-north-1"
     - name: rosaVersion
-      value: "4.21.14"
+      value: "4.22.4"
     - name: awsSecretName
       value: "aws-mj"
     - name: redhatTokenSecretName
@@ -43,7 +43,7 @@ spec:
     - name: jiraSecretName
       value: "jira-secret-mj"
     - name: jiraIssueKey
-      value: ""
+      value: "SAPOCP-2114"
     - name: skipEdgelmValidation
       value: "true"
     - name: hubKubeconfigSecretName
