@@ -182,7 +182,12 @@ spec:
               exit 1
             fi
 
-            CV_JSON=$(oc get clusterversion version -o json)
+            if ! CV_JSON=$(oc get clusterversion version -o json 2>&1); then
+              printf "\r  [%dm%ds] API unavailable (expected during kube-apiserver rollout), retrying...  " "${elapsed_min}" "${elapsed_sec}"
+              sleep 60
+              continue
+            fi
+
             HISTORY_VERSION=$(echo "$CV_JSON" | jq -r '.status.history[0].version // empty')
             HISTORY_STATE=$(echo "$CV_JSON" | jq -r '.status.history[0].state // empty')
             PROGRESSING=$(echo "$CV_JSON" | jq -r '.status.conditions[] | select(.type=="Progressing") | .message // empty')
