@@ -24,6 +24,7 @@ jobs:
         run: |
           pipx install bindep
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+          brew update
           bindep -l newline dev | xargs brew install
           echo "$(brew --prefix)/bin" >> $GITHUB_PATH
 
