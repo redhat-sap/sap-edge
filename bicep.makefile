@@ -570,7 +570,9 @@ aro-deploy-test:  ## Deploy ARO with cost-optimized test settings
 		--parameters @bicep/test.parameters.json \
 		--parameters @$$TEMP_PARAMS \
 		--parameters deployPostgres=$${DEPLOY_POSTGRES:-false} deployRedis=$${DEPLOY_REDIS:-false} deployQuay=$${DEPLOY_QUAY:-false}; \
-	rm -f $$TEMP_PARAMS
+	EXIT_CODE=$$?; \
+	rm -f $$TEMP_PARAMS; \
+	exit $$EXIT_CODE
 
 .PHONY: aro-services-deploy-test
 aro-services-deploy-test:  ## Deploy only Azure services with test settings
