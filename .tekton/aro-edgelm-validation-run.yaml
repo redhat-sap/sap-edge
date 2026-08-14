@@ -31,7 +31,7 @@ spec:
     - name: aroLocation
       value: "northeurope"
     - name: aroClusterName
-      value: "aro-elm-pr{{ pull_request_number }}"
+      value: "eic-ocp-demo"
     - name: aroVersion
       value: "4.20.15"
     - name: azureSecretName
