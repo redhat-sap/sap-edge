@@ -15,7 +15,7 @@
       "value": "Standard_D8s_v3"
     },
     "workerVmSize": {
-      "value": "Standard_D4s_v3"
+      "value": "Standard_D8s_v3"
     },
     "workerCount": {
       "value": 3
