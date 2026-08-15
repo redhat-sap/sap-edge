@@ -15,6 +15,53 @@
         kubeconfig: "{{ kubeconfig_path | default(omit) }}"
       register: existing_subscription
 
+    - name: Get Quay operator available channels
+      kubernetes.core.k8s_info:
+        api_version: packages.operators.coreos.com/v1
+        kind: PackageManifest
+        name: quay-operator
+        namespace: openshift-marketplace
+        kubeconfig: "{{ kubeconfig_path | default(omit) }}"
+      register: quay_packagemanifest
+
+    - name: Select latest stable channel
+      set_fact:
+        quay_channel: >-
+          {{ quay_packagemanifest.resources[0].status.channels
+             | selectattr('name', 'match', '^stable-')
+             | map(attribute='name')
+             | sort
+             | last }}
+
+    - name: Display selected Quay channel
+      debug:
+        msg: "Auto-selected Quay operator channel: {{ quay_channel }}"
+
+    - name: Delete stale subscription if channel is wrong
+      kubernetes.core.k8s:
+        api_version: operators.coreos.com/v1alpha1
+        kind: Subscription
+        name: quay-operator
+        namespace: "{{ quay.namespace }}"
+        state: absent
+        kubeconfig: "{{ kubeconfig_path | default(omit) }}"
+      when:
+        - existing_subscription.resources | length > 0
+        - existing_subscription.resources[0].spec.channel != quay_channel
+
+    - name: Delete stale CSV if subscription was wrong
+      kubernetes.core.k8s:
+        api_version: operators.coreos.com/v1alpha1
+        kind: ClusterServiceVersion
+        namespace: "{{ quay.namespace }}"
+        label_selectors:
+          - "operators.coreos.com/quay-operator.{{ quay.namespace }}"
+        state: absent
+        kubeconfig: "{{ kubeconfig_path | default(omit) }}"
+      when:
+        - existing_subscription.resources | length > 0
+        - existing_subscription.resources[0].spec.channel != quay_channel
+
     - name: Create Quay operator subscription
       kubernetes.core.k8s:
         definition:
@@ -24,13 +71,12 @@
             name: quay-operator
             namespace: "{{ quay.namespace }}"
           spec:
-            channel: stable-3.11
+            channel: "{{ quay_channel }}"
             name: quay-operator
             source: redhat-operators
             sourceNamespace: openshift-marketplace
         state: present
         kubeconfig: "{{ kubeconfig_path | default(omit) }}"
-      when: existing_subscription.resources | length == 0
 
     - name: Wait for Quay operator CSV to be installed
       kubernetes.core.k8s_info:
