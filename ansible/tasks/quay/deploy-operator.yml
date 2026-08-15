@@ -23,7 +23,6 @@
         namespace: openshift-marketplace
         kubeconfig: "{{ kubeconfig_path | default(omit) }}"
       register: quay_packagemanifest
-      when: existing_subscription.resources | length == 0
 
     - name: Select latest stable channel
       set_fact:
@@ -33,12 +32,35 @@
              | map(attribute='name')
              | sort
              | last }}
-      when: existing_subscription.resources | length == 0
 
     - name: Display selected Quay channel
       debug:
-        msg: "📡 Auto-selected Quay operator channel: {{ quay_channel }}"
-      when: existing_subscription.resources | length == 0
+        msg: "Auto-selected Quay operator channel: {{ quay_channel }}"
+
+    - name: Delete stale subscription if channel is wrong
+      kubernetes.core.k8s:
+        api_version: operators.coreos.com/v1alpha1
+        kind: Subscription
+        name: quay-operator
+        namespace: "{{ quay.namespace }}"
+        state: absent
+        kubeconfig: "{{ kubeconfig_path | default(omit) }}"
+      when:
+        - existing_subscription.resources | length > 0
+        - existing_subscription.resources[0].spec.channel != quay_channel
+
+    - name: Delete stale CSV if subscription was wrong
+      kubernetes.core.k8s:
+        api_version: operators.coreos.com/v1alpha1
+        kind: ClusterServiceVersion
+        namespace: "{{ quay.namespace }}"
+        label_selectors:
+          - "operators.coreos.com/quay-operator.{{ quay.namespace }}"
+        state: absent
+        kubeconfig: "{{ kubeconfig_path | default(omit) }}"
+      when:
+        - existing_subscription.resources | length > 0
+        - existing_subscription.resources[0].spec.channel != quay_channel
 
     - name: Create Quay operator subscription
       kubernetes.core.k8s:
@@ -55,7 +77,6 @@
             sourceNamespace: openshift-marketplace
         state: present
         kubeconfig: "{{ kubeconfig_path | default(omit) }}"
-      when: existing_subscription.resources | length == 0
 
     - name: Wait for Quay operator CSV to be installed
       kubernetes.core.k8s_info:
