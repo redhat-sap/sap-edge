@@ -258,7 +258,7 @@ spec:
         oc get nodes -o wide
         echo ""
 
-        NOT_READY=$(oc get nodes --no-headers | grep -v " Ready " | wc -l | tr -d ' ')
+        NOT_READY=$(oc get nodes --no-headers | grep -v " Ready " | wc -l | tr -d ' ' || true)
         if [[ "${NOT_READY}" -gt 0 ]]; then
           echo "⚠️  ${NOT_READY} node(s) are not Ready. Waiting for nodes to stabilize..."
           oc wait --for=condition=Ready nodes --all --timeout=600s || true
