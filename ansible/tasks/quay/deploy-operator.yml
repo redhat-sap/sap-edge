@@ -15,6 +15,31 @@
         kubeconfig: "{{ kubeconfig_path | default(omit) }}"
       register: existing_subscription
 
+    - name: Get Quay operator available channels
+      kubernetes.core.k8s_info:
+        api_version: packages.operators.coreos.com/v1
+        kind: PackageManifest
+        name: quay-operator
+        namespace: openshift-marketplace
+        kubeconfig: "{{ kubeconfig_path | default(omit) }}"
+      register: quay_packagemanifest
+      when: existing_subscription.resources | length == 0
+
+    - name: Select latest stable channel
+      set_fact:
+        quay_channel: >-
+          {{ quay_packagemanifest.resources[0].status.channels
+             | selectattr('name', 'match', '^stable-')
+             | map(attribute='name')
+             | sort
+             | last }}
+      when: existing_subscription.resources | length == 0
+
+    - name: Display selected Quay channel
+      debug:
+        msg: "📡 Auto-selected Quay operator channel: {{ quay_channel }}"
+      when: existing_subscription.resources | length == 0
+
     - name: Create Quay operator subscription
       kubernetes.core.k8s:
         definition:
@@ -24,7 +49,7 @@
             name: quay-operator
             namespace: "{{ quay.namespace }}"
           spec:
-            channel: stable-3.11
+            channel: "{{ quay_channel }}"
             name: quay-operator
             source: redhat-operators
             sourceNamespace: openshift-marketplace
