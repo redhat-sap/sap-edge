@@ -48,7 +48,7 @@ spec:
     - name: hostedClusterNamespace
       value: "clusters"
     - name: releaseImage
-      value: "quay.io/openshift-release-dev/ocp-release:4.22.5-x86_64"
+      value: "quay.io/openshift-release-dev/ocp-release:4.19.0-x86_64"
     - name: nodePoolReplicas
       value: "3"
     - name: nodePoolCpuCores
@@ -58,7 +58,7 @@ spec:
     - name: rootDiskSizeGB
       value: "120"
     - name: pullSecretName
-      value: "mj-pull-secret"
+      value: "rb-pull-secret"
     - name: etcdStorageClass
       value: ""
     # hubClusterName: name of the target hub cluster
@@ -93,7 +93,7 @@ spec:
 
     # --- Jira parameters ---
     - name: jiraSecretName
-      value: "jira-secret-mj"
+      value: "jira-secret-rb"
     - name: jiraIssueKey
       value: ""
 
