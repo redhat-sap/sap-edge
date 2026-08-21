@@ -42,7 +42,7 @@ spec:
     # hostedClusterName: include hubClusterName to avoid collisions across hubs
     # Pattern: {prefix}-{hubClusterName}-pr{number}
     - name: hostedClusterName
-      value: "hcp-ossm-eic-pr{{ pull_request_number }}"
+      value: "hcp-ossm-eic-v2-pr{{ pull_request_number }}"
     # hostedClusterName: include hubClusterName to avoid collisions across hubs
     # Pattern: {prefix}-{hubClusterName}-pr{number}
     - name: hostedClusterNamespace
