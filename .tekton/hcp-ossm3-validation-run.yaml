@@ -42,13 +42,13 @@ spec:
     # hostedClusterName: include hubClusterName to avoid collisions across hubs
     # Pattern: {prefix}-{hubClusterName}-pr{number}
     - name: hostedClusterName
-      value: "hcp-ossm-eic-pr{{ pull_request_number }}"
+      value: "hcp-ossm-eic-v3-pr{{ pull_request_number }}"
     # hostedClusterName: include hubClusterName to avoid collisions across hubs
     # Pattern: {prefix}-{hubClusterName}-pr{number}
     - name: hostedClusterNamespace
       value: "clusters"
     - name: releaseImage
-      value: "quay.io/openshift-release-dev/ocp-release:4.22.5-x86_64"
+      value: "quay.io/openshift-release-dev/ocp-release:4.20.35-x86_64"
     - name: nodePoolReplicas
       value: "3"
     - name: nodePoolCpuCores
@@ -58,7 +58,7 @@ spec:
     - name: rootDiskSizeGB
       value: "120"
     - name: pullSecretName
-      value: "mj-pull-secret"
+      value: "rb-pull-secret"
     - name: etcdStorageClass
       value: ""
     # hubClusterName: name of the target hub cluster
@@ -93,7 +93,7 @@ spec:
 
     # --- Jira parameters ---
     - name: jiraSecretName
-      value: "jira-secret-mj"
+      value: "jira-secret-rb"
     - name: jiraIssueKey
       value: ""
 
