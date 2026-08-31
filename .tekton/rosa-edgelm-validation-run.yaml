@@ -35,15 +35,15 @@ spec:
     - name: rosaVersion
       value: "4.22.4"
     - name: awsSecretName
-      value: "aws-mj"
+      value: "aws-rb"
     - name: redhatTokenSecretName
-      value: "mj-rh-token"
+      value: "rb-rh-token"
     - name: quayAdminPasswordSecretName
       value: "quay-admin-secret"
     - name: jiraSecretName
-      value: "jira-secret-mj"
+      value: "jira-secret-rb"
     - name: jiraIssueKey
-      value: "SAPOCP-2114"
+      value: "SAPOCP-2129"
     - name: skipEdgelmValidation
       value: "true"
     - name: hubKubeconfigSecretName
