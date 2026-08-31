@@ -33,17 +33,17 @@ spec:
     - name: aroClusterName
       value: "aro-elm-pr{{ pull_request_number }}"
     - name: aroVersion
-      value: "4.20.15"
+      value: "4.22"
     - name: azureSecretName
-      value: "mj-azure-sp"
+      value: "rb-azure-sp"
     - name: pullSecretName
-      value: "mj-pull-secret"
+      value: "rb-pull-secret"
     - name: quayAdminPasswordSecretName
       value: "quay-admin-secret"
     - name: jiraSecretName
-      value: "jira-secret"
+      value: "jira-secret-rb"
     - name: jiraIssueKey
-      value: "SAPOCP-2104"
+      value: "SAPOCP-2128"
     - name: targetVersionPrefix
       value: "4.22"                # major.minor only — used as default channel (stable-X.Y)
     - name: upgradeChannel
