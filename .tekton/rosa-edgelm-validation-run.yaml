@@ -37,7 +37,7 @@ spec:
     - name: awsSecretName
       value: "aws-rb"
     - name: redhatTokenSecretName
-      value: "rb-rh-token"
+      value: "mj-rh-token"
     - name: quayAdminPasswordSecretName
       value: "quay-admin-secret"
     - name: jiraSecretName
