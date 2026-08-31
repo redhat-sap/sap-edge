@@ -35,7 +35,7 @@ spec:
     - name: aroVersion
       value: "4.22"
     - name: azureSecretName
-      value: "rb-azure-sp"
+      value: "mj-azure-sp"
     - name: pullSecretName
       value: "rb-pull-secret"
     - name: quayAdminPasswordSecretName
