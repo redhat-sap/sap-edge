@@ -159,4 +159,5 @@ compatiblelicenses
 sublicensable
 waivable
 packagemanifests
+packagemanifest
 elbv
