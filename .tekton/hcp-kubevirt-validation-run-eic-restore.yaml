@@ -7,7 +7,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: hcp-kubevirt-validation-backup-pr{{ pull_request_number }}-
+  generateName: hcp-kubevirt-validation-restore-pr{{ pull_request_number }}-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
@@ -31,7 +31,7 @@ spec:
     # hostedClusterName: include hubClusterName to avoid collisions across hubs
     # Pattern: {prefix}-{hubClusterName}-pr{number}
     - name: hostedClusterName
-      value: "hcp-eli-br-pr{{ pull_request_number }}"
+      value: "hcp-eli-res-pr{{ pull_request_number }}"
     # hostedClusterName: include hubClusterName to avoid collisions across hubs
     # Pattern: {prefix}-{hubClusterName}-pr{number}
     - name: hostedClusterNamespace
