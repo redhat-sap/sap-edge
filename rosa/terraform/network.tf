@@ -5,15 +5,27 @@
 
 # SPDX-License-Identifier: Apache-2.0
 
+locals {
+  # Number of AZs to use, driven by the configured subnet lists.
+  az_count = length(var.private_subnets)
+
+  # Explicit zone-name allowlist derived from the region (e.g. eu-north-1a,
+  # eu-north-1b, ...). CKV_AWS_394 only accepts an identity-based filter
+  # (zone-name/zone-id) because it produces a closed, deterministic set that
+  # cannot silently expand when AWS adds a new Availability Zone.
+  availability_zone_names = [
+    for i in range(local.az_count) :
+    "${var.aws_region}${element(["a", "b", "c", "d", "e", "f"], i)}"
+  ]
+}
+
 data "aws_availability_zones" "available" {
   state = "available"
 
-  # Pin zone identity (CKV_AWS_394): restrict to standard regional AZs so the
-  # result set does not silently expand when AWS adds opt-in zones such as
-  # Local Zones or Wavelength.
+  # Pin zone identity (CKV_AWS_394) to an explicit, closed set of AZ names.
   filter {
-    name   = "opt-in-status"
-    values = ["opt-in-not-required"]
+    name   = "zone-name"
+    values = local.availability_zone_names
   }
 }
 
