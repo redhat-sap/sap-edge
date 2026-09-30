@@ -7,6 +7,14 @@
 
 data "aws_availability_zones" "available" {
   state = "available"
+
+  # Pin zone identity (CKV_AWS_394): restrict to standard regional AZs so the
+  # result set does not silently expand when AWS adds opt-in zones such as
+  # Local Zones or Wavelength.
+  filter {
+    name   = "opt-in-status"
+    values = ["opt-in-not-required"]
+  }
 }
 
 module "vpc" {
