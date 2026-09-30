@@ -264,6 +264,48 @@ spec:
           ROOT_STORAGE_CONFIG="storageClass: ${ETCD_STORAGE_CLASS}"
         fi
 
+        # Create crio nofile ConfigMap for the NodePool
+        # HyperShift NodePools reference MachineConfig via a ConfigMap whose
+        # data.config holds a full MachineConfig manifest (this is the
+        # HyperShift convention). The MachineConfig drops a crio drop-in that
+        # raises the default nofile ulimit to 1048576:1048576 so workloads like
+        # Solace (which opens a large number of file descriptors) run cleanly.
+        # Baking this in at NodePool creation time means worker nodes boot with
+        # the correct ulimit on first boot — no post-creation config change and
+        # therefore no VM replacement rollout (NodePool uses upgradeType: Replace).
+        echo "📦 Creating crio-nofile ConfigMap in ${CLUSTER_NS}..."
+        cat <<EOF | oc apply -f -
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: crio-nofile
+          namespace: ${CLUSTER_NS}
+          labels:
+            app.kubernetes.io/managed-by: tekton
+            app.kubernetes.io/part-of: sap-edge
+        data:
+          config: |
+            apiVersion: machineconfiguration.openshift.io/v1
+            kind: MachineConfig
+            metadata:
+              labels:
+                machineconfiguration.openshift.io/role: worker
+              name: 99-worker-crio-nofile
+            spec:
+              config:
+                ignition:
+                  version: 3.2.0
+                storage:
+                  files:
+                  - path: /etc/crio/crio.conf.d/99-nofile.conf
+                    mode: 0644
+                    overwrite: true
+                    contents:
+                      source: data:text/plain;charset=utf-8;base64,W2NyaW8ucnVudGltZV0KZGVmYXVsdF91bGltaXRzID0gWwogICAgIm5vZmlsZT0xMDQ4NTc2OjEwNDg1NzYiLApdCg==
+        EOF
+
+        echo "✅ crio-nofile ConfigMap created"
+
         # Create NodePool CR
         echo "🖥️  Creating NodePool with ${NODE_POOL_REPLICAS} workers..."
         cat <<EOF | oc apply -f -
@@ -278,6 +320,8 @@ spec:
         spec:
           clusterName: ${CLUSTER_NAME}
           replicas: ${NODE_POOL_REPLICAS}
+          config:
+            - name: crio-nofile
           management:
             autoRepair: false
             upgradeType: Replace
