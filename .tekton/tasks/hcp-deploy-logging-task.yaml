@@ -220,8 +220,8 @@ spec:
         echo "📦 Installing Loki Operator..."
 
         # Auto-detect the default channel from the PackageManifest
-        LOKI_CHANNEL=$(oc get packagemanifest loki-operator -o jsonpath='{.status.defaultChannel}' 2>/dev/null || echo "")
-        AVAILABLE_CHANNELS=$(oc get packagemanifest loki-operator -o jsonpath='{.status.channels[*].name}' 2>/dev/null || echo "")
+        LOKI_CHANNEL=$(oc get packagemanifest --field-selector metadata.name=loki-operator -l catalog=redhat-operators -o jsonpath='{.items[0].status.defaultChannel}' 2>/dev/null || echo "")
+        AVAILABLE_CHANNELS=$(oc get packagemanifest --field-selector metadata.name=loki-operator -l catalog=redhat-operators -o jsonpath='{.items[0].status.channels[*].name}' 2>/dev/null || echo "")
         echo "   defaultChannel: '${LOKI_CHANNEL}', available: '${AVAILABLE_CHANNELS}'"
 
         # Prefer the latest stable-* channel; fall back to defaultChannel if none exist
