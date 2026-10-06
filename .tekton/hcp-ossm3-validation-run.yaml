@@ -42,7 +42,7 @@ spec:
     # hostedClusterName: include hubClusterName to avoid collisions across hubs
     # Pattern: {prefix}-{hubClusterName}-pr{number}
     - name: hostedClusterName
-      value: "hcp-ossm-eic-pr{{ pull_request_number }}"
+      value: "hcp-ossm-eic-pr{{ pull_request_number }}-v2"
     # hostedClusterName: include hubClusterName to avoid collisions across hubs
     # Pattern: {prefix}-{hubClusterName}-pr{number}
     - name: hostedClusterNamespace
@@ -95,7 +95,7 @@ spec:
     - name: jiraSecretName
       value: "jira-secret-rb"
     - name: jiraIssueKey
-      value: ""
+      value: "SAPOCP-2255"
 
     # --- Pipeline control ---
     - name: skipTeardown
