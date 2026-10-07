@@ -178,6 +178,8 @@ fi
 # per-instance so pulling several instances into one directory does not clobber.
 if [[ -n "$INSTANCE" ]]; then
     redis_cert_file="external_redis_tls_certificate_${INSTANCE}.pem"
+elif [[ "$REDIS_NAMESPACE" != "$REDIS_NAMESPACE_BASE" ]]; then
+    redis_cert_file="external_redis_tls_certificate_${REDIS_NAMESPACE}.pem"
 else
     redis_cert_file="external_redis_tls_certificate.pem"
 fi
