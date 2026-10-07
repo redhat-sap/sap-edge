@@ -17,6 +17,7 @@ POSTGRES_NAMESPACE="sap-eic-external-postgres"
 REDIS_NAMESPACE="sap-eic-external-redis"
 VALKEY_NAMESPACE="sap-eic-external-valkey"
 INSTANCE=""             # optional EIC instance name (multiple EIC systems on one cluster)
+DROP_DATA=false         # with --instance: also DROP the PostgreSQL database+role (destroys data)
 DRY_RUN=false
 FORCE=false
 VERBOSE=false
@@ -75,7 +76,10 @@ OPTIONS:
     -i, --instance NAME          EIC instance name (multiple EIC systems on one cluster).
                                  Removes the instance's PostgreSQL database from the shared
                                  cluster and deletes the instance's Redis/Valkey namespaces.
-                                 Takes precedence over the --*-namespace flags.
+                                 Takes precedence over the --*-namespace flags. By default the
+                                 instance's PostgreSQL database/role is retained (see --drop-data).
+    --drop-data                  With --instance, also DROP the instance's PostgreSQL database
+                                 and role, permanently destroying its data.
     --postgres-namespace NS      PostgreSQL namespace (default: sap-eic-external-postgres)
     --redis-namespace NS         Redis namespace (default: sap-eic-external-redis)
     --valkey-namespace NS        Valkey namespace (default: sap-eic-external-valkey)
@@ -163,6 +167,10 @@ while [[ $# -gt 0 ]]; do
             INSTANCE="$2"
             shift 2
             ;;
+        --drop-data)
+            DROP_DATA=true
+            shift
+            ;;
         --ocp-version)
             OPENSHIFT_VERSION="$2"
             shift 2
@@ -209,7 +217,11 @@ PG_DB_NOTE=""
 if [[ -n "$INSTANCE" ]]; then
     REDIS_TARGET_NS="sap-eic-external-redis-$INSTANCE"
     VALKEY_TARGET_NS="sap-eic-external-valkey-$INSTANCE"
-    PG_DB_NOTE=", database: edgedb-$INSTANCE (shared cluster preserved)"
+    if [[ "$DROP_DATA" == "true" ]]; then
+        PG_DB_NOTE=", database edgedb-$INSTANCE DROPPED (shared cluster preserved)"
+    else
+        PG_DB_NOTE=", database edgedb-$INSTANCE detached, data retained (shared cluster preserved)"
+    fi
 fi
 
 # Display banner
@@ -272,9 +284,13 @@ if [[ "$CLEANUP_POSTGRES" == "true" ]]; then
             "--namespace" "$POSTGRES_NAMESPACE"
         )
 
-        # An instance removes only its isolated database from the shared cluster.
+        # An instance detaches only its isolated database from the shared cluster;
+        # --drop-data additionally drops that database and role.
         if [[ -n "$INSTANCE" ]]; then
             CLEANUP_ARGS+=("--instance" "$INSTANCE")
+            if [[ "$DROP_DATA" == "true" ]]; then
+                CLEANUP_ARGS+=("--drop-data")
+            fi
         fi
 
         if [[ "$DRY_RUN" == "true" ]]; then

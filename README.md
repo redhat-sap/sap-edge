@@ -443,9 +443,14 @@ bash edge-integration-cell/get_all_accesses.sh --instance eic02
 # List PostgreSQL connection details for ALL EIC instances on the shared cluster
 bash edge-integration-cell/external-postgres/get_external_postgres_access.sh --all
 
-# Tear down only this instance (shared PostgreSQL cluster is preserved;
-# only the instance's database and its Redis/Valkey namespaces are removed)
+# Tear down only this instance. The shared PostgreSQL cluster is preserved; the
+# instance's Redis/Valkey namespaces are deleted and its PostgreSQL user is detached.
+# By default the instance's PostgreSQL database/role (and data) are RETAINED.
 bash edge-integration-cell/cleanup_all_external_services.sh --instance eic02 --force
+
+# Add --drop-data to also drop the instance's PostgreSQL database and role
+# (permanently destroys that instance's data):
+bash edge-integration-cell/cleanup_all_external_services.sh --instance eic02 --drop-data --force
 ```
 
 Running a script without `--instance` behaves exactly as before (single default instance).
