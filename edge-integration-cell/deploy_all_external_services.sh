@@ -14,6 +14,7 @@ DEPLOY_POSTGRES=true
 DEPLOY_REDIS=true
 POSTGRES_NAMESPACE="sap-eic-external-postgres"
 REDIS_NAMESPACE="sap-eic-external-redis"
+INSTANCE=""             # optional EIC instance name (multiple EIC systems on one cluster)
 POSTGRES_VERSION="v17"
 REDIS_CLUSTER_TYPE="standard"
 DRY_RUN=false
@@ -70,6 +71,11 @@ Comprehensive deployment of all SAP EIC external services (PostgreSQL and Redis)
 OPTIONS:
     --postgres-only                Deploy only PostgreSQL (skip Redis)
     --redis-only                   Deploy only Redis (skip PostgreSQL)
+    -i, --instance NAME            EIC instance name (multiple EIC systems on one cluster).
+                                   PostgreSQL gets an isolated database "edgedb-<name>" in the
+                                   shared cluster; Redis gets its own namespace
+                                   "sap-eic-external-redis-<name>". Takes precedence over the
+                                   --postgres-namespace/--redis-namespace flags.
     --postgres-namespace NS        PostgreSQL namespace (default: sap-eic-external-postgres)
     --redis-namespace NS           Redis namespace (default: sap-eic-external-redis)
     --postgres-version VERSION     PostgreSQL version: v15, v16, v17 (default: v17)
@@ -128,6 +134,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --redis-namespace)
             REDIS_NAMESPACE="$2"
+            shift 2
+            ;;
+        -i|--instance)
+            INSTANCE="$2"
             shift 2
             ;;
         --postgres-version)
@@ -236,23 +246,28 @@ if [[ "$DEPLOY_POSTGRES" == "true" ]]; then
             "--namespace" "$POSTGRES_NAMESPACE"
             "--version" "$POSTGRES_VERSION"
         )
-        
+
+        # An instance maps to an isolated database inside the shared cluster.
+        if [[ -n "$INSTANCE" ]]; then
+            DEPLOY_ARGS+=("--instance" "$INSTANCE")
+        fi
+
         if [[ "$DRY_RUN" == "true" ]]; then
             DEPLOY_ARGS+=("--dry-run")
         fi
-        
+
         if [[ "$FORCE" == "true" ]]; then
             DEPLOY_ARGS+=("--force")
         fi
-        
+
         if [[ "$SKIP_WAIT" == "true" ]]; then
             DEPLOY_ARGS+=("--skip-wait")
         fi
-        
+
         if [[ "$VERBOSE" == "true" ]]; then
             DEPLOY_ARGS+=("--verbose")
         fi
-        
+
         if bash "$POSTGRES_SCRIPT" "${DEPLOY_ARGS[@]}"; then
             log SUCCESS "PostgreSQL deployment completed successfully"
         else
@@ -272,11 +287,20 @@ if [[ "$DEPLOY_REDIS" == "true" ]]; then
         log ERROR "Redis deployment script not found: $REDIS_SCRIPT"
         ERRORS=$((ERRORS + 1))
     else
-        DEPLOY_ARGS=(
-            "--namespace" "$REDIS_NAMESPACE"
-            "--type" "$REDIS_CLUSTER_TYPE"
-        )
-        
+        # An instance gets its own Redis namespace (derived by deploy_redis.sh);
+        # otherwise use the explicit namespace as before.
+        if [[ -n "$INSTANCE" ]]; then
+            DEPLOY_ARGS=(
+                "--instance" "$INSTANCE"
+                "--type" "$REDIS_CLUSTER_TYPE"
+            )
+        else
+            DEPLOY_ARGS=(
+                "--namespace" "$REDIS_NAMESPACE"
+                "--type" "$REDIS_CLUSTER_TYPE"
+            )
+        fi
+
         if [[ -n "$OPENSHIFT_VERSION" ]]; then
             DEPLOY_ARGS+=("--ocp-version" "$OPENSHIFT_VERSION")
         fi
@@ -312,7 +336,11 @@ if [[ "$DRY_RUN" != "true" && "$ERRORS" -eq 0 ]]; then
     if [[ "$DEPLOY_POSTGRES" == "true" || "$DEPLOY_REDIS" == "true" ]]; then
         log HEADER "Combined Access Details"
         if [[ -f "$SCRIPT_DIR/get_all_accesses.sh" ]]; then
-            bash "$SCRIPT_DIR/get_all_accesses.sh" 2>/dev/null || log WARNING "Could not retrieve combined access details."
+            if [[ -n "$INSTANCE" ]]; then
+                bash "$SCRIPT_DIR/get_all_accesses.sh" --instance "$INSTANCE" 2>/dev/null || log WARNING "Could not retrieve combined access details."
+            else
+                bash "$SCRIPT_DIR/get_all_accesses.sh" 2>/dev/null || log WARNING "Could not retrieve combined access details."
+            fi
         fi
         echo ""
     fi
