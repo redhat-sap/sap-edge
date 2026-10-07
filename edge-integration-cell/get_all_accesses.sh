@@ -150,7 +150,7 @@ database_name="$REDIS_DATABASE_NAME"
 database_secret_field="databaseSecretName"
 
 # Get the RedisEnterpriseDatabase JSON definition and extract the databaseSecretName
-secret_name=$($KUBE_CLI get RedisEnterpriseDatabase "$database_name" -n $namespace -o json | jq -r ".spec.$database_secret_field")
+secret_name=$($KUBE_CLI get RedisEnterpriseDatabase "$database_name" -n "$namespace" -o json | jq -r ".spec.$database_secret_field")
 
 # Check if the secret name is empty
 if [[ -z "$secret_name" ]]; then
