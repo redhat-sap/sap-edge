@@ -10,6 +10,7 @@ set -euo pipefail
 NAMESPACE="sap-eic-external-postgres"
 INSTANCE=""             # optional EIC instance name (multiple EIC systems on one cluster)
 PG_CLUSTER_NAME="edgedb"
+DROP_DATA=false         # instance mode: also DROP the database+role (destroys data)
 DRY_RUN=false
 FORCE=false
 VERBOSE=false
@@ -55,9 +56,13 @@ Cleanup PostgreSQL external services deployed via Crunchy Data Operator.
 
 OPTIONS:
     -n, --namespace NAMESPACE    Namespace to cleanup (default: sap-eic-external-postgres)
-    -i, --instance NAME          EIC instance name. Removes ONLY the instance's isolated
-                                 database/user "edgedb-<name>" from the shared PostgresCluster;
-                                 the cluster, operator and namespace are left intact.
+    -i, --instance NAME          EIC instance name. Detaches ONLY the instance's isolated
+                                 user "edgedb-<name>" from the shared PostgresCluster (removes
+                                 its connection Secret); the cluster, operator and namespace
+                                 are left intact. By default the database/role (and its data)
+                                 are RETAINED (see --drop-data).
+    --drop-data                  With --instance, also DROP the database and role after
+                                 detaching, permanently destroying that instance's data.
     -f, --force                  Skip confirmation prompts (for automation)
     -d, --dry-run               Show what would be deleted without actually deleting
     -v, --verbose               Enable verbose output
@@ -90,6 +95,10 @@ while [[ $# -gt 0 ]]; do
         -i|--instance)
             INSTANCE="$2"
             shift 2
+            ;;
+        --drop-data)
+            DROP_DATA=true
+            shift
             ;;
         -f|--force)
             FORCE=true
@@ -130,9 +139,9 @@ if ! oc get namespace "$NAMESPACE" &> /dev/null; then
     exit 0
 fi
 
-# Instance cleanup: remove only this EIC instance's database/user from the shared
-# cluster. The cluster, operator and namespace are intentionally left untouched so
-# other EIC systems keep running.
+# Instance cleanup: detach only this EIC instance's user from the shared cluster.
+# The cluster, operator and namespace are intentionally left untouched so other EIC
+# systems keep running. The database/role are retained unless --drop-data is given.
 if [[ -n "$INSTANCE" ]]; then
     PG_USER="${PG_CLUSTER_NAME}-${INSTANCE}"
     if ! oc get postgrescluster "$PG_CLUSTER_NAME" -n "$NAMESPACE" &> /dev/null; then
@@ -142,13 +151,21 @@ if [[ -n "$INSTANCE" ]]; then
     IDX=$(oc get postgrescluster "$PG_CLUSTER_NAME" -n "$NAMESPACE" -o json \
         | jq --arg u "$PG_USER" '.spec.users | map(.name) | index($u)')
     if [[ -z "$IDX" || "$IDX" == "null" ]]; then
-        log WARNING "Database/user '$PG_USER' not present on cluster '$PG_CLUSTER_NAME'. Nothing to cleanup."
-        exit 0
+        log WARNING "Database/user '$PG_USER' not present on cluster '$PG_CLUSTER_NAME'. Nothing to detach."
+        # Even if detached already, honour --drop-data to clean up leftover data.
+        if [[ "$DROP_DATA" != "true" ]]; then
+            exit 0
+        fi
+        IDX=""
     fi
 
     if [[ "$FORCE" != "true" && "$DRY_RUN" != "true" ]]; then
-        log WARNING "This will remove database/user '$PG_USER' from shared cluster '$PG_CLUSTER_NAME'."
-        log WARNING "The database and its data will be dropped by the operator."
+        log WARNING "This will detach user '$PG_USER' from shared cluster '$PG_CLUSTER_NAME'."
+        if [[ "$DROP_DATA" == "true" ]]; then
+            log WARNING "--drop-data: the database and role '$PG_USER' will be DROPPED and its data destroyed."
+        else
+            log WARNING "The database/role '$PG_USER' and its data will be RETAINED (pass --drop-data to remove them)."
+        fi
         read -rp "Are you sure you want to continue? (yes/no): " confirmation
         if [[ "$confirmation" != "yes" ]]; then
             log INFO "Cleanup cancelled by user."
@@ -156,14 +173,62 @@ if [[ -n "$INSTANCE" ]]; then
         fi
     fi
 
-    if [[ "$DRY_RUN" == "true" ]]; then
-        log INFO "[DRY-RUN] Would remove users[$IDX] ('$PG_USER') from PostgresCluster '$PG_CLUSTER_NAME'."
-    else
-        log INFO "Removing database/user '$PG_USER' from shared cluster '$PG_CLUSTER_NAME'..."
-        oc patch postgrescluster "$PG_CLUSTER_NAME" -n "$NAMESPACE" --type=json \
-            -p "[{\"op\":\"remove\",\"path\":\"/spec/users/${IDX}\"}]"
-        log SUCCESS "Database/user '$PG_USER' removed. The operator will drop the database and its Secret."
+    # 1) Detach the user from the cluster spec first, so the operator stops managing
+    #    (and will not recreate) the database/role if we go on to drop it.
+    if [[ -n "$IDX" ]]; then
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log INFO "[DRY-RUN] Would remove users[$IDX] ('$PG_USER') from PostgresCluster '$PG_CLUSTER_NAME'."
+        else
+            log INFO "Detaching user '$PG_USER' from shared cluster '$PG_CLUSTER_NAME'..."
+            oc patch postgrescluster "$PG_CLUSTER_NAME" -n "$NAMESPACE" --type=json \
+                -p "[{\"op\":\"remove\",\"path\":\"/spec/users/${IDX}\"}]"
+            log SUCCESS "User '$PG_USER' detached (its connection Secret will be removed)."
+        fi
     fi
+
+    # 2) Optionally drop the database + role. Crunchy PGO intentionally does NOT drop
+    #    them when a user leaves spec.users (to avoid data loss), so an instance
+    #    teardown would otherwise leave orphaned tenant data on the shared cluster.
+    if [[ "$DROP_DATA" != "true" ]]; then
+        log INFO "Database/role '$PG_USER' retained. Re-run with --drop-data to remove them."
+        exit 0
+    fi
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log INFO "[DRY-RUN] Would drop database \"$PG_USER\" and role \"$PG_USER\" on the primary."
+        exit 0
+    fi
+
+    PRIMARY_POD=$(oc get pods -n "$NAMESPACE" \
+        -l "postgres-operator.crunchydata.com/cluster=${PG_CLUSTER_NAME},postgres-operator.crunchydata.com/role=master" \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+    if [[ -z "$PRIMARY_POD" ]]; then
+        log WARNING "Could not find the primary Postgres pod; database and role '$PG_USER' were NOT dropped."
+        log WARNING "Drop them manually once the primary is reachable:"
+        log WARNING "  psql -c 'DROP DATABASE IF EXISTS \"$PG_USER\" WITH (FORCE);'"
+        log WARNING "  psql -c 'DROP ROLE IF EXISTS \"$PG_USER\";'"
+        exit 0
+    fi
+
+    log INFO "Dropping database '$PG_USER' on primary pod $PRIMARY_POD..."
+    if oc exec -n "$NAMESPACE" "$PRIMARY_POD" -c database -- \
+        psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+        -c "DROP DATABASE IF EXISTS \"$PG_USER\" WITH (FORCE);"; then
+        log SUCCESS "Database '$PG_USER' dropped."
+    else
+        log WARNING "Failed to drop database '$PG_USER'; drop it manually."
+    fi
+
+    log INFO "Dropping role '$PG_USER'..."
+    if oc exec -n "$NAMESPACE" "$PRIMARY_POD" -c database -- \
+        psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+        -c "DROP ROLE IF EXISTS \"$PG_USER\";"; then
+        log SUCCESS "Role '$PG_USER' dropped."
+    else
+        log WARNING "Failed to drop role '$PG_USER' (it may own objects); drop it manually."
+    fi
+
+    log SUCCESS "EIC instance '$INSTANCE' PostgreSQL cleanup complete."
     exit 0
 fi
 
