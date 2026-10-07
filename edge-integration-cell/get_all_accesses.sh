@@ -20,11 +20,80 @@ else
     exit 1
 fi
 
+# Default values
+POSTGRES_NAMESPACE="sap-eic-external-postgres"
+POSTGRES_SECRET="edgedb-pguser-edgedb"
+REDIS_NAMESPACE_BASE="sap-eic-external-redis"
+REDIS_NAMESPACE=""        # resolved after arg parse
+REDIS_CLUSTER_NAME="rec"
+REDIS_DATABASE_NAME="redb"
+INSTANCE=""               # optional EIC instance name (multiple EIC systems on one cluster)
+
+usage() {
+    cat <<EOF
+Usage: $0 [OPTIONS]
+
+Print combined PostgreSQL + Redis access details for SAP EIC configuration.
+
+OPTIONS:
+    -i, --instance NAME          EIC instance name. Reads the PostgreSQL database
+                                 "edgedb-<name>" from the shared cluster and Redis from
+                                 namespace "${REDIS_NAMESPACE_BASE}-<name>".
+    --postgres-namespace NS      PostgreSQL namespace (default: sap-eic-external-postgres)
+    --postgres-secret NAME       PostgreSQL connection secret (default: edgedb-pguser-edgedb)
+    --redis-namespace NS         Redis namespace (default: sap-eic-external-redis)
+    -h, --help                   Display this help message
+
+EOF
+    exit 0
+}
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -i|--instance)
+            INSTANCE="$2"
+            shift 2
+            ;;
+        --postgres-namespace)
+            POSTGRES_NAMESPACE="$2"
+            shift 2
+            ;;
+        --postgres-secret)
+            POSTGRES_SECRET="$2"
+            shift 2
+            ;;
+        --redis-namespace)
+            REDIS_NAMESPACE="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            ;;
+        *)
+            echo "Unknown option: $1"
+            usage
+            ;;
+    esac
+done
+
+# Derive per-instance values. Explicit flags always win over the instance default.
+if [[ -n "$INSTANCE" ]]; then
+    if [[ "$POSTGRES_SECRET" == "edgedb-pguser-edgedb" ]]; then
+        POSTGRES_SECRET="edgedb-pguser-edgedb-${INSTANCE}"
+    fi
+    if [[ -z "$REDIS_NAMESPACE" ]]; then
+        REDIS_NAMESPACE="${REDIS_NAMESPACE_BASE}-${INSTANCE}"
+    fi
+fi
+if [[ -z "$REDIS_NAMESPACE" ]]; then
+    REDIS_NAMESPACE="$REDIS_NAMESPACE_BASE"
+fi
+
 echo "=====================================Postgres========================================="
 
-# Set namespace and secret name
-namespace="sap-eic-external-postgres"
-secret_name="edgedb-pguser-edgedb"
+namespace="$POSTGRES_NAMESPACE"
+secret_name="$POSTGRES_SECRET"
 
 # Get dbhostname from the secret
 dbhostname=$($KUBE_CLI get secret "$secret_name" -n "$namespace" -o jsonpath="{.data.host}" | base64 --decode)
@@ -76,8 +145,8 @@ fi
 echo "======================================Redis==========================================="
 
 # Define the namespace, RedisEnterpriseDatabase name, and RedisEnterpriseDatabase secret field
-namespace="sap-eic-external-redis"
-database_name="redb"
+namespace="$REDIS_NAMESPACE"
+database_name="$REDIS_DATABASE_NAME"
 database_secret_field="databaseSecretName"
 
 # Get the RedisEnterpriseDatabase JSON definition and extract the databaseSecretName
@@ -97,7 +166,7 @@ service_name=$(echo "$secret_data" | jq -r '.data["service_name"]' | base64 --de
 
 
 service_name_with_ns="${service_name}.${namespace}.svc"
-redis_server_name="rec.${namespace}.svc.cluster.local"
+redis_server_name="${REDIS_CLUSTER_NAME}.${namespace}.svc.cluster.local"
 
 # Check if any of the values are empty
 if [[ -z "$password" || -z "$port" || -z "$service_name" ]]; then
@@ -105,8 +174,16 @@ if [[ -z "$password" || -z "$port" || -z "$service_name" ]]; then
     exit 1
 fi
 
+# Certificate filename: keep the legacy name for the default instance, but suffix
+# per-instance so pulling several instances into one directory does not clobber.
+if [[ -n "$INSTANCE" ]]; then
+    redis_cert_file="external_redis_tls_certificate_${INSTANCE}.pem"
+else
+    redis_cert_file="external_redis_tls_certificate.pem"
+fi
+
 # Get the proxy certificate content
-$KUBE_CLI exec -n sap-eic-external-redis -it rec-0 -c redis-enterprise-node -- cat /etc/opt/redislabs/proxy_cert.pem > external_redis_tls_certificate.pem
+$KUBE_CLI exec -n "$namespace" -it "${REDIS_CLUSTER_NAME}-0" -c redis-enterprise-node -- cat /etc/opt/redislabs/proxy_cert.pem > "$redis_cert_file"
 
 echo "External Redis Addresses: $service_name_with_ns:$port"
 echo "External Redis Mode: standalone"
@@ -114,5 +191,5 @@ echo "External Redis Username: [leave me blank]"
 echo "External Redis Password: $password"
 echo "External Redis Sentinel Username: [leave me blank]"
 echo "External Redis Sentinel Password: [leave me blank]"
-echo "External Redis TLS Certificate content saved to external_redis_tls_certificate.pem"
+echo "External Redis TLS Certificate content saved to $redis_cert_file"
 echo "External Redis Server Name: $redis_server_name"

@@ -33,14 +33,16 @@ Retrieve PostgreSQL access details from the deployed PostgresCluster.
 
 OPTIONS:
     -n, --namespace NAMESPACE    Namespace where PostgreSQL is deployed (default: sap-eic-external-postgres)
+    -s, --secret NAME            Connection secret to read (default: edgedb-pguser-edgedb).
+                                 For an EIC instance use edgedb-pguser-edgedb-<instance>.
     -h, --help                   Display this help message
 
 EXAMPLES:
-    # Get access details from default namespace
+    # Get access details for the default database
     $0
 
-    # Get access details from custom namespace
-    $0 --namespace my-postgres-namespace
+    # Get access details for an EIC instance database
+    $0 --secret edgedb-pguser-edgedb-eic02
 
 EOF
     exit 0
@@ -51,6 +53,10 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -n|--namespace)
             NAMESPACE="$2"
+            shift 2
+            ;;
+        -s|--secret)
+            SECRET_NAME="$2"
             shift 2
             ;;
         -h|--help)

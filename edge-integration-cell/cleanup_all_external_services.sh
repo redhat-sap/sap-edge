@@ -16,6 +16,7 @@ CLEANUP_VALKEY=true
 POSTGRES_NAMESPACE="sap-eic-external-postgres"
 REDIS_NAMESPACE="sap-eic-external-redis"
 VALKEY_NAMESPACE="sap-eic-external-valkey"
+INSTANCE=""             # optional EIC instance name (multiple EIC systems on one cluster)
 DRY_RUN=false
 FORCE=false
 VERBOSE=false
@@ -71,6 +72,10 @@ OPTIONS:
     --redis-only                 Cleanup only Redis (skip PostgreSQL and Valkey)
     --valkey-only                Cleanup only Valkey (skip PostgreSQL and Redis)
     --no-valkey                  Skip Valkey cleanup
+    -i, --instance NAME          EIC instance name (multiple EIC systems on one cluster).
+                                 Removes the instance's PostgreSQL database from the shared
+                                 cluster and deletes the instance's Redis/Valkey namespaces.
+                                 Takes precedence over the --*-namespace flags.
     --postgres-namespace NS      PostgreSQL namespace (default: sap-eic-external-postgres)
     --redis-namespace NS         Redis namespace (default: sap-eic-external-redis)
     --valkey-namespace NS        Valkey namespace (default: sap-eic-external-valkey)
@@ -152,6 +157,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --valkey-namespace)
             VALKEY_NAMESPACE="$2"
+            shift 2
+            ;;
+        -i|--instance)
+            INSTANCE="$2"
             shift 2
             ;;
         --ocp-version)
@@ -250,19 +259,24 @@ if [[ "$CLEANUP_POSTGRES" == "true" ]]; then
         CLEANUP_ARGS=(
             "--namespace" "$POSTGRES_NAMESPACE"
         )
-        
+
+        # An instance removes only its isolated database from the shared cluster.
+        if [[ -n "$INSTANCE" ]]; then
+            CLEANUP_ARGS+=("--instance" "$INSTANCE")
+        fi
+
         if [[ "$DRY_RUN" == "true" ]]; then
             CLEANUP_ARGS+=("--dry-run")
         fi
-        
+
         if [[ "$FORCE" == "true" ]]; then
             CLEANUP_ARGS+=("--force")
         fi
-        
+
         if [[ "$VERBOSE" == "true" ]]; then
             CLEANUP_ARGS+=("--verbose")
         fi
-        
+
         if bash "$POSTGRES_SCRIPT" "${CLEANUP_ARGS[@]}"; then
             log SUCCESS "PostgreSQL cleanup completed successfully"
         else
@@ -282,10 +296,17 @@ if [[ "$CLEANUP_REDIS" == "true" ]]; then
         log ERROR "Redis cleanup script not found: $REDIS_SCRIPT"
         ERRORS=$((ERRORS + 1))
     else
-        CLEANUP_ARGS=(
-            "--namespace" "$REDIS_NAMESPACE"
-        )
-        
+        # An instance has its own Redis namespace (derived by cleanup_redis.sh).
+        if [[ -n "$INSTANCE" ]]; then
+            CLEANUP_ARGS=(
+                "--instance" "$INSTANCE"
+            )
+        else
+            CLEANUP_ARGS=(
+                "--namespace" "$REDIS_NAMESPACE"
+            )
+        fi
+
         if [[ -n "$OPENSHIFT_VERSION" ]]; then
             CLEANUP_ARGS+=("--ocp-version" "$OPENSHIFT_VERSION")
         fi
@@ -320,9 +341,16 @@ if [[ "$CLEANUP_VALKEY" == "true" ]]; then
     if [[ ! -f "$VALKEY_SCRIPT" ]]; then
         log WARNING "Valkey cleanup script not found: $VALKEY_SCRIPT (skipping)"
     else
-        CLEANUP_ARGS=(
-            "--namespace" "$VALKEY_NAMESPACE"
-        )
+        # An instance has its own Valkey namespace (derived by cleanup_valkey.sh).
+        if [[ -n "$INSTANCE" ]]; then
+            CLEANUP_ARGS=(
+                "--instance" "$INSTANCE"
+            )
+        else
+            CLEANUP_ARGS=(
+                "--namespace" "$VALKEY_NAMESPACE"
+            )
+        fi
 
         if [[ "$DRY_RUN" == "true" ]]; then
             CLEANUP_ARGS+=("--dry-run")

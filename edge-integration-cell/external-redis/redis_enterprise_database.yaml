@@ -9,7 +9,9 @@ apiVersion: app.redislabs.com/v1alpha1
 kind: RedisEnterpriseDatabase
 metadata:
   name: redb
-  namespace: sap-eic-external-redis
+  # namespace is intentionally omitted so the resource can be applied into any
+  # instance namespace via `oc apply -n <ns>` (multiple EIC systems on one
+  # cluster). ArgoCD sets the namespace from the Application destination.
   annotations:
     argocd.argoproj.io/sync-wave: "2"
 spec:

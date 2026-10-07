@@ -414,6 +414,41 @@ bash edge-integration-cell/cleanup_all_external_services.sh
 bash edge-integration-cell/cleanup_all_external_services.sh --force
 ```
 
+### Multiple EIC Systems on One Cluster
+
+Each EIC system needs its own isolated backing services. Every deploy, cleanup and
+access script accepts `-i/--instance <name>` to provision an isolated set. `<name>` must
+be a lowercase DNS label (`a-z`, `0-9`, `-`). Isolation differs per service, matching the
+nature of each datastore:
+
+- **PostgreSQL** — an isolated **database + user** `edgedb-<name>` is added to the single
+  shared `edgedb` cluster (database-level isolation). The first instance bootstraps the
+  shared cluster; later instances only add their database.
+- **Redis / Valkey** — a **separate instance** is deployed into its own namespace
+  (`sap-eic-external-redis-<name>`, `sap-eic-external-valkey-<name>`, etc.), because Redis
+  and Valkey have no schema/database isolation concept.
+
+```bash
+# Stand up an isolated set of backing services for a second EIC system
+bash edge-integration-cell/deploy_all_external_services.sh --instance eic02 --force
+
+# Per-service, if you only need one of them
+bash edge-integration-cell/deploy_postgres.sh --instance eic02 --force   # adds database edgedb-eic02
+bash edge-integration-cell/deploy_redis.sh    --instance eic02 --force   # namespace sap-eic-external-redis-eic02
+bash edge-integration-cell/external-valkey/deploy_valkey.sh --instance eic02 --force
+
+# Retrieve this instance's connection details
+bash edge-integration-cell/get_all_accesses.sh --instance eic02
+
+# Tear down only this instance (shared PostgreSQL cluster is preserved;
+# only the instance's database and its Redis/Valkey namespaces are removed)
+bash edge-integration-cell/cleanup_all_external_services.sh --instance eic02 --force
+```
+
+Running a script without `--instance` behaves exactly as before (single default instance).
+The cluster-scoped Redis Enterprise SCC is shared across instances and is only removed by
+cleanup once the last Redis instance is gone.
+
 ## Operations Documentation
 
 - [Crunchy Postgres Operator Quickstart](https://access.crunchydata.com/documentation/postgres-operator/latest/quickstart)

@@ -7,7 +7,9 @@
 set -euo pipefail
 
 # Default values
-NAMESPACE="sap-eic-external-redis"
+NAMESPACE_BASE="sap-eic-external-redis"
+NAMESPACE=""            # resolved after arg parse (see instance derivation)
+INSTANCE=""             # optional EIC instance name (multiple EIC systems on one cluster)
 DRY_RUN=false
 FORCE=false
 VERBOSE=false
@@ -54,6 +56,8 @@ Cleanup Redis external services deployed via Redis Enterprise Operator.
 
 OPTIONS:
     -n, --namespace NAMESPACE    Namespace to cleanup (default: sap-eic-external-redis)
+    -i, --instance NAME          EIC instance name. Cleans up namespace "${NAMESPACE_BASE}-<name>".
+                                 Ignored if --namespace is given.
     -f, --force                  Skip confirmation prompts (for automation)
     -d, --dry-run               Show what would be deleted without actually deleting
     -v, --verbose               Enable verbose output
@@ -87,6 +91,10 @@ while [[ $# -gt 0 ]]; do
             NAMESPACE="$2"
             shift 2
             ;;
+        -i|--instance)
+            INSTANCE="$2"
+            shift 2
+            ;;
         -f|--force)
             FORCE=true
             shift
@@ -112,6 +120,16 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Resolve namespace: explicit --namespace always wins; otherwise derive from the
+# instance name (one namespace per EIC system) or fall back to the legacy default.
+if [[ -z "$NAMESPACE" ]]; then
+    if [[ -n "$INSTANCE" ]]; then
+        NAMESPACE="${NAMESPACE_BASE}-${INSTANCE}"
+    else
+        NAMESPACE="$NAMESPACE_BASE"
+    fi
+fi
 
 # Verbose mode
 if [[ "$VERBOSE" == "true" ]]; then
@@ -413,7 +431,14 @@ if [[ -n "$OPENSHIFT_VERSION" ]]; then
             SCC_NAME="redis-enterprise-scc"
         fi
         
-        if oc get scc "$SCC_NAME" &> /dev/null; then
+        # The Redis Enterprise SCC is cluster-scoped and shared by every Redis
+        # instance on the cluster. Only remove it once no RedisEnterpriseCluster
+        # remains in any namespace, otherwise we would break the other EIC systems.
+        REMAINING_RECS=$(oc get redisenterprisecluster -A --no-headers 2>/dev/null | wc -l | tr -d ' ')
+        if [[ "$REMAINING_RECS" != "0" ]]; then
+            log WARNING "Found $REMAINING_RECS RedisEnterpriseCluster(s) still present in other namespaces."
+            log INFO "Keeping shared SCC '$SCC_NAME' (removed only on the last instance teardown)."
+        elif oc get scc "$SCC_NAME" &> /dev/null; then
             execute "oc delete scc $SCC_NAME"
             log SUCCESS "Deleted Redis Enterprise SCC: $SCC_NAME"
         else

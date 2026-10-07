@@ -8,6 +8,8 @@ set -euo pipefail
 
 # Default values
 NAMESPACE="sap-eic-external-postgres"
+INSTANCE=""             # optional EIC instance name (multiple EIC systems on one cluster)
+PG_CLUSTER_NAME="edgedb"
 DRY_RUN=false
 FORCE=false
 VERBOSE=false
@@ -53,6 +55,9 @@ Cleanup PostgreSQL external services deployed via Crunchy Data Operator.
 
 OPTIONS:
     -n, --namespace NAMESPACE    Namespace to cleanup (default: sap-eic-external-postgres)
+    -i, --instance NAME          EIC instance name. Removes ONLY the instance's isolated
+                                 database/user "edgedb-<name>" from the shared PostgresCluster;
+                                 the cluster, operator and namespace are left intact.
     -f, --force                  Skip confirmation prompts (for automation)
     -d, --dry-run               Show what would be deleted without actually deleting
     -v, --verbose               Enable verbose output
@@ -80,6 +85,10 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -n|--namespace)
             NAMESPACE="$2"
+            shift 2
+            ;;
+        -i|--instance)
+            INSTANCE="$2"
             shift 2
             ;;
         -f|--force)
@@ -118,6 +127,43 @@ fi
 # Check if namespace exists
 if ! oc get namespace "$NAMESPACE" &> /dev/null; then
     log WARNING "Namespace '$NAMESPACE' does not exist. Nothing to cleanup."
+    exit 0
+fi
+
+# Instance cleanup: remove only this EIC instance's database/user from the shared
+# cluster. The cluster, operator and namespace are intentionally left untouched so
+# other EIC systems keep running.
+if [[ -n "$INSTANCE" ]]; then
+    PG_USER="${PG_CLUSTER_NAME}-${INSTANCE}"
+    if ! oc get postgrescluster "$PG_CLUSTER_NAME" -n "$NAMESPACE" &> /dev/null; then
+        log WARNING "Shared PostgresCluster '$PG_CLUSTER_NAME' not found in '$NAMESPACE'. Nothing to cleanup."
+        exit 0
+    fi
+    IDX=$(oc get postgrescluster "$PG_CLUSTER_NAME" -n "$NAMESPACE" -o json \
+        | jq --arg u "$PG_USER" '.spec.users | map(.name) | index($u)')
+    if [[ -z "$IDX" || "$IDX" == "null" ]]; then
+        log WARNING "Database/user '$PG_USER' not present on cluster '$PG_CLUSTER_NAME'. Nothing to cleanup."
+        exit 0
+    fi
+
+    if [[ "$FORCE" != "true" && "$DRY_RUN" != "true" ]]; then
+        log WARNING "This will remove database/user '$PG_USER' from shared cluster '$PG_CLUSTER_NAME'."
+        log WARNING "The database and its data will be dropped by the operator."
+        read -rp "Are you sure you want to continue? (yes/no): " confirmation
+        if [[ "$confirmation" != "yes" ]]; then
+            log INFO "Cleanup cancelled by user."
+            exit 0
+        fi
+    fi
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log INFO "[DRY-RUN] Would remove users[$IDX] ('$PG_USER') from PostgresCluster '$PG_CLUSTER_NAME'."
+    else
+        log INFO "Removing database/user '$PG_USER' from shared cluster '$PG_CLUSTER_NAME'..."
+        oc patch postgrescluster "$PG_CLUSTER_NAME" -n "$NAMESPACE" --type=json \
+            -p "[{\"op\":\"remove\",\"path\":\"/spec/users/${IDX}\"}]"
+        log SUCCESS "Database/user '$PG_USER' removed. The operator will drop the database and its Secret."
+    fi
     exit 0
 fi
 

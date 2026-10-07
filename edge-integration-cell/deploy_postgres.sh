@@ -12,6 +12,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Default values
 NAMESPACE="sap-eic-external-postgres"
 POSTGRES_VERSION="v15"  # Default PostgreSQL version
+INSTANCE=""             # optional EIC instance name (multiple EIC systems on one cluster)
+PG_CLUSTER_NAME="edgedb"   # shared PostgresCluster that backs every EIC instance
+# The default (no instance) database/user and its operator-generated secret.
+# For an instance these become edgedb-<instance> so each EIC system gets an
+# isolated database inside the shared cluster (schema/database-level isolation).
+PG_USER="edgedb"
+PG_DATABASE="edgedb"
+SECRET_NAME="edgedb-pguser-edgedb"
 DRY_RUN=false
 FORCE=false
 VERBOSE=false
@@ -65,6 +73,10 @@ Deploy PostgreSQL external service using Crunchy Data Operator.
 
 OPTIONS:
     -n, --namespace NAMESPACE    Namespace for deployment (default: sap-eic-external-postgres)
+    -i, --instance NAME          EIC instance name. Adds an isolated database+user
+                                 "edgedb-<name>" to the shared PostgresCluster so multiple
+                                 EIC systems can share one cluster (database-level isolation).
+                                 Name must be a lowercase DNS label (a-z, 0-9, '-').
     -v, --version VERSION        PostgreSQL version: v15, v16, v17 (default: v15)
     -f, --force                  Skip confirmation prompts (for automation)
     -d, --dry-run               Show what would be deployed without actually deploying
@@ -79,6 +91,9 @@ EXAMPLES:
 
     # Deploy PostgreSQL v16 to custom namespace
     $0 --namespace my-postgres --version v16
+
+    # Add an isolated database for a second EIC system (shared cluster)
+    $0 --instance eic02 --force
 
     # Force deployment without prompts (CI/CD)
     $0 --force
@@ -95,6 +110,10 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -n|--namespace)
             NAMESPACE="$2"
+            shift 2
+            ;;
+        -i|--instance)
+            INSTANCE="$2"
             shift 2
             ;;
         -v|--version)
@@ -142,6 +161,39 @@ if [[ ! "$POSTGRES_VERSION" =~ ^v1[5-7]$ ]]; then
     exit 1
 fi
 
+# Resolve per-instance database/user names. The instance maps to a dedicated
+# database inside the shared cluster (not a separate namespace). The name must be
+# valid both as a PostgreSQL identifier and as part of the operator-generated
+# Secret name ("<cluster>-pguser-<user>"), so restrict it to a DNS-1123 label.
+if [[ -n "$INSTANCE" ]]; then
+    if [[ ! "$INSTANCE" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
+        log ERROR "Invalid instance name: '$INSTANCE'. Use a lowercase DNS label (a-z, 0-9, '-')."
+        exit 1
+    fi
+    PG_USER="edgedb-${INSTANCE}"
+    PG_DATABASE="edgedb-${INSTANCE}"
+    SECRET_NAME="${PG_CLUSTER_NAME}-pguser-${PG_USER}"
+fi
+
+# Append an isolated database+user to the shared PostgresCluster (idempotent).
+# Crunchy auto-creates the database and a Secret named "$SECRET_NAME" with
+# host/port/dbname/user/password for the new database.
+add_instance_database() {
+    if oc get postgrescluster "$PG_CLUSTER_NAME" -n "$NAMESPACE" \
+        -o jsonpath='{.spec.users[*].name}' 2>/dev/null | tr ' ' '\n' | grep -qx "$PG_USER"; then
+        log INFO "Database/user '$PG_USER' already present on shared cluster '$PG_CLUSTER_NAME' (idempotent)."
+        return 0
+    fi
+    local patch="[{\"op\":\"add\",\"path\":\"/spec/users/-\",\"value\":{\"name\":\"${PG_USER}\",\"databases\":[\"${PG_DATABASE}\"],\"options\":\"SUPERUSER\"}}]"
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log INFO "[DRY-RUN] Would patch PostgresCluster '$PG_CLUSTER_NAME' to add database/user '$PG_USER'."
+        return 0
+    fi
+    log INFO "Adding isolated database/user '$PG_USER' to shared cluster '$PG_CLUSTER_NAME'..."
+    oc patch postgrescluster "$PG_CLUSTER_NAME" -n "$NAMESPACE" --type=json -p "$patch"
+    log SUCCESS "Database/user '$PG_USER' added."
+}
+
 # Check if oc is available
 if ! command -v oc &> /dev/null; then
     log ERROR "oc command not found. Please install OpenShift CLI."
@@ -159,10 +211,12 @@ if oc get namespace "$NAMESPACE" &> /dev/null; then
             
             # Check if cluster is ready
             CLUSTER_STATUS=$(oc get postgrescluster -n "$NAMESPACE" -o jsonpath='{.items[0].status.patroni.ready}' 2>/dev/null || echo "false")
-            if [[ "$CLUSTER_STATUS" == "true" ]]; then
+            if [[ "$CLUSTER_STATUS" == "true" && -z "$INSTANCE" ]]; then
                 log INFO "PostgresCluster is ready and operational."
                 log SUCCESS "PostgreSQL deployment already complete (idempotent - no changes needed)."
                 IDEMPOTENT_SKIP=true
+            elif [[ "$CLUSTER_STATUS" == "true" && -n "$INSTANCE" ]]; then
+                log INFO "Shared PostgresCluster is ready; will attach EIC instance '$INSTANCE'."
             else
                 log WARNING "PostgresCluster exists but may not be ready yet. Will check status..."
             fi
@@ -207,7 +261,7 @@ if [[ "$IDEMPOTENT_SKIP" == "true" && "$DRY_RUN" != "true" ]]; then
     log INFO "Retrieving existing access details..."
     echo ""
     if [[ -f "$SCRIPT_DIR/external-postgres/get_external_postgres_access.sh" ]]; then
-        bash "$SCRIPT_DIR/external-postgres/get_external_postgres_access.sh" -n "$NAMESPACE"
+        bash "$SCRIPT_DIR/external-postgres/get_external_postgres_access.sh" -n "$NAMESPACE" --secret "$SECRET_NAME"
     else
         log WARNING "Access script not found. You can retrieve access details manually."
     fi
@@ -307,7 +361,14 @@ if [[ ! -f "$POSTGRES_CLUSTER_FILE" ]]; then
     log ERROR "PostgresCluster file not found: $POSTGRES_CLUSTER_FILE"
     exit 1
 fi
-execute "oc apply -f $POSTGRES_CLUSTER_FILE"
+# Apply the base cluster manifest only when the shared cluster does not yet exist.
+# Re-applying it would reset spec.users to just the default user and drop databases
+# previously added for other EIC instances via `oc patch`.
+if oc get postgrescluster "$PG_CLUSTER_NAME" -n "$NAMESPACE" &> /dev/null; then
+    log INFO "Shared PostgresCluster '$PG_CLUSTER_NAME' already exists; skipping base manifest apply."
+else
+    execute "oc apply -f $POSTGRES_CLUSTER_FILE"
+fi
 
 # Step 6: Wait for PostgresCluster to be ready
 if [[ "$SKIP_WAIT" != "true" && "$DRY_RUN" != "true" ]]; then
@@ -344,12 +405,35 @@ else
     log INFO "Step 6/7: Skipping PostgresCluster readiness wait."
 fi
 
+# Step 6b: Attach isolated database for this EIC instance (shared-cluster model)
+if [[ -n "$INSTANCE" ]]; then
+    log INFO "Attaching EIC instance '$INSTANCE' (database/user '$PG_USER') to shared cluster..."
+    add_instance_database
+    # Wait for the operator to generate the per-database connection Secret.
+    if [[ "$SKIP_WAIT" != "true" && "$DRY_RUN" != "true" ]]; then
+        log INFO "Waiting for connection secret '$SECRET_NAME' to be created (timeout: 3 minutes)..."
+        SECRET_WAIT=180
+        SECRET_ELAPSED=0
+        while [[ $SECRET_ELAPSED -lt $SECRET_WAIT ]]; do
+            if oc get secret "$SECRET_NAME" -n "$NAMESPACE" &> /dev/null; then
+                log SUCCESS "Connection secret '$SECRET_NAME' is ready."
+                break
+            fi
+            sleep 5
+            ((SECRET_ELAPSED += 5))
+        done
+        if [[ $SECRET_ELAPSED -ge $SECRET_WAIT ]]; then
+            log WARNING "Secret '$SECRET_NAME' not found yet; it may take another moment."
+        fi
+    fi
+fi
+
 # Step 7: Get access details
 if [[ "$DRY_RUN" != "true" ]]; then
     log INFO "Step 7/7: Retrieving PostgreSQL access details..."
     echo ""
     if [[ -f "$SCRIPT_DIR/external-postgres/get_external_postgres_access.sh" ]]; then
-        bash "$SCRIPT_DIR/external-postgres/get_external_postgres_access.sh"
+        bash "$SCRIPT_DIR/external-postgres/get_external_postgres_access.sh" -n "$NAMESPACE" --secret "$SECRET_NAME"
     else
         log WARNING "Access script not found. You can retrieve access details manually later."
     fi

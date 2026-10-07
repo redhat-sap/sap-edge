@@ -8,7 +8,9 @@
 set -euo pipefail
 
 # Default values
-NAMESPACE="sap-eic-external-valkey"
+NAMESPACE_BASE="sap-eic-external-valkey"
+NAMESPACE=""            # resolved after arg parse (see instance derivation)
+INSTANCE=""             # optional EIC instance name (multiple EIC systems on one cluster)
 OUTPUT_DIR="."
 
 usage() {
@@ -19,6 +21,8 @@ Get Valkey access details for SAP EIC configuration.
 
 OPTIONS:
     -n, --namespace NAMESPACE    Namespace where Valkey is deployed (default: sap-eic-external-valkey)
+    -i, --instance NAME          EIC instance name. Reads from namespace "${NAMESPACE_BASE}-<name>".
+                                 Ignored if --namespace is given.
     -o, --output-dir DIR         Directory to save certificates (default: current directory)
     -h, --help                   Display this help message
 
@@ -31,6 +35,10 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -n|--namespace)
             NAMESPACE="$2"
+            shift 2
+            ;;
+        -i|--instance)
+            INSTANCE="$2"
             shift 2
             ;;
         -o|--output-dir)
@@ -46,6 +54,16 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Resolve namespace: explicit --namespace always wins; otherwise derive from the
+# instance name (one namespace per EIC system) or fall back to the legacy default.
+if [[ -z "$NAMESPACE" ]]; then
+    if [[ -n "$INSTANCE" ]]; then
+        NAMESPACE="${NAMESPACE_BASE}-${INSTANCE}"
+    else
+        NAMESPACE="$NAMESPACE_BASE"
+    fi
+fi
 
 # Check if logged in
 if ! oc whoami &> /dev/null; then
@@ -72,8 +90,13 @@ if oc get secret valkey -n "$NAMESPACE" &> /dev/null; then
     VALKEY_PASSWORD=$(oc get secret valkey -n "$NAMESPACE" -o jsonpath='{.data.database-password}' 2>/dev/null | base64 -d 2>/dev/null || echo "")
 fi
 
-# Export CA certificate
-CA_CERT_FILE="${OUTPUT_DIR}/valkey_tls_certificate.pem"
+# Export CA certificate. Keep the legacy filename for the default instance, but
+# suffix per-instance so several instances can be exported into one directory.
+if [[ -n "$INSTANCE" ]]; then
+    CA_CERT_FILE="${OUTPUT_DIR}/valkey_tls_certificate_${INSTANCE}.pem"
+else
+    CA_CERT_FILE="${OUTPUT_DIR}/valkey_tls_certificate.pem"
+fi
 if oc get configmap valkey-service-ca -n "$NAMESPACE" &> /dev/null; then
     oc get configmap valkey-service-ca -n "$NAMESPACE" -o jsonpath='{.data.service-ca\.crt}' > "$CA_CERT_FILE"
 else

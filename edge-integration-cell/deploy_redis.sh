@@ -10,7 +10,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Default values
-NAMESPACE="sap-eic-external-redis"
+NAMESPACE_BASE="sap-eic-external-redis"
+NAMESPACE=""            # resolved after arg parse (see instance derivation)
+INSTANCE=""             # optional EIC instance name (multiple EIC systems on one cluster)
 REDIS_CLUSTER_TYPE="standard"  # standard or ha
 DRY_RUN=false
 FORCE=false
@@ -65,6 +67,9 @@ Deploy Redis external service using Redis Enterprise Operator.
 
 OPTIONS:
     -n, --namespace NAMESPACE    Namespace for deployment (default: sap-eic-external-redis)
+    -i, --instance NAME          EIC instance name. Deploys an isolated Redis instance into
+                                 namespace "${NAMESPACE_BASE}-<name>" so multiple EIC systems
+                                 can share one cluster. Ignored if --namespace is given.
     --type TYPE                  Cluster type: standard or ha (default: standard)
     -f, --force                  Skip confirmation prompts (for automation)
     -d, --dry-run               Show what would be deployed without actually deploying
@@ -79,6 +84,9 @@ EXAMPLES:
 
     # Deploy HA cluster to custom namespace
     $0 --namespace my-redis --type ha
+
+    # Deploy an isolated instance for a second EIC system
+    $0 --instance eic02 --force
 
     # Force deployment without prompts (CI/CD)
     $0 --force
@@ -98,6 +106,10 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -n|--namespace)
             NAMESPACE="$2"
+            shift 2
+            ;;
+        -i|--instance)
+            INSTANCE="$2"
             shift 2
             ;;
         --type)
@@ -133,6 +145,16 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Resolve namespace: explicit --namespace always wins; otherwise derive from the
+# instance name (one namespace per EIC system) or fall back to the legacy default.
+if [[ -z "$NAMESPACE" ]]; then
+    if [[ -n "$INSTANCE" ]]; then
+        NAMESPACE="${NAMESPACE_BASE}-${INSTANCE}"
+    else
+        NAMESPACE="$NAMESPACE_BASE"
+    fi
+fi
 
 # Verbose mode
 if [[ "$VERBOSE" == "true" ]]; then
@@ -224,7 +246,7 @@ if [[ "$IDEMPOTENT_SKIP" == "true" && "$DRY_RUN" != "true" ]]; then
     log INFO "Retrieving existing access details..."
     echo ""
     if [[ -f "$SCRIPT_DIR/external-redis/get_redis_access.sh" ]]; then
-        bash "$SCRIPT_DIR/external-redis/get_redis_access.sh"
+        bash "$SCRIPT_DIR/external-redis/get_redis_access.sh" -n "$NAMESPACE"
     else
         log WARNING "Access script not found. You can retrieve access details manually."
     fi
@@ -264,13 +286,26 @@ else
     log INFO "[DRY-RUN] Would create namespace"
 fi
 
+# Render operator manifests into the target namespace. The committed YAML pins the
+# default namespace (used by the GitOps path); for script-driven installs we retarget
+# metadata.namespace (stripped, supplied via `oc apply -n`) and the OperatorGroup
+# targetNamespaces to $NAMESPACE so each EIC instance gets its own operator install.
+OG_RENDERED="$(mktemp)"
+SUB_RENDERED="$(mktemp)"
+trap 'rm -f "$OG_RENDERED" "$SUB_RENDERED"' EXIT
+sed -e '/^  namespace:/d' \
+    -e "s|^\( *- \)${NAMESPACE_BASE}\$|\1${NAMESPACE}|" \
+    "$SCRIPT_DIR/redis-operator/operatorgroup.yaml" > "$OG_RENDERED"
+sed -e '/^  namespace:/d' \
+    "$SCRIPT_DIR/redis-operator/subscription.yaml" > "$SUB_RENDERED"
+
 # Step 2: Apply OperatorGroup
 log INFO "Step 2/9: Applying OperatorGroup configuration..."
-execute "oc apply -f $SCRIPT_DIR/redis-operator/operatorgroup.yaml"
+execute "oc apply -n $NAMESPACE -f $OG_RENDERED"
 
 # Step 3: Apply Subscription
 log INFO "Step 3/9: Applying Subscription configuration..."
-execute "oc apply -f $SCRIPT_DIR/redis-operator/subscription.yaml"
+execute "oc apply -n $NAMESPACE -f $SUB_RENDERED"
 
 # Step 4: Apply Security Context Constraint (SCC)
 log INFO "Step 4/9: Applying Security Context Constraint (SCC)..."
@@ -306,7 +341,7 @@ if [[ "$SKIP_WAIT" != "true" && "$DRY_RUN" != "true" ]]; then
     if [[ -f "$SCRIPT_DIR/external-redis/wait_for_redis_operator_ready.sh" ]]; then
         # Run wait script with timeout
         WAIT_TIMEOUT=300  # 5 minutes
-        if timeout "$WAIT_TIMEOUT" bash "$SCRIPT_DIR/external-redis/wait_for_redis_operator_ready.sh" 2>/dev/null; then
+        if timeout "$WAIT_TIMEOUT" bash "$SCRIPT_DIR/external-redis/wait_for_redis_operator_ready.sh" -n "$NAMESPACE" 2>/dev/null; then
             log SUCCESS "Redis operator is ready."
         else
             EXIT_CODE=$?
@@ -352,7 +387,7 @@ if [[ ! -f "$REDIS_CLUSTER_FILE" ]]; then
     log ERROR "RedisEnterpriseCluster file not found: $REDIS_CLUSTER_FILE"
     exit 1
 fi
-execute "oc apply -f $REDIS_CLUSTER_FILE"
+execute "oc apply -n $NAMESPACE -f $REDIS_CLUSTER_FILE"
 
 # Step 7: Wait for RedisEnterpriseCluster to be ready
 if [[ "$SKIP_WAIT" != "true" && "$DRY_RUN" != "true" ]]; then
@@ -360,7 +395,7 @@ if [[ "$SKIP_WAIT" != "true" && "$DRY_RUN" != "true" ]]; then
     if [[ -f "$SCRIPT_DIR/external-redis/wait_for_rec_running_state.sh" ]]; then
         # Run wait script with timeout
         CLUSTER_WAIT_TIMEOUT=480  # 8 minutes
-        if timeout "$CLUSTER_WAIT_TIMEOUT" bash "$SCRIPT_DIR/external-redis/wait_for_rec_running_state.sh" 2>/dev/null; then
+        if timeout "$CLUSTER_WAIT_TIMEOUT" bash "$SCRIPT_DIR/external-redis/wait_for_rec_running_state.sh" -n "$NAMESPACE" 2>/dev/null; then
             log SUCCESS "RedisEnterpriseCluster is ready."
         else
             EXIT_CODE=$?
@@ -374,7 +409,7 @@ if [[ "$SKIP_WAIT" != "true" && "$DRY_RUN" != "true" ]]; then
                 log ERROR "  3. Events: oc get events -n $NAMESPACE --sort-by='.lastTimestamp'"
                 log ERROR ""
                 log ERROR "You can continue checking manually with:"
-                log ERROR "  bash $SCRIPT_DIR/external-redis/wait_for_rec_running_state.sh"
+                log ERROR "  bash $SCRIPT_DIR/external-redis/wait_for_rec_running_state.sh -n $NAMESPACE"
                 exit 1
             else
                 log ERROR "Wait script failed with exit code: $EXIT_CODE"
@@ -432,7 +467,7 @@ if [[ "$DRY_RUN" != "true" ]]; then
         RETRY_COUNT=$((RETRY_COUNT + 1))
         log INFO "Attempt $RETRY_COUNT/$MAX_RETRIES: Creating RedisEnterpriseDatabase..."
         
-        if oc apply -f "$REDIS_DB_FILE" 2>&1; then
+        if oc apply -n "$NAMESPACE" -f "$REDIS_DB_FILE" 2>&1; then
             log SUCCESS "RedisEnterpriseDatabase created successfully."
             break
         else
@@ -447,7 +482,7 @@ if [[ "$DRY_RUN" != "true" ]]; then
                 log ERROR "This is normal - the cluster needs more time to fully initialize."
                 log ERROR ""
                 log ERROR "Please wait 1-2 minutes and run the following command manually:"
-                log ERROR "  oc apply -f $REDIS_DB_FILE"
+                log ERROR "  oc apply -n $NAMESPACE -f $REDIS_DB_FILE"
                 log ERROR ""
                 log ERROR "Or re-run the deployment script with --skip-wait:"
                 log ERROR "  bash $0 --skip-wait"
@@ -463,7 +498,7 @@ fi
 if [[ "$SKIP_WAIT" != "true" && "$DRY_RUN" != "true" ]]; then
     log INFO "Step 9/9: Waiting for RedisEnterpriseDatabase to be active..."
     if [[ -f "$SCRIPT_DIR/external-redis/wait_for_redb_active_status.sh" ]]; then
-        bash "$SCRIPT_DIR/external-redis/wait_for_redb_active_status.sh"
+        bash "$SCRIPT_DIR/external-redis/wait_for_redb_active_status.sh" -n "$NAMESPACE"
         log SUCCESS "RedisEnterpriseDatabase is active."
     else
         log WARNING "Wait script not found. Sleeping 60s..."
@@ -474,7 +509,7 @@ if [[ "$SKIP_WAIT" != "true" && "$DRY_RUN" != "true" ]]; then
     log INFO "Retrieving Redis access details..."
     echo ""
     if [[ -f "$SCRIPT_DIR/external-redis/get_redis_access.sh" ]]; then
-        bash "$SCRIPT_DIR/external-redis/get_redis_access.sh"
+        bash "$SCRIPT_DIR/external-redis/get_redis_access.sh" -n "$NAMESPACE"
     else
         log WARNING "Access script not found. You can retrieve access details manually later."
     fi

@@ -8,7 +8,9 @@
 set -euo pipefail
 
 # Default values
-NAMESPACE="sap-eic-external-valkey-cluster"
+NAMESPACE_BASE="sap-eic-external-valkey-cluster"
+NAMESPACE=""            # resolved after arg parse (see instance derivation)
+INSTANCE=""             # optional EIC instance name (multiple EIC systems on one cluster)
 VALKEY_PASSWORD=""
 RELEASE_NAME="valkey-cluster"
 IMAGESTREAMS_RELEASE_NAME="redhat-valkey-imagestreams"
@@ -45,6 +47,9 @@ Deploy Valkey in Redis Cluster mode (hash slot sharding) with TLS on OpenShift f
 
 OPTIONS:
     -n, --namespace NAMESPACE    Namespace for Valkey (default: sap-eic-external-valkey-cluster)
+    -i, --instance NAME          EIC instance name. Deploys an isolated Valkey instance into
+                                 namespace "${NAMESPACE_BASE}-<name>" so multiple EIC systems
+                                 can share one cluster. Ignored if --namespace is given.
     -p, --password PASSWORD      Valkey password (optional, default: testp)
     --dry-run                    Show what would be done without executing
     -f, --force                  Skip confirmation prompts
@@ -68,6 +73,10 @@ while [[ $# -gt 0 ]]; do
             NAMESPACE="$2"
             shift 2
             ;;
+        -i|--instance)
+            INSTANCE="$2"
+            shift 2
+            ;;
         -p|--password)
             VALKEY_PASSWORD="$2"
             shift 2
@@ -89,6 +98,16 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Resolve namespace: explicit --namespace always wins; otherwise derive from the
+# instance name (one namespace per EIC system) or fall back to the legacy default.
+if [[ -z "$NAMESPACE" ]]; then
+    if [[ -n "$INSTANCE" ]]; then
+        NAMESPACE="${NAMESPACE_BASE}-${INSTANCE}"
+    else
+        NAMESPACE="$NAMESPACE_BASE"
+    fi
+fi
 
 # Check prerequisites
 check_prerequisites() {

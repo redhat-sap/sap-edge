@@ -8,7 +8,9 @@
 set -euo pipefail
 
 # Default values
-NAMESPACE="sap-eic-external-valkey"
+NAMESPACE_BASE="sap-eic-external-valkey"
+NAMESPACE=""            # resolved after arg parse (see instance derivation)
+INSTANCE=""             # optional EIC instance name (multiple EIC systems on one cluster)
 RELEASE_NAME="valkey"
 IMAGESTREAMS_RELEASE_NAME="redhat-valkey-imagestreams"
 DRY_RUN=false
@@ -40,6 +42,8 @@ Cleanup Valkey deployment from OpenShift.
 
 OPTIONS:
     -n, --namespace NAMESPACE    Namespace where Valkey is deployed (default: sap-eic-external-valkey)
+    -i, --instance NAME          EIC instance name. Cleans up namespace "${NAMESPACE_BASE}-<name>".
+                                 Ignored if --namespace is given.
     --dry-run                    Show what would be deleted without executing
     -f, --force                  Skip confirmation prompts
     -h, --help                   Display this help message
@@ -60,6 +64,10 @@ while [[ $# -gt 0 ]]; do
             NAMESPACE="$2"
             shift 2
             ;;
+        -i|--instance)
+            INSTANCE="$2"
+            shift 2
+            ;;
         --dry-run)
             DRY_RUN=true
             shift
@@ -77,6 +85,16 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Resolve namespace: explicit --namespace always wins; otherwise derive from the
+# instance name (one namespace per EIC system) or fall back to the legacy default.
+if [[ -z "$NAMESPACE" ]]; then
+    if [[ -n "$INSTANCE" ]]; then
+        NAMESPACE="${NAMESPACE_BASE}-${INSTANCE}"
+    else
+        NAMESPACE="$NAMESPACE_BASE"
+    fi
+fi
 
 # Check prerequisites
 check_prerequisites() {
