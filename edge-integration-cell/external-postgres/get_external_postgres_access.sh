@@ -24,6 +24,7 @@ fi
 NAMESPACE="sap-eic-external-postgres"
 SECRET_NAME="edgedb-pguser-edgedb"
 PG_CLUSTER_NAME="edgedb"   # shared PostgresCluster backing every EIC instance
+INSTANCE=""                # optional EIC instance name; selects the edgedb-<instance> database
 ALL=false
 
 # Usage function
@@ -35,6 +36,8 @@ Retrieve PostgreSQL access details from the deployed PostgresCluster.
 
 OPTIONS:
     -n, --namespace NAMESPACE    Namespace where PostgreSQL is deployed (default: sap-eic-external-postgres)
+    -i, --instance NAME          EIC instance name. Reads the edgedb-<name> database's secret
+                                 from the shared cluster. Ignored if --secret is given.
     -s, --secret NAME            Connection secret to read (default: edgedb-pguser-edgedb).
                                  For an EIC instance use edgedb-pguser-edgedb-<instance>.
     -a, --all                    Print access details for EVERY database/user on the shared
@@ -47,7 +50,7 @@ EXAMPLES:
     $0
 
     # Get access details for an EIC instance database
-    $0 --secret edgedb-pguser-edgedb-eic02
+    $0 --instance eic02
 
     # List access details for all EIC instances on the shared cluster
     $0 --all
@@ -61,6 +64,10 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         -n|--namespace)
             NAMESPACE="$2"
+            shift 2
+            ;;
+        -i|--instance)
+            INSTANCE="$2"
             shift 2
             ;;
         -s|--secret)
@@ -84,6 +91,12 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# An instance selects the edgedb-<instance> database's secret, unless an explicit
+# --secret was provided (which always wins).
+if [[ -n "$INSTANCE" && "$SECRET_NAME" == "edgedb-pguser-edgedb" ]]; then
+    SECRET_NAME="${PG_CLUSTER_NAME}-pguser-${PG_CLUSTER_NAME}-${INSTANCE}"
+fi
 
 namespace="$NAMESPACE"
 
