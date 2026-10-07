@@ -131,6 +131,10 @@ fi
 # clobber a previous instance's certificate.
 if [[ -n "$INSTANCE" ]]; then
     cert_file="${OUTPUT_DIR}/external_redis_tls_certificate_${INSTANCE}.pem"
+elif [[ "$NAMESPACE" != "$NAMESPACE_BASE" ]]; then
+    # Selected by -n into a non-default namespace: suffix with it so pulling
+    # several instances into one directory does not overwrite each other's cert.
+    cert_file="${OUTPUT_DIR}/external_redis_tls_certificate_${NAMESPACE}.pem"
 else
     cert_file="${OUTPUT_DIR}/external_redis_tls_certificate.pem"
 fi

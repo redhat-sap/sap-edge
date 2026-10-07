@@ -109,6 +109,8 @@ fi
 # suffix per-instance so several instances can be exported into one directory.
 if [[ -n "$INSTANCE" ]]; then
     CA_CERT_FILE="${OUTPUT_DIR}/valkey_tls_certificate_${INSTANCE}.pem"
+elif [[ "$NAMESPACE" != "$NAMESPACE_BASE" ]]; then
+    CA_CERT_FILE="${OUTPUT_DIR}/valkey_tls_certificate_${NAMESPACE}.pem"
 else
     CA_CERT_FILE="${OUTPUT_DIR}/valkey_tls_certificate.pem"
 fi
