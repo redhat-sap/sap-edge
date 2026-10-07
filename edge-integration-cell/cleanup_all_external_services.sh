@@ -200,14 +200,26 @@ if ! command -v oc &> /dev/null; then
     exit 1
 fi
 
+# Human-readable cleanup targets for the summary/confirmation output. In instance
+# mode PostgreSQL only drops the instance database from the shared cluster, while
+# Redis/Valkey have their own derived namespaces.
+REDIS_TARGET_NS="$REDIS_NAMESPACE"
+VALKEY_TARGET_NS="$VALKEY_NAMESPACE"
+PG_DB_NOTE=""
+if [[ -n "$INSTANCE" ]]; then
+    REDIS_TARGET_NS="sap-eic-external-redis-$INSTANCE"
+    VALKEY_TARGET_NS="sap-eic-external-valkey-$INSTANCE"
+    PG_DB_NOTE=", database: edgedb-$INSTANCE (shared cluster preserved)"
+fi
+
 # Display banner
 log HEADER "SAP EIC External Services Cleanup Utility"
 
 # Summary of what will be cleaned
 log INFO "Cleanup Configuration:"
-log INFO "  - PostgreSQL: $([ "$CLEANUP_POSTGRES" == "true" ] && echo "YES (namespace: $POSTGRES_NAMESPACE)" || echo "NO")"
-log INFO "  - Redis: $([ "$CLEANUP_REDIS" == "true" ] && echo "YES (namespace: $REDIS_NAMESPACE)" || echo "NO")"
-log INFO "  - Valkey: $([ "$CLEANUP_VALKEY" == "true" ] && echo "YES (namespace: $VALKEY_NAMESPACE)" || echo "NO")"
+log INFO "  - PostgreSQL: $([ "$CLEANUP_POSTGRES" == "true" ] && echo "YES (namespace: $POSTGRES_NAMESPACE$PG_DB_NOTE)" || echo "NO")"
+log INFO "  - Redis: $([ "$CLEANUP_REDIS" == "true" ] && echo "YES (namespace: $REDIS_TARGET_NS)" || echo "NO")"
+log INFO "  - Valkey: $([ "$CLEANUP_VALKEY" == "true" ] && echo "YES (namespace: $VALKEY_TARGET_NS)" || echo "NO")"
 log INFO "  - Dry-run: $([ "$DRY_RUN" == "true" ] && echo "YES" || echo "NO")"
 log INFO "  - Force mode: $([ "$FORCE" == "true" ] && echo "YES" || echo "NO")"
 
@@ -217,13 +229,13 @@ if [[ "$FORCE" != "true" && "$DRY_RUN" != "true" ]]; then
     log WARNING "⚠️  This operation will DELETE external services. This action cannot be undone!"
     echo -e "${YELLOW}Services to be cleaned:${NC}"
     if [[ "$CLEANUP_POSTGRES" == "true" ]]; then
-        echo "  ✗ PostgreSQL (namespace: $POSTGRES_NAMESPACE)"
+        echo "  ✗ PostgreSQL (namespace: $POSTGRES_NAMESPACE$PG_DB_NOTE)"
     fi
     if [[ "$CLEANUP_REDIS" == "true" ]]; then
-        echo "  ✗ Redis (namespace: $REDIS_NAMESPACE)"
+        echo "  ✗ Redis (namespace: $REDIS_TARGET_NS)"
     fi
     if [[ "$CLEANUP_VALKEY" == "true" ]]; then
-        echo "  ✗ Valkey (namespace: $VALKEY_NAMESPACE)"
+        echo "  ✗ Valkey (namespace: $VALKEY_TARGET_NS)"
     fi
     echo ""
     read -rp "Type 'DELETE' to confirm cleanup: " confirmation

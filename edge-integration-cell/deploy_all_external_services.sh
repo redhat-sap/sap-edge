@@ -189,13 +189,24 @@ if ! command -v oc &> /dev/null; then
     exit 1
 fi
 
+# Human-readable deploy targets for the summary/confirmation output. In instance
+# mode the Redis namespace is derived by deploy_redis.sh and PostgreSQL adds an
+# isolated database inside the shared cluster, so reflect that instead of the
+# default namespace values (which otherwise look misleading).
+REDIS_TARGET_NS="$REDIS_NAMESPACE"
+PG_DB_NOTE=""
+if [[ -n "$INSTANCE" ]]; then
+    REDIS_TARGET_NS="sap-eic-external-redis-$INSTANCE"
+    PG_DB_NOTE=", database: edgedb-$INSTANCE"
+fi
+
 # Display banner
 log HEADER "SAP EIC External Services Deployment Utility"
 
 # Summary of what will be deployed
 log INFO "Deployment Configuration:"
-log INFO "  - PostgreSQL: $([ "$DEPLOY_POSTGRES" == "true" ] && echo "YES (namespace: $POSTGRES_NAMESPACE, version: $POSTGRES_VERSION)" || echo "NO")"
-log INFO "  - Redis: $([ "$DEPLOY_REDIS" == "true" ] && echo "YES (namespace: $REDIS_NAMESPACE, type: $REDIS_CLUSTER_TYPE)" || echo "NO")"
+log INFO "  - PostgreSQL: $([ "$DEPLOY_POSTGRES" == "true" ] && echo "YES (namespace: $POSTGRES_NAMESPACE$PG_DB_NOTE, version: $POSTGRES_VERSION)" || echo "NO")"
+log INFO "  - Redis: $([ "$DEPLOY_REDIS" == "true" ] && echo "YES (namespace: $REDIS_TARGET_NS, type: $REDIS_CLUSTER_TYPE)" || echo "NO")"
 log INFO "  - Dry-run: $([ "$DRY_RUN" == "true" ] && echo "YES" || echo "NO")"
 log INFO "  - Force mode: $([ "$FORCE" == "true" ] && echo "YES" || echo "NO")"
 log INFO "  - Skip wait: $([ "$SKIP_WAIT" == "true" ] && echo "YES" || echo "NO")"
@@ -206,10 +217,10 @@ if [[ "$FORCE" != "true" && "$DRY_RUN" != "true" ]]; then
     log WARNING "⚠️  This operation will DEPLOY external services."
     echo -e "${YELLOW}Services to be deployed:${NC}"
     if [[ "$DEPLOY_POSTGRES" == "true" ]]; then
-        echo "  ✓ PostgreSQL (namespace: $POSTGRES_NAMESPACE, version: $POSTGRES_VERSION)"
+        echo "  ✓ PostgreSQL (namespace: $POSTGRES_NAMESPACE$PG_DB_NOTE, version: $POSTGRES_VERSION)"
     fi
     if [[ "$DEPLOY_REDIS" == "true" ]]; then
-        echo "  ✓ Redis (namespace: $REDIS_NAMESPACE, type: $REDIS_CLUSTER_TYPE)"
+        echo "  ✓ Redis (namespace: $REDIS_TARGET_NS, type: $REDIS_CLUSTER_TYPE)"
     fi
     echo ""
     read -rp "Type 'DEPLOY' to confirm deployment: " confirmation
@@ -361,10 +372,10 @@ elif [[ $ERRORS -eq 0 ]]; then
     echo ""
     log INFO "Deployed services:"
     if [[ "$DEPLOY_POSTGRES" == "true" ]]; then
-        log INFO "  ✓ PostgreSQL: $POSTGRES_NAMESPACE ($POSTGRES_VERSION)"
+        log INFO "  ✓ PostgreSQL: $POSTGRES_NAMESPACE$PG_DB_NOTE ($POSTGRES_VERSION)"
     fi
     if [[ "$DEPLOY_REDIS" == "true" ]]; then
-        log INFO "  ✓ Redis: $REDIS_NAMESPACE ($REDIS_CLUSTER_TYPE)"
+        log INFO "  ✓ Redis: $REDIS_TARGET_NS ($REDIS_CLUSTER_TYPE)"
     fi
     echo ""
     log INFO "Next steps:"
