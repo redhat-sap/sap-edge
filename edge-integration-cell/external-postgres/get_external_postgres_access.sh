@@ -23,6 +23,8 @@ fi
 # Default values
 NAMESPACE="sap-eic-external-postgres"
 SECRET_NAME="edgedb-pguser-edgedb"
+PG_CLUSTER_NAME="edgedb"   # shared PostgresCluster backing every EIC instance
+ALL=false
 
 # Usage function
 usage() {
@@ -35,6 +37,9 @@ OPTIONS:
     -n, --namespace NAMESPACE    Namespace where PostgreSQL is deployed (default: sap-eic-external-postgres)
     -s, --secret NAME            Connection secret to read (default: edgedb-pguser-edgedb).
                                  For an EIC instance use edgedb-pguser-edgedb-<instance>.
+    -a, --all                    Print access details for EVERY database/user on the shared
+                                 cluster (one block per EIC instance).
+    --cluster NAME               Shared PostgresCluster name used by --all (default: edgedb).
     -h, --help                   Display this help message
 
 EXAMPLES:
@@ -43,6 +48,9 @@ EXAMPLES:
 
     # Get access details for an EIC instance database
     $0 --secret edgedb-pguser-edgedb-eic02
+
+    # List access details for all EIC instances on the shared cluster
+    $0 --all
 
 EOF
     exit 0
@@ -59,6 +67,14 @@ while [[ $# -gt 0 ]]; do
             SECRET_NAME="$2"
             shift 2
             ;;
+        -a|--all)
+            ALL=true
+            shift
+            ;;
+        --cluster)
+            PG_CLUSTER_NAME="$2"
+            shift 2
+            ;;
         -h|--help)
             usage
             ;;
@@ -70,40 +86,51 @@ while [[ $# -gt 0 ]]; do
 done
 
 namespace="$NAMESPACE"
-secret_name="$SECRET_NAME"
 
-# Get dbhostname from the secret
-dbhostname=$($KUBE_CLI get secret "$secret_name" -n "$namespace" -o jsonpath="{.data.host}" | base64 --decode)
+# Print the connection details held in a single pguser secret.
+print_db_access() {
+    local secret_name="$1"
 
-# Output the dbhostname
-echo "External DB Hostname: $dbhostname "
+    if ! $KUBE_CLI get secret "$secret_name" -n "$namespace" &> /dev/null; then
+        echo "Error: secret '$secret_name' not found in namespace '$namespace'."
+        return 1
+    fi
 
-# Get dbport from the secret
-dbport=$($KUBE_CLI get secret "$secret_name" -n "$namespace" -o jsonpath="{.data.port}" | base64 --decode)
+    local dbhostname dbport dbname dbusername dbpassword
+    dbhostname=$($KUBE_CLI get secret "$secret_name" -n "$namespace" -o jsonpath="{.data.host}" | base64 --decode)
+    dbport=$($KUBE_CLI get secret "$secret_name" -n "$namespace" -o jsonpath="{.data.port}" | base64 --decode)
+    dbname=$($KUBE_CLI get secret "$secret_name" -n "$namespace" -o jsonpath="{.data.dbname}" | base64 --decode)
+    dbusername=$($KUBE_CLI get secret "$secret_name" -n "$namespace" -o jsonpath="{.data.user}" | base64 --decode)
+    dbpassword=$($KUBE_CLI get secret "$secret_name" -n "$namespace" -o jsonpath="{.data.password}" | base64 --decode)
 
-# Output the dbport
-echo "External DB Port: $dbport"
+    echo "----- Database: ${dbname} (secret: ${secret_name}) -----"
+    echo "External DB Hostname: $dbhostname "
+    echo "External DB Port: $dbport"
+    echo "External DB Name: $dbname"
+    echo "External DB Username: $dbusername "
+    echo "External DB Password: $dbpassword "
+    echo ""
+}
 
+if [[ "$ALL" == "true" ]]; then
+    # Crunchy labels every per-user connection secret with the cluster name and
+    # role=pguser, so this enumerates the default database plus one per EIC instance.
+    SELECTOR="postgres-operator.crunchydata.com/cluster=${PG_CLUSTER_NAME},postgres-operator.crunchydata.com/role=pguser"
+    SECRETS=$($KUBE_CLI get secret -n "$namespace" -l "$SELECTOR" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | sort)
+    if [[ -z "$SECRETS" ]]; then
+        echo "No pguser secrets found for cluster '$PG_CLUSTER_NAME' in namespace '$namespace'."
+        exit 1
+    fi
+    echo "===== PostgreSQL databases on shared cluster '$PG_CLUSTER_NAME' ====="
+    echo ""
+    while IFS= read -r s; do
+        [[ -n "$s" ]] && print_db_access "$s"
+    done <<< "$SECRETS"
+else
+    print_db_access "$SECRET_NAME"
+fi
 
-# Get dbname from the secret
-dbname=$($KUBE_CLI get secret "$secret_name" -n "$namespace" -o jsonpath="{.data.dbname}" | base64 --decode)
-
-# Output the dbname
-echo "External DB Name: $dbname"
-
-# Get dbusername from the secret
-dbusername=$($KUBE_CLI get secret "$secret_name" -n "$namespace" -o jsonpath="{.data.user}" | base64 --decode)
-
-# Output the dbusername
-echo "External DB Username: $dbusername "
-
-# Get dbpassword from the secret
-dbpassword=$($KUBE_CLI get secret "$secret_name" -n "$namespace" -o jsonpath="{.data.password}" | base64 --decode)
-
-# Output the dbpassword
-echo "External DB Password: $dbpassword "
-
-# Define variables
+# The TLS root certificate is shared by every database on the cluster.
 secret_name="pgo-root-cacert"
 output_file="external_postgres_db_tls_root_cert.crt"
 
