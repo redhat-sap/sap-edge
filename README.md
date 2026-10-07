@@ -440,6 +440,9 @@ bash edge-integration-cell/external-valkey/deploy_valkey.sh --instance eic02 --f
 # Retrieve this instance's connection details
 bash edge-integration-cell/get_all_accesses.sh --instance eic02
 
+# List PostgreSQL connection details for ALL EIC instances on the shared cluster
+bash edge-integration-cell/external-postgres/get_external_postgres_access.sh --all
+
 # Tear down only this instance (shared PostgreSQL cluster is preserved;
 # only the instance's database and its Redis/Valkey namespaces are removed)
 bash edge-integration-cell/cleanup_all_external_services.sh --instance eic02 --force
