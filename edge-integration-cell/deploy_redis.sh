@@ -287,9 +287,9 @@ else
 fi
 
 # Render operator manifests into the target namespace. The committed YAML pins the
-# default namespace (used by the GitOps path); for script-driven installs we retarget
+# default namespace (used by the GitOps path); for script-driven installs we point
 # metadata.namespace (stripped, supplied via `oc apply -n`) and the OperatorGroup
-# targetNamespaces to $NAMESPACE so each EIC instance gets its own operator install.
+# targetNamespaces at $NAMESPACE so each EIC instance gets its own operator install.
 OG_RENDERED="$(mktemp)"
 SUB_RENDERED="$(mktemp)"
 trap 'rm -f "$OG_RENDERED" "$SUB_RENDERED"' EXIT
