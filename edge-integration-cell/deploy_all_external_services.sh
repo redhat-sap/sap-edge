@@ -15,7 +15,7 @@ DEPLOY_REDIS=true
 POSTGRES_NAMESPACE="sap-eic-external-postgres"
 REDIS_NAMESPACE="sap-eic-external-redis"
 INSTANCE=""             # optional EIC instance name (multiple EIC systems on one cluster)
-POSTGRES_VERSION="v17"
+POSTGRES_VERSION="v15"
 REDIS_CLUSTER_TYPE="standard"
 DRY_RUN=false
 FORCE=false
@@ -78,7 +78,7 @@ OPTIONS:
                                    --postgres-namespace/--redis-namespace flags.
     --postgres-namespace NS        PostgreSQL namespace (default: sap-eic-external-postgres)
     --redis-namespace NS           Redis namespace (default: sap-eic-external-redis)
-    --postgres-version VERSION     PostgreSQL version: v15, v16, v17 (default: v17)
+    --postgres-version VERSION     PostgreSQL version: v15, v16, v17 (default: v15)
     --redis-type TYPE              Redis cluster type: standard or ha (default: standard)
     --ocp-version VERSION          Specify OpenShift version for SCC
     -f, --force                    Skip all confirmation prompts (for automation)
