@@ -22,16 +22,25 @@ This repository provides tooling for deploying external services (PostgreSQL, Re
 
 - [Overview](#overview)
 - [Prerequisites](#prerequisites)
+- [Shared Storage](#shared-storage)
 - [External Services Setup](#external-services-setup)
   - [Databases](#databases)
     - [PostgreSQL](#postgresql)
+      - [Cleanup PostgreSQL](#cleanup-postgresql)
   - [Datastores](#datastores)
     - [Redis](#redis)
+      - [Cleanup Redis](#cleanup-redis)
     - [Valkey](#valkey)
       - [Standalone Mode](#standalone-mode)
       - [Cluster Mode](#cluster-mode)
-- [GitOps with Argo CD](#gitops-with-argo-cd)
+      - [Cleanup Valkey](#cleanup-valkey)
 - [Automated Deployment Scripts](#automated-deployment-scripts)
+  - [Deploy All Services](#deploy-all-services)
+  - [Deploy Individual Services](#deploy-individual-services)
+  - [Cleanup All Services](#cleanup-all-services)
+  - [Multiple EIC Systems on One Cluster](#multiple-eic-systems-on-one-cluster)
+- [GitOps with Argo CD](#gitops-with-argo-cd)
+  - [Deploying with Argo CD](#deploying-with-argo-cd)
 - [Operations Documentation](#operations-documentation)
 - [License](#license)
 
@@ -346,35 +355,6 @@ bash sap-edge/edge-integration-cell/external-valkey/cleanup_valkey.sh --force
 bash sap-edge/edge-integration-cell/external-valkey-cluster/cleanup_valkey.sh --force
 ```
 
-## GitOps with Argo CD
-
-This project supports automated deployment using Argo CD and a GitOps workflow.
-
-**Requirements:** OpenShift cluster with OpenShift GitOps Operator installed.
-
-### Deploying with Argo CD
-
-1. Apply the parent Argo CD Application:
-   ```bash
-   oc apply -f edge-integration-cell/sap-eic-external-services-app.yaml
-   ```
-
-2. Apply the Security Context Constraint for Redis:
-   ```bash
-   # OpenShift 4.16+
-   oc apply -f edge-integration-cell/redis-operator/security_context_constraint_v2.yaml
-   # OpenShift < 4.16
-   oc apply -f edge-integration-cell/redis-operator/security_context_constraint.yaml
-   ```
-
-3. Grant Argo CD admin privileges:
-   ```bash
-   oc apply -f edge-integration-cell/argocd-rbac/argocd-admin-rolebinding-postgres.yaml
-   oc apply -f edge-integration-cell/argocd-rbac/argocd-admin-rolebinding-redis.yaml
-   ```
-
-Argo CD will install the operators and deploy the PostgresCluster and RedisEnterpriseCluster resources.
-
 ## Automated Deployment Scripts
 
 For convenience, automated deployment scripts are available that simplify the manual steps into single commands.
@@ -456,6 +436,35 @@ bash edge-integration-cell/cleanup_all_external_services.sh --instance eic02 --d
 Running a script without `--instance` behaves exactly as before (single default instance).
 The cluster-scoped Redis Enterprise SCC is shared across instances and is only removed by
 cleanup once the last Redis instance is gone.
+
+## GitOps with Argo CD
+
+This project supports automated deployment using Argo CD and a GitOps workflow.
+
+**Requirements:** OpenShift cluster with OpenShift GitOps Operator installed.
+
+### Deploying with Argo CD
+
+1. Apply the parent Argo CD Application:
+   ```bash
+   oc apply -f edge-integration-cell/sap-eic-external-services-app.yaml
+   ```
+
+2. Apply the Security Context Constraint for Redis:
+   ```bash
+   # OpenShift 4.16+
+   oc apply -f edge-integration-cell/redis-operator/security_context_constraint_v2.yaml
+   # OpenShift < 4.16
+   oc apply -f edge-integration-cell/redis-operator/security_context_constraint.yaml
+   ```
+
+3. Grant Argo CD admin privileges:
+   ```bash
+   oc apply -f edge-integration-cell/argocd-rbac/argocd-admin-rolebinding-postgres.yaml
+   oc apply -f edge-integration-cell/argocd-rbac/argocd-admin-rolebinding-redis.yaml
+   ```
+
+Argo CD will install the operators and deploy the PostgresCluster and RedisEnterpriseCluster resources.
 
 ## Operations Documentation
 
