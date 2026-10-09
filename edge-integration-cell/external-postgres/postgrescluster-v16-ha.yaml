@@ -14,6 +14,18 @@ metadata:
     argocd.argoproj.io/sync-wave: "1"
 spec:
   postgresVersion: 16
+  # Shared cluster for multiple EIC systems: raise the connection ceiling and add
+  # PgBouncer pooling so several EIC instances don't exhaust max_connections.
+  # Tune max_connections/memory per SAP Note 3247839 for production sizing.
+  patroni:
+    dynamicConfiguration:
+      postgresql:
+        parameters:
+          max_connections: 500
+          shared_buffers: 256MB
+  proxy:
+    pgBouncer:
+      replicas: 2
   instances:
     - name: instance1
       replicas: 3

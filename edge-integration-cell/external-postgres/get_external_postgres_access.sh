@@ -26,6 +26,7 @@ SECRET_NAME="edgedb-pguser-edgedb"
 PG_CLUSTER_NAME="edgedb"   # shared PostgresCluster backing every EIC instance
 INSTANCE=""                # optional EIC instance name; selects the edgedb-<instance> database
 ALL=false
+PGBOUNCER=false            # print the PgBouncer pooled endpoint instead of the direct primary
 
 # Usage function
 usage() {
@@ -43,6 +44,8 @@ OPTIONS:
     -a, --all                    Print access details for EVERY database/user on the shared
                                  cluster (one block per EIC instance).
     --cluster NAME               Shared PostgresCluster name used by --all (default: edgedb).
+    --pgbouncer                  Print the PgBouncer pooled host/port (requires PgBouncer
+                                 enabled on the cluster) instead of the direct primary.
     -h, --help                   Display this help message
 
 EXAMPLES:
@@ -82,6 +85,10 @@ while [[ $# -gt 0 ]]; do
             PG_CLUSTER_NAME="$2"
             shift 2
             ;;
+        --pgbouncer)
+            PGBOUNCER=true
+            shift
+            ;;
         -h|--help)
             usage
             ;;
@@ -109,14 +116,28 @@ print_db_access() {
         return 1
     fi
 
+    # Choose direct-primary vs PgBouncer host/port. Crunchy puts the pooled endpoint
+    # in the same pguser secret under pgbouncer-host / pgbouncer-port when PgBouncer
+    # is enabled on the cluster.
+    local host_key="host" port_key="port"
+    if [[ "$PGBOUNCER" == "true" ]]; then
+        host_key="pgbouncer-host"
+        port_key="pgbouncer-port"
+    fi
+
     local dbhostname dbport dbname dbusername dbpassword
-    dbhostname=$($KUBE_CLI get secret "$secret_name" -n "$namespace" -o jsonpath="{.data.host}" | base64 --decode)
-    dbport=$($KUBE_CLI get secret "$secret_name" -n "$namespace" -o jsonpath="{.data.port}" | base64 --decode)
+    dbhostname=$($KUBE_CLI get secret "$secret_name" -n "$namespace" -o jsonpath="{.data.${host_key}}" | base64 --decode)
+    dbport=$($KUBE_CLI get secret "$secret_name" -n "$namespace" -o jsonpath="{.data.${port_key}}" | base64 --decode)
     dbname=$($KUBE_CLI get secret "$secret_name" -n "$namespace" -o jsonpath="{.data.dbname}" | base64 --decode)
     dbusername=$($KUBE_CLI get secret "$secret_name" -n "$namespace" -o jsonpath="{.data.user}" | base64 --decode)
     dbpassword=$($KUBE_CLI get secret "$secret_name" -n "$namespace" -o jsonpath="{.data.password}" | base64 --decode)
 
-    echo "----- Database: ${dbname} (secret: ${secret_name}) -----"
+    if [[ "$PGBOUNCER" == "true" && -z "$dbhostname" ]]; then
+        echo "Error: PgBouncer host not found in secret '$secret_name'. Is PgBouncer enabled on the cluster?"
+        return 1
+    fi
+
+    echo "----- Database: ${dbname} (secret: ${secret_name})$([ "$PGBOUNCER" == "true" ] && echo " [pgbouncer]") -----"
     echo "External DB Hostname: $dbhostname "
     echo "External DB Port: $dbport"
     echo "External DB Name: $dbname"
