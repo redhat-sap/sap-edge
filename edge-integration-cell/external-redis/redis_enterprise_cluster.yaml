@@ -18,8 +18,18 @@ spec:
   bootstrapperImageSpec:
     repository: registry.connect.redhat.com/redislabs/redis-enterprise-operator
   nodes: 1
+  # Downscaled for testing (operator default is 2 CPU / 4 GiB per node).
+  # requests == limits gives the pods a Guaranteed QoS class.
+  redisEnterpriseNodeResources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      cpu: "1"
+      memory: 2Gi
   persistentSpec:
     enabled: true
+    volumeSize: 10Gi
   redisEnterpriseImageSpec:
     repository: registry.connect.redhat.com/redislabs/redis-enterprise
   redisEnterpriseServicesRiggerImageSpec:
