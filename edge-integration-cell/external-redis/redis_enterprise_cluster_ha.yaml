@@ -18,7 +18,7 @@ spec:
   bootstrapperImageSpec:
     repository: registry.connect.redhat.com/redislabs/redis-enterprise-operator
   nodes: 3
-  # Downscaled for testing (operator default is 2 CPU / 4 GiB per node).
+  # Reduced for testing (operator default is 2 CPU / 4 GiB per node).
   # requests == limits gives the pods a Guaranteed QoS class.
   redisEnterpriseNodeResources:
     requests:
