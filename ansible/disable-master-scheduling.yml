@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2024 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+- name: Disable scheduling on OpenShift master nodes
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Disable master node scheduling
+      include_tasks: tasks/cluster/disable-master-scheduling.yml
+      tags:
+        - cluster
+        - master-scheduling

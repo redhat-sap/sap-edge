@@ -24,6 +24,10 @@ spec:
       type: string
       description: "Name of the Secret containing kubeconfig for hub cluster (optional)"
       default: ""
+    - name: enableMasterScheduling
+      type: string
+      description: "Whether to make master nodes schedulable (true) or leave them unschedulable (false). Set to false when worker nodes provide enough capacity."
+      default: "true"
   results:
     - name: cluster-summary
       description: "Brief cluster and services summary (under 4KB)"
@@ -39,6 +43,8 @@ spec:
           value: "$(params.aroClusterName)"
         - name: HUB_KUBECONFIG_SECRET
           value: "$(params.hubKubeconfigSecretName)"
+        - name: ENABLE_MASTER_SCHEDULING
+          value: "$(params.enableMasterScheduling)"
       envFrom:
         - secretRef:
             name: $(params.azureSecretName)
@@ -158,12 +164,17 @@ spec:
         cp kubeconfig kubeconfig-$(params.aroClusterName).yaml
         echo "✅ Kubeconfig saved as: kubeconfig-$(params.aroClusterName).yaml"
         
-        # Enable scheduling on master nodes
+        # Configure master node scheduling
         echo ""
-        echo "🔧 Enabling scheduling on master nodes..."
         export ARO_CLUSTER_NAME
         export ARO_RESOURCE_GROUP
-        make aro-enable-master-scheduling
+        if [ "${ENABLE_MASTER_SCHEDULING}" = "true" ]; then
+          echo "🔧 Enabling scheduling on master nodes..."
+          make aro-enable-master-scheduling
+        else
+          echo "🔧 Keeping master nodes unschedulable (mastersSchedulable=false)..."
+          make aro-disable-master-scheduling
+        fi
         
         echo ""
         echo "🔍 Getting Azure services information..."

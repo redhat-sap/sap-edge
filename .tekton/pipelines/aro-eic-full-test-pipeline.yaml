@@ -95,6 +95,10 @@ spec:
       type: string
       description: "S3 key prefix for the restricted-resources zip files"
       default: "restricted-resources/"
+    - name: enableMasterScheduling
+      type: string
+      description: "Whether to make master nodes schedulable (true) or leave them unschedulable (false). Set to false when worker nodes provide enough capacity."
+      default: "true"
   results:
     - name: cluster-summary
       description: "Brief cluster and services validation summary"
@@ -153,6 +157,8 @@ spec:
           value: $(params.postgresAdminPasswordSecretName)
         - name: hubKubeconfigSecretName
           value: $(params.hubClusterName)-kubeconfig
+        - name: enableMasterScheduling
+          value: $(params.enableMasterScheduling)
       workspaces:
         - name: source
           workspace: source
