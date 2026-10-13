@@ -90,6 +90,13 @@ aro-enable-master-scheduling: aro-kubeconfig  ## Enable scheduling on master nod
 		-i ansible/inventory.yml \
 		-e kubeconfig_path="$(PWD)/kubeconfig"
 
+.PHONY: aro-disable-master-scheduling
+aro-disable-master-scheduling: aro-kubeconfig  ## Disable scheduling on master nodes (mastersSchedulable=false) (uses Ansible)
+	@echo "🔧 Disabling master node scheduling using Ansible..."
+	ansible-playbook ansible/disable-master-scheduling.yml \
+		-i ansible/inventory.yml \
+		-e kubeconfig_path="$(PWD)/kubeconfig"
+
 .PHONY: aro-cluster-url
 aro-cluster-url:  ## Get ARO cluster URL
 	$(call required-environment-variables,ARO_CLUSTER_NAME ARO_RESOURCE_GROUP)
