@@ -245,8 +245,9 @@ spec:
 
         YAML_COUNT=$(find "${RBAC_DIR}" \( -name "*.yaml" -o -name "*.yml" \) -type f | wc -l | tr -d ' ')
         if [[ "${YAML_COUNT}" -eq 0 ]]; then
-          echo "❌ No YAML/YML files found in extracted resources"
-          exit 1
+          echo "⚠️  No YAML/YML files found in extracted resources"
+          echo "ℹ️  Nothing to apply; skipping RBAC apply step and continuing."
+          exit 0
         fi
         echo ""
         echo "✅ Found ${YAML_COUNT} YAML files across all resource types"
