@@ -172,8 +172,7 @@ spec:
           echo "🔧 Enabling scheduling on master nodes..."
           make aro-enable-master-scheduling
         else
-          echo "🔧 Keeping master nodes unschedulable (mastersSchedulable=false)..."
-          make aro-disable-master-scheduling
+          echo "🔧 Leaving master nodes unschedulable (ARO default: mastersSchedulable=false)"
         fi
         
         echo ""
