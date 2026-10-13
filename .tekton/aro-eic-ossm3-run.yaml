@@ -33,7 +33,7 @@ spec:
     - name: aroClusterName
       value: "aro-ossm-pr{{ pull_request_number }}"
     - name: aroVersion
-      value: "4.20.15"
+      value: "4.21.22"
     - name: azureSecretName
       value: "mj-azure-sp"
     - name: pullSecretName
