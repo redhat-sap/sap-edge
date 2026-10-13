@@ -9,7 +9,7 @@ ARO_LOCATION?=northeurope
 
 ARO_CLUSTER_NAME?=sapeic
 ARO_DOMAIN?=saponrhel.org
-ARO_VERSION?=4.20.15
+ARO_VERSION?=4.21.22
 
 # Azure services configuration
 DEPLOY_POSTGRES?=true
@@ -566,6 +566,7 @@ aro-deploy-test:  ## Deploy ARO with cost-optimized test settings
 	echo "{ \
 		\"clusterName\": { \"value\": \"${ARO_CLUSTER_NAME}\" }, \
 		\"domain\": { \"value\": \"${ARO_CLUSTER_NAME}.${ARO_DOMAIN}\" }, \
+		\"version\": { \"value\": \"${ARO_VERSION}\" }, \
 		\"servicePrincipalClientId\": { \"value\": \"${CLIENT_ID}\" }, \
 		\"servicePrincipalClientSecret\": { \"value\": \"${CLIENT_SECRET}\" }, \
 		\"pullSecret\": { \"value\": \"$$PULL_SECRET_BASE64\" }, \
