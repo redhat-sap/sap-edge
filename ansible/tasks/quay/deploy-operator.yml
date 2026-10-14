@@ -26,16 +26,21 @@
 
     - name: Select latest stable channel
       set_fact:
+        # Prefer the operator's recommended defaultChannel (e.g. stable-3.18).
+        # Fall back to the highest stable-X.Y channel sorted *numerically*
+        # (a plain string sort is wrong: 'stable-3.9' > 'stable-3.13').
         quay_channel: >-
-          {{ quay_packagemanifest.resources[0].status.channels
-             | selectattr('name', 'match', '^stable-')
-             | map(attribute='name')
-             | sort
-             | last }}
+          {{ quay_packagemanifest.resources[0].status.defaultChannel
+             if (quay_packagemanifest.resources[0].status.defaultChannel | default('')) is match('^stable-')
+             else (quay_packagemanifest.resources[0].status.channels
+                   | map(attribute='name')
+                   | select('match', '^stable-[0-9]+\\.[0-9]+$')
+                   | community.general.version_sort
+                   | last) }}
 
     - name: Display selected Quay channel
       debug:
-        msg: "Auto-selected Quay operator channel: {{ quay_channel }}"
+        msg: "Selected Quay operator channel: {{ quay_channel }}"
 
     - name: Delete stale subscription if channel is wrong
       kubernetes.core.k8s:
