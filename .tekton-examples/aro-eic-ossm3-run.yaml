@@ -31,9 +31,9 @@ spec:
     - name: aroLocation
       value: "northeurope"
     - name: aroClusterName
-      value: "aro-ossm-pr{{ pull_request_number }}"
+      value: "eic-on-ocp-demo"
     - name: aroVersion
-      value: "4.20.15"
+      value: "4.21.22"
     - name: azureSecretName
       value: "mj-azure-sp"
     - name: pullSecretName
@@ -49,7 +49,7 @@ spec:
     - name: publicDNS
       value: "false"
     - name: deployQuay
-      value: "false"
+      value: "true"
     - name: skipEicValidation
       value: "false"
     - name: skipAutomatedTests
@@ -62,6 +62,10 @@ spec:
       value: "SAPOCP-2108"
     - name: hubClusterName
       value: "eic"
+    # Worker nodes are sized (Standard_D8s_v3 x3) to host Quay/ELM/EIC,
+    # so keep master nodes unschedulable (control-plane only).
+    - name: enableMasterScheduling
+      value: "false"
     # --- OSSM3 parameters ---
     - name: ossm3Channel
       value: "stable-3.2"
