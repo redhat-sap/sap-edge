@@ -10,8 +10,11 @@ metadata:
 spec:
   description: >-
     Download restricted-access resource zip files from an ODF S3 bucket (via OBC),
-    extract them, and apply RBAC permissions on the hosted cluster. Replaces the
-    ConfigMap-based approach for providing RBAC resources.
+    extract the latest version of each bundle, and apply it on the hosted cluster
+    by running the bundle's own apply-restricted-resources.sh --yes. That SAP
+    script creates the namespaces, validates namespace ownership via the
+    edgelm.sap.com/edge-node-id labels, and applies its numbered manifests
+    (000001-*.yaml …) in order. Only the new SAP bundle format is supported.
   params:
     - name: hostedClusterName
       type: string
@@ -240,32 +243,55 @@ spec:
         fi
 
         # ========================================
-        # Step 4: Apply RBAC resources
+        # Step 4: Apply each bundle via SAP's apply-restricted-resources.sh
         # ========================================
+        # Every new-format SAP bundle ships an apply-restricted-resources.sh that
+        # creates the namespaces, validates namespace ownership (via the
+        # edgelm.sap.com/edge-node-id labels), and applies its numbered manifests
+        # (000001-*.yaml …) in the correct order. We run it non-interactively
+        # (--yes) against the target cluster. Only the new bundle format is
+        # supported: a bundle without the script is a hard error.
 
-        YAML_COUNT=$(find "${RBAC_DIR}" \( -name "*.yaml" -o -name "*.yml" \) -type f | wc -l | tr -d ' ')
-        if [[ "${YAML_COUNT}" -eq 0 ]]; then
-          echo "⚠️  No YAML/YML files found in extracted resources"
-          echo "ℹ️  Nothing to apply; skipping RBAC apply step and continuing."
-          exit 0
-        fi
         echo ""
-        echo "✅ Found ${YAML_COUNT} YAML files across all resource types"
+        echo "📦 Applying restricted-resources bundles via SAP apply script..."
         echo ""
 
-        # Apply all YAML files from each resource type directory
-        for RESOURCE_TYPE in "${!LATEST_FILES[@]}"; do
-          EXTRACT_DIR="${RBAC_DIR}/${RESOURCE_TYPE}"
-          echo "📦 Applying resources from: ${RESOURCE_TYPE}"
-          while IFS= read -r YAML_FILE; do
-            echo "   Applying $(basename "${YAML_FILE}")..."
-            oc apply -f "${YAML_FILE}"
-          done < <(find "${EXTRACT_DIR}" \( -name "*.yaml" -o -name "*.yml" \) -type f | sort)
+        # Iterate the extracted bundle directories (one per resource type) in a
+        # deterministic order.
+        BUNDLE_COUNT=0
+        while IFS= read -r EXTRACT_DIR; do
+          RESOURCE_TYPE="$(basename "${EXTRACT_DIR}")"
+
+          # Locate the apply script (a zip may nest its manifests in a subfolder).
+          APPLY_SCRIPT=""
+          while IFS= read -r CANDIDATE; do
+            APPLY_SCRIPT="${CANDIDATE}"
+            break
+          done < <(find "${EXTRACT_DIR}" -type f -name 'apply-restricted-resources.sh' | sort)
+
+          if [[ -z "${APPLY_SCRIPT}" ]]; then
+            echo "❌ Bundle '${RESOURCE_TYPE}' has no apply-restricted-resources.sh"
+            echo "   Only new-format SAP bundles are supported. Aborting."
+            exit 1
+          fi
+
+          echo "📦 Applying bundle: ${RESOURCE_TYPE}"
+          echo "   Using: ${APPLY_SCRIPT}"
+          # KUBECONFIG is already exported above; the script resolves its own
+          # manifest paths relative to itself, so the working directory does not
+          # matter. A conflict or apply failure exits non-zero and fails the task.
+          bash "${APPLY_SCRIPT}" --yes
           echo "✅ ${RESOURCE_TYPE} applied"
           echo ""
-        done
+          BUNDLE_COUNT=$((BUNDLE_COUNT + 1))
+        done < <(find "${RBAC_DIR}" -mindepth 1 -maxdepth 1 -type d | sort)
+
+        if [[ "${BUNDLE_COUNT}" -eq 0 ]]; then
+          echo "❌ No extracted bundles found under ${RBAC_DIR}"
+          exit 1
+        fi
 
         echo ""
         echo "=========================================="
-        echo "✅ RBAC permissions downloaded and applied successfully"
+        echo "✅ Applied ${BUNDLE_COUNT} restricted-resources bundle(s) successfully"
         echo "=========================================="
