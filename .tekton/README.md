@@ -201,6 +201,75 @@ oc patch approvaltask <name> --type=merge -p '{"spec":{"approved":true}}'
 4. **Quay deployment fails**: Verify Azure storage account creation
 5. **Pod status check fails**: Check if edgelm namespace exists
 
+### PostgreSQL or Redis PDB blocks a node rollout
+
+For the in-cluster services deployed by the HCP tasks, use
+[`fix_pdb_for_node_rollout.sh`](../edge-integration-cell/fix_pdb_for_node_rollout.sh).
+It defaults to PostgresCluster `edgedb` in `sap-eic-external-postgres` and
+RedisEnterpriseCluster `rec` in `sap-eic-external-redis`. Use `oc` (or `kubectl`)
+and `jq`, with `KUBECONFIG` pointing to the cluster running the database pods.
+For HCP, this is the hosted cluster, not the management cluster.
+
+**This removes disruption protection and can interrupt PostgreSQL and Redis,
+including all replicas of an HA deployment. Changes remain in place after the
+rollout; the script does not restore the original budgets.**
+
+```bash
+# Preview and validate against the installed APIs without changing resources.
+bash edge-integration-cell/fix_pdb_for_node_rollout.sh --dry-run
+
+# Apply once; no confirmation prompt or restore step.
+bash edge-integration-cell/fix_pdb_for_node_rollout.sh
+
+# If an operator resets the budgets, reapply during the rollout until Ctrl-C.
+bash edge-integration-cell/fix_pdb_for_node_rollout.sh --watch 5
+```
+
+Use `--postgres-namespace`, `--postgres-cluster`, `--redis-namespace` and
+`--redis-cluster` for custom deployments (for example, a Redis instance namespace).
+For services deployed with `--instance eic01` and `--instance eic02`, run:
+
+```bash
+bash edge-integration-cell/fix_pdb_for_node_rollout.sh \
+  --redis-namespace sap-eic-external-redis-eic01
+bash edge-integration-cell/fix_pdb_for_node_rollout.sh \
+  --redis-namespace sap-eic-external-redis-eic02
+```
+
+Both commands include the shared PostgresCluster `edgedb` in
+`sap-eic-external-postgres`, which hosts databases `edgedb-eic01` and `edgedb-eic02`.
+The second command skips PostgreSQL settings already applied by the first.
+Each command also handles its selected Redis namespace. Add `--dry-run` to preview.
+
+Only PDBs directly owned by these two custom resources are patched. The script
+sets `minAvailable: 0` and removes `maxUnavailable` atomically, leaving selectors
+and other PDB settings intact. Other PDBs shown in the status output are unchanged.
+
+For Crunchy, it also sets `spec.instances[*].minAvailable` and, when present,
+`spec.proxy.pgBouncer.minAvailable` to `0`. The operator then removes those PDBs;
+this is the [documented Crunchy setting](https://access.crunchydata.com/documentation/postgres-operator/latest/architecture/high-availability).
+The script checks that the installed CRD accepts these fields before changing the
+PostgresCluster. Redis is patched directly, so its operator can revert the change.
+Watch mode re-applies patches but cannot guarantee a window for eviction if an
+operator immediately resets them. Stopping it leaves the latest settings in place.
+GitOps or a later manifest apply can also overwrite changes; reflect the intended
+PostgreSQL settings in your deployment source if GitOps manages the cluster.
+
+```bash
+oc get pdb -n sap-eic-external-postgres
+oc get pdb -n sap-eic-external-redis
+oc get nodes
+# Self-managed OCP with a worker MachineConfigPool:
+oc get mcp worker
+```
+
+Allow PDB status to catch up. A remaining PDB with healthy matching pods should
+show positive `ALLOWED DISRUPTIONS`; a PDB removed by Crunchy no longer blocks
+eviction. If draining still fails, inspect the particular PDB named in the drain
+error and check for overlapping budgets, unavailable pods or an operator resetting
+the policy. This script does not drain nodes, change CRI-O limits or verify the
+Solace startup issue. See [Kubernetes PDB guidance](https://kubernetes.io/docs/tasks/run-application/configure-pdb/).
+
 ### Debugging Commands
 ```bash
 # Get pipeline run details

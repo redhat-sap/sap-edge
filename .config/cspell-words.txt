@@ -25,6 +25,7 @@ dbpassword
 crunchydata
 pgbackrest
 postgrescluster
+postgresclusters
 postgresoperator
 redb
 redislabs
@@ -40,6 +41,7 @@ xklaieniej
 Xpgl
 redisenterprisedatabase
 redisenterprisecluster
+redisenterpriseclusters
 testenv
 getline
 TMPARGS
@@ -80,6 +82,8 @@ tfstate
 tfsec
 Schedulable
 tostring
+argjson
+pdbs
 quayregistry
 quayadmin
 esac
