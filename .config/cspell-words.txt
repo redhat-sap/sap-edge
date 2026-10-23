@@ -184,3 +184,9 @@ machineconfigs
 ulimits
 retarget
 nproc
+gtimeout
+TMPDIR
+tonumber
+endswith
+gsub
+startswith
