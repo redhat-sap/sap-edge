@@ -10,6 +10,9 @@ REDIS_NAMESPACE="sap-eic-external-redis"
 REDIS_CLUSTER="rec"
 DRY_RUN=false
 STATUS_ONLY=false
+RECOVER_REDIS=false
+RECOVERY_TIMEOUT=600
+MACHINE_CONFIG_POOL="worker"
 WATCH_INTERVAL=0
 PG_RESOURCE="postgresclusters.postgres-operator.crunchydata.com"
 REDIS_RESOURCE="redisenterpriseclusters.app.redislabs.com"
@@ -29,6 +32,10 @@ Options:
   --redis-cluster NAME       Default: rec
   --dry-run                 Preview and validate patches without changing resources
   --status                  Read PDB and Redis shutdown status without changing resources
+  --recover-disposable-redis Recover a single-node test Redis AFTER the worker rollout;
+                            databases in recovery are restarted EMPTY (Redis only)
+  --machine-config-pool NAME Pool to check before recovery (default: worker)
+  --recovery-timeout SECONDS Maximum recovery wait (default: 600)
   --watch SECONDS           Recheck/reapply every N seconds until Ctrl-C
   -h, --help                Show this help
 
@@ -40,7 +47,12 @@ operator removes those PDBs. Redis may reconcile its PDB; use --watch during
 the rollout if necessary. Stopping --watch does not restore any settings.
 Exit code 2 means a selected Redis pod has been terminating for at least five
 minutes. Inspect its shutdown hook and data persistence before attempting recovery.
-The script does not stop Redis pods or shorten their shutdown grace period.
+PDB/status modes do not stop Redis pods or shorten their shutdown grace period.
+
+Recovery mode requires Python 3 and a completed OpenShift MachineConfigPool rollout.
+It uses the Redis operator's clusterRecovery procedure and retained cluster
+configuration on the PVC. It never resets a healthy database, changes PostgreSQL,
+or deletes PVCs. Use --dry-run to inspect the recovery plan without changing Redis.
 EOF
 }
 
@@ -48,13 +60,18 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --postgres-namespace|--postgres-cluster|--redis-namespace|--redis-cluster|--watch)
+        --postgres-namespace|--postgres-cluster|--redis-namespace|--redis-cluster|--watch|--machine-config-pool|--recovery-timeout)
             [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || die "Missing value for $1"
             case "$1" in
                 --postgres-namespace) PG_NAMESPACE="$2" ;;
                 --postgres-cluster) PG_CLUSTER="$2" ;;
                 --redis-namespace) REDIS_NAMESPACE="$2" ;;
                 --redis-cluster) REDIS_CLUSTER="$2" ;;
+                --machine-config-pool) MACHINE_CONFIG_POOL="$2" ;;
+                --recovery-timeout)
+                    [[ "$2" =~ ^[1-9][0-9]*$ ]] || die "--recovery-timeout must be a positive integer"
+                    RECOVERY_TIMEOUT="$2"
+                    ;;
                 --watch)
                     [[ "$2" =~ ^[1-9][0-9]*$ ]] || die "--watch must be a positive integer"
                     WATCH_INTERVAL="$2"
@@ -64,6 +81,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --dry-run) DRY_RUN=true; shift ;;
         --status) STATUS_ONLY=true; shift ;;
+        --recover-disposable-redis) RECOVER_REDIS=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *) die "Unknown argument: $1 (see --help)" ;;
     esac
@@ -71,6 +89,8 @@ done
 [[ "$DRY_RUN" == false || "$WATCH_INTERVAL" == 0 ]] || die "Use --dry-run without --watch"
 [[ "$STATUS_ONLY" == false || ( "$DRY_RUN" == false && "$WATCH_INTERVAL" == 0 ) ]] \
     || die "Use --status without --dry-run or --watch"
+[[ "$RECOVER_REDIS" == false || ( "$STATUS_ONLY" == false && "$WATCH_INTERVAL" == 0 ) ]] \
+    || die "Use --recover-disposable-redis without --status or --watch"
 
 command -v jq >/dev/null || die "Install jq first"
 if command -v oc >/dev/null; then
@@ -84,6 +104,13 @@ fi
 CONTEXT=$("${CLI[@]}" config current-context)
 CLI+=(--context "$CONTEXT" --request-timeout=30s)
 echo "Context: $CONTEXT"
+if [[ "$RECOVER_REDIS" == true ]]; then
+    command -v python3 >/dev/null || die "Install Python 3 for Redis recovery"
+    recovery_args=(--cli "${CLI[0]}" --context "$CONTEXT" --namespace "$REDIS_NAMESPACE"
+        --cluster "$REDIS_CLUSTER" --machine-config-pool "$MACHINE_CONFIG_POOL" --timeout "$RECOVERY_TIMEOUT")
+    if [[ "$DRY_RUN" == true ]]; then recovery_args+=(--dry-run); fi
+    exec python3 "$(dirname "${BASH_SOURCE[0]}")/recover_disposable_redis.py" "${recovery_args[@]}"
+fi
 echo "PostgreSQL: $PG_NAMESPACE/$PG_CLUSTER; Redis: $REDIS_NAMESPACE/$REDIS_CLUSTER"
 if [[ "$STATUS_ONLY" == true ]]; then
     echo "Status only: no resources will be changed."
