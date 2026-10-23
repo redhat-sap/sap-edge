@@ -270,6 +270,54 @@ error and check for overlapping budgets, unavailable pods or an operator resetti
 the policy. This script does not drain nodes, change CRI-O limits or verify the
 Solace startup issue. See [Kubernetes PDB guidance](https://kubernetes.io/docs/tasks/run-application/configure-pdb/).
 
+#### Redis pods remain Terminating after eviction
+
+Check the specific instance without changing resources:
+
+```bash
+bash edge-integration-cell/fix_pdb_for_node_rollout.sh --status \
+  --redis-namespace sap-eic-external-redis-eic01
+bash edge-integration-cell/fix_pdb_for_node_rollout.sh --status \
+  --redis-namespace sap-eic-external-redis-eic02
+```
+
+The script follows Redis pod ownership through its StatefulSet. It exits with
+code `2` when a selected Redis pod has been terminating for at least five minutes
+(or the termination duration cannot be determined). Apply, dry-run and watch modes
+also stop before further patches in this situation. The five-minute threshold is
+a diagnostic signal, not a deadline for killing a database process.
+
+A drain can pass the PDB check and still wait for Redis to shut down. In a
+single-node Redis cluster, the `preStop` hook can repeatedly fail to move shards
+with `Cannot evict shards from node:1`. If the pod has
+`terminationGracePeriodSeconds: 31536000`, Kubernetes can wait up to a year for
+the shutdown hook. The pod's `deletionTimestamp` includes the remaining grace
+period, so it may point into the next year. Zero `ALLOWED DISRUPTIONS` while the
+only pod is terminating does not by itself prove the PDB is the current blocker.
+
+```bash
+oc exec -n sap-eic-external-redis-eic01 rec-0 -c redis-enterprise-node -- \
+  tail -n 30 /var/opt/redislabs/log/prestop_exec_action.log
+```
+
+Check effective Redis database persistence and replication before stopping the
+pod: a persistent volume does not enable database persistence. A single Redis
+node with persistence disabled has no durable copy guaranteed to survive a
+restart. The script does not delete pods or shorten termination automatically.
+
+After choosing a shutdown policy appropriate for the database, the supported REC
+field `spec.redisEnterpriseTerminationGracePeriodSeconds` can bound the grace
+period of future pods. It does not shorten an already-pending deletion, which
+needs separate recovery. See the [Redis REC API](https://redis.io/docs/latest/operate/kubernetes/reference/api/redis_enterprise_cluster_api/)
+and [Kubernetes container lifecycle hooks](https://kubernetes.io/docs/concepts/containers/container-lifecycle-hooks/).
+
+Run the offline shutdown-detection regression tests with:
+
+```bash
+python3 -B -m unittest discover \
+  -s edge-integration-cell/tests -p 'test_pdb_shutdown_detection.py' -v
+```
+
 ### Debugging Commands
 ```bash
 # Get pipeline run details

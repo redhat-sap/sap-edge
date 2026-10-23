@@ -9,6 +9,7 @@ PG_CLUSTER="edgedb"
 REDIS_NAMESPACE="sap-eic-external-redis"
 REDIS_CLUSTER="rec"
 DRY_RUN=false
+STATUS_ONLY=false
 WATCH_INTERVAL=0
 PG_RESOURCE="postgresclusters.postgres-operator.crunchydata.com"
 REDIS_RESOURCE="redisenterpriseclusters.app.redislabs.com"
@@ -27,6 +28,7 @@ Options:
   --redis-namespace NAME     Default: sap-eic-external-redis
   --redis-cluster NAME       Default: rec
   --dry-run                 Preview and validate patches without changing resources
+  --status                  Read PDB and Redis shutdown status without changing resources
   --watch SECONDS           Recheck/reapply every N seconds until Ctrl-C
   -h, --help                Show this help
 
@@ -36,6 +38,9 @@ Only PDBs owned directly by the two selected custom resources are patched.
 Crunchy instance/PgBouncer minAvailable settings are also set to 0 so its
 operator removes those PDBs. Redis may reconcile its PDB; use --watch during
 the rollout if necessary. Stopping --watch does not restore any settings.
+Exit code 2 means a selected Redis pod has been terminating for at least five
+minutes. Inspect its shutdown hook and data persistence before attempting recovery.
+The script does not stop Redis pods or shorten their shutdown grace period.
 EOF
 }
 
@@ -58,11 +63,14 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --dry-run) DRY_RUN=true; shift ;;
+        --status) STATUS_ONLY=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *) die "Unknown argument: $1 (see --help)" ;;
     esac
 done
 [[ "$DRY_RUN" == false || "$WATCH_INTERVAL" == 0 ]] || die "Use --dry-run without --watch"
+[[ "$STATUS_ONLY" == false || ( "$DRY_RUN" == false && "$WATCH_INTERVAL" == 0 ) ]] \
+    || die "Use --status without --dry-run or --watch"
 
 command -v jq >/dev/null || die "Install jq first"
 if command -v oc >/dev/null; then
@@ -77,7 +85,11 @@ CONTEXT=$("${CLI[@]}" config current-context)
 CLI+=(--context "$CONTEXT" --request-timeout=30s)
 echo "Context: $CONTEXT"
 echo "PostgreSQL: $PG_NAMESPACE/$PG_CLUSTER; Redis: $REDIS_NAMESPACE/$REDIS_CLUSTER"
-echo "WARNING: Removing disruption protection permits service downtime. No restore is performed."
+if [[ "$STATUS_ONLY" == true ]]; then
+    echo "Status only: no resources will be changed."
+else
+    echo "WARNING: Removing disruption protection permits service downtime. No restore is performed."
+fi
 
 # Read both owners and namespace inventories before making any changes. In
 # particular, a typo or access error on the second namespace must not be hidden.
@@ -172,6 +184,43 @@ show_status() {
     "${CLI[@]}" get pdb -n "$REDIS_NAMESPACE"
 }
 
+check_redis_shutdown() {
+    local controllers pods terminating
+    # Redis pods belong to a StatefulSet, not directly to the REC. Follow both
+    # owner UIDs so a different Redis cluster in the same namespace is excluded.
+    controllers=$("${CLI[@]}" get statefulsets -n "$REDIS_NAMESPACE" -o json)
+    controllers=$(jq -c --arg uid "$REDIS_UID" '
+        [.items[] | select(any(.metadata.ownerReferences[]?; .uid == $uid)) | .metadata.uid]
+    ' <<< "$controllers")
+    pods=$("${CLI[@]}" get pods -n "$REDIS_NAMESPACE" -o json)
+    terminating=$(jq -c --argjson controllers "$controllers" '
+        [.items[]
+         | select(any(.metadata.ownerReferences[]?; .uid as $uid | $controllers | index($uid)))
+         | select(.metadata.deletionTimestamp != null)
+         | (.metadata.deletionGracePeriodSeconds // .spec.terminationGracePeriodSeconds // 30) as $grace
+         | (try (.metadata.deletionTimestamp | fromdateiso8601) catch null) as $deadline
+         | {name: .metadata.name, node: .spec.nodeName, graceSeconds: $grace,
+            terminatingSeconds: (if $deadline == null then null
+                else ([0, now - ($deadline - $grace)] | max | floor) end)}]
+    ' <<< "$pods")
+    if [[ "$terminating" == '[]' ]]; then
+        return
+    fi
+    echo "Redis pods already terminating in $REDIS_NAMESPACE:"
+    echo "POD NODE GRACE_SECONDS TERMINATING_SECONDS"
+    jq -r '.[] | [.name, .node, .graceSeconds, (.terminatingSeconds // "unknown")] | @tsv' <<< "$terminating"
+    echo "Eviction/deletion has already started. PDB changes do not finish a container shutdown."
+    if jq -e 'any(.[]; .terminatingSeconds == null or .terminatingSeconds >= 300)' <<< "$terminating" >/dev/null; then
+        echo "ERROR: Redis shutdown needs investigation; stopping before further PDB changes." >&2
+        echo "Inspect the Redis preStop hook, finalizers, and effective database persistence." >&2
+        echo "A PVC alone does not mean Redis data persistence is enabled. Do not force deletion without checking." >&2
+        echo "Redis preStop log: /var/opt/redislabs/log/prestop_exec_action.log (container redis-enterprise-node)." >&2
+        echo "The REC field spec.redisEnterpriseTerminationGracePeriodSeconds controls future pods;" >&2
+        echo "changing it does not shorten a deletion that is already in progress." >&2
+        return 2
+    fi
+}
+
 trap 'echo "Stopped. Changes remain in place; no PDB settings were restored."; exit 130' INT
 trap 'echo "Stopped. Changes remain in place; no PDB settings were restored."; exit 143' TERM
 
@@ -179,6 +228,12 @@ while true; do
     # Refuse to follow a deleted/recreated Redis cluster during a watch.
     current_redis_uid=$("${CLI[@]}" get "$REDIS_RESOURCE" "$REDIS_CLUSTER" -n "$REDIS_NAMESPACE" -o jsonpath='{.metadata.uid}')
     [[ "$current_redis_uid" == "$REDIS_UID" ]] || die "RedisEnterpriseCluster was replaced; rerun the script"
+    if [[ "$STATUS_ONLY" == true ]]; then
+        show_status
+        check_redis_shutdown
+        exit 0
+    fi
+    check_redis_shutdown
     configure_postgres
     relax_pdbs "$PG_NAMESPACE" "$PG_UID"
     relax_pdbs "$REDIS_NAMESPACE" "$REDIS_UID"
