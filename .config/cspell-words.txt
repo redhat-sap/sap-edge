@@ -177,3 +177,10 @@ machineconfigpools
 redisenterprisedatabases
 redbs
 rladmin
+nofile
+crio
+machineconfig
+machineconfigs
+ulimits
+retarget
+nproc

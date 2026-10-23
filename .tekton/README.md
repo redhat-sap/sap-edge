@@ -192,6 +192,56 @@ oc patch approvaltask <name> --type=merge -p '{"spec":{"approved":true}}'
 - Temporary files cleaned up automatically
 - Azure CLI login scoped to specific operations
 
+## Configure worker open-file limits before installation
+
+On a fresh **self-managed OpenShift cluster**, run
+[`configure_worker_nofile.sh`](../edge-integration-cell/configure_worker_nofile.sh)
+before installing PostgreSQL, Redis and EIC. It checks the actual limits in a new
+container on every worker and configures CRI-O only when a worker's limits fall
+below `nofile=4096:1048576` (soft:hard). These are the
+[Solace-recommended limits](https://docs.solace.com/Software-Broker/System-Scaling-Parameters.htm).
+
+Requirements: `oc`, Python 3.11 or newer, and cluster-admin access. Log in to the
+target cluster first; the script uses the current context and honors `KUBECONFIG`.
+Run from the repository root:
+
+```bash
+# Optional: inspect workers and validate any proposed change with the API server.
+bash edge-integration-cell/configure_worker_nofile.sh --dry-run
+
+# Detect, configure if necessary, wait for the rollout, and verify the limits.
+bash edge-integration-cell/configure_worker_nofile.sh
+```
+
+Inspection creates temporary `oc debug node` pods, including in dry-run mode.
+When a change is needed, the script creates or updates
+`96-worker-crio-limit-files`, managing
+`/etc/crio/crio.conf.d/99-eic-nofile.conf`. It preserves other CRI-O ulimit entries
+and higher existing `nofile` values. Changing the MachineConfig can drain and
+reboot workers. See Red Hat's
+[CRI-O ulimit guidance](https://access.redhat.com/solutions/6243491) for the target
+OpenShift release.
+
+The script waits for the requested rendered configuration, every worker to be
+Ready and schedulable, and the pool to finish updating. It then checks fresh
+container limits and the running CRI-O configuration on every worker. If the
+limits are already sufficient, it verifies readiness and skips the change.
+Successful execution ends with **`All done`**; PostgreSQL, Redis and EIC can then
+be installed. No PDB changes are needed for this fresh-cluster preparation because
+the database workloads have not been installed yet.
+
+The default timeout is 30 minutes; use `--timeout 3600` for an hour. A timeout,
+degraded or paused pool, conflicting configuration, or failed verification returns
+a nonzero exit status without reporting success. An applied MachineConfig remains
+in place if the script is interrupted or times out; resolve the reported issue
+and rerun it.
+
+`--pool <name>` selects a custom worker pool and its matching MachineConfig role
+label. The script requires that label to select only the requested pool; it stops
+if the default `worker` label also affects custom pools. Configure each pool with
+an exclusive role label separately. Control-plane nodes, ARO/ROSA and hosted
+control plane clusters require their own configuration procedures.
+
 ## Troubleshooting
 
 ### Common Issues
