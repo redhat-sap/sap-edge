@@ -172,3 +172,8 @@ waivable
 packagemanifests
 packagemanifest
 elbv
+machineconfiguration
+machineconfigpools
+redisenterprisedatabases
+redbs
+rladmin

@@ -303,7 +303,7 @@ oc exec -n sap-eic-external-redis-eic01 rec-0 -c redis-enterprise-node -- \
 Check effective Redis database persistence and replication before stopping the
 pod: a persistent volume does not enable database persistence. A single Redis
 node with persistence disabled has no durable copy guaranteed to survive a
-restart. The script does not delete pods or shorten termination automatically.
+restart. PDB/status modes do not delete pods or shorten termination automatically.
 
 After choosing a shutdown policy appropriate for the database, the supported REC
 field `spec.redisEnterpriseTerminationGracePeriodSeconds` can bound the grace
@@ -311,11 +311,69 @@ period of future pods. It does not shorten an already-pending deletion, which
 needs separate recovery. See the [Redis REC API](https://redis.io/docs/latest/operate/kubernetes/reference/api/redis_enterprise_cluster_api/)
 and [Kubernetes container lifecycle hooks](https://kubernetes.io/docs/concepts/containers/container-lifecycle-hooks/).
 
-Run the offline shutdown-detection regression tests with:
+#### Recover disposable single-node Redis after the rollout
+
+For test clusters where Redis data can be discarded, this workflow can recover
+single-node Redis. Expect downtime during worker maintenance.
+Keep the REC persistent volume: it holds the cluster configuration needed for
+recovery even when database persistence is disabled.
+
+After the worker MachineConfigPool finishes updating, a replacement single-node
+Redis pod can remain unready with `pod is not yet bootstrapped` and bootstrapper
+logs saying `No pod has been labeled as master pod yet`. Use the explicit
+disposable-data recovery mode:
+
+```bash
+# Inspect and validate the plan first; this makes no changes.
+bash edge-integration-cell/fix_pdb_for_node_rollout.sh \
+  --recover-disposable-redis --dry-run \
+  --redis-namespace sap-eic-external-redis-eic01
+
+# Recover each selected test instance. Databases in recovery restart EMPTY.
+bash edge-integration-cell/fix_pdb_for_node_rollout.sh \
+  --recover-disposable-redis \
+  --redis-namespace sap-eic-external-redis-eic01
+bash edge-integration-cell/fix_pdb_for_node_rollout.sh \
+  --recover-disposable-redis \
+  --redis-namespace sap-eic-external-redis-eic02
+```
+
+This mode requires Python 3 in addition to the normal CLI dependencies. It checks
+that the `worker` MachineConfigPool is updated and healthy, the REC has exactly
+one node and persistent storage, and the Redis pod is running on a ready,
+schedulable worker. Use `--machine-config-pool NAME` for another worker pool and
+`--recovery-timeout SECONDS` to change the default 600-second recovery timeout.
+
+For the known lost-master bootstrap failure, it requests the operator's
+`spec.clusterRecovery: true` procedure, waits for the REC to return to `Running`
+and its pod to become Ready, then reads current database state from Redis. Each
+database in `recovery` is restored with `rladmin recover db db:<id> only_configuration`.
+This discards the data for those databases, including any saved database data.
+Existing active databases are left alone; rerunning resumes an incomplete
+recovery instead of resetting a healthy instance. The command preserves the
+configuration restored by Redis, including endpoints and credentials. See
+[Redis cluster recovery](https://redis.io/docs/latest/operate/kubernetes/re-clusters/cluster-recovery/)
+and [database configuration recovery](https://redis.io/docs/latest/operate/rs/databases/recover/).
+
+Recovery mode changes only the selected Redis cluster. It does not change
+PostgreSQL or PDB settings, delete PVCs, drain nodes, or release a stuck shutdown
+hook. If a pod is still terminating or the worker rollout is incomplete, resolve
+that first using the diagnosis above. HA clusters and unrelated bootstrap failures
+are rejected. Default PDB mode, `--status`, and `--watch` never initiate recovery.
+
+For disposable test data, `replication: false` is also acceptable on a three-node
+REC if database downtime and empty recovery are acceptable. Three REC nodes
+provide cluster quorum; database `spec.replication: true` adds a replica shard
+for availability of each database. It is not required just to restart empty.
+Database persistence is another, separate choice. Our `--type ha` option currently
+selects three REC nodes but uses the same database manifest, which does not enable
+replication. See the [Redis database API](https://redis.io/docs/latest/operate/kubernetes/reference/api/redis_enterprise_database_api/).
+
+Run the offline shutdown and recovery regression tests with:
 
 ```bash
 python3 -B -m unittest discover \
-  -s edge-integration-cell/tests -p 'test_pdb_shutdown_detection.py' -v
+  -s edge-integration-cell/tests -p 'test_*.py' -v
 ```
 
 ### Debugging Commands
