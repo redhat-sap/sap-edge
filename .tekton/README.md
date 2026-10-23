@@ -201,8 +201,10 @@ container on every worker and configures CRI-O only when a worker's limits fall
 below `nofile=4096:1048576` (soft:hard). These are the
 [Solace-recommended limits](https://docs.solace.com/Software-Broker/System-Scaling-Parameters.htm).
 
-Requirements: `oc`, Python 3.11 or newer, and cluster-admin access. Log in to the
-target cluster first; the script uses the current context and honors `KUBECONFIG`.
+Requirements: Bash, `oc`, `jq`, standard `awk`/`base64` utilities, GNU `timeout`
+(or `gtimeout`), and cluster-admin access. On macOS, install Homebrew `coreutils`
+for GNU `timeout`. The script has no Python runtime dependency. Log in to the
+target cluster first; it uses the current context and honors `KUBECONFIG`.
 Run from the repository root:
 
 ```bash
