@@ -190,3 +190,6 @@ tonumber
 endswith
 gsub
 startswith
+rolebindings
+subfolders
+xbem
