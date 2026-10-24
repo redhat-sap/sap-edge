@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+# SPDX-License-Identifier: Apache-2.0
+
+# Fake oc/kubectl for testing Tekton task scripts
+
+# Log the call if FAKE_OC_LOG is set
+if [[ -n "${FAKE_OC_LOG:-}" ]]; then
+  echo "$*" >> "${FAKE_OC_LOG}"
+fi
+
+# Save stdin if FAKE_OC_STDIN_DIR is set and this is an apply/create -f -
+if [[ -n "${FAKE_OC_STDIN_DIR:-}" ]]; then
+  if [[ "$*" =~ (apply|create)[[:space:]]+-f[[:space:]]- ]]; then
+    mkdir -p "${FAKE_OC_STDIN_DIR}"
+    # Find next number
+    NUM=1
+    while [[ -f "${FAKE_OC_STDIN_DIR}/${NUM}.yaml" ]]; do
+      NUM=$((NUM + 1))
+    done
+    cat > "${FAKE_OC_STDIN_DIR}/${NUM}.yaml"
+  fi
+fi
+
+# Apply rules if FAKE_OC_RULES is set
+if [[ -n "${FAKE_OC_RULES:-}" ]] && [[ -f "${FAKE_OC_RULES}" ]]; then
+  while IFS=$'\t' read -r GLOB EXIT_CODE STDOUT; do
+    # Use bash pattern matching (not regex)
+    # shellcheck disable=SC2053
+    if [[ "$*" == ${GLOB} ]]; then
+      # Expand \n in STDOUT
+      echo -e "${STDOUT}"
+      exit "${EXIT_CODE}"
+    fi
+  done < "${FAKE_OC_RULES}"
+fi
+
+# Default: exit 0, no output
+exit 0
