@@ -263,13 +263,8 @@ spec:
           if oc get hpa istio-ingressgateway -n "${GATEWAY_NAMESPACE}" &>/dev/null; then
             HPA_NAMESPACE="${GATEWAY_NAMESPACE}"
           fi
-        elif [[ -n "${GATEWAY_NS_FOUND}" ]]; then
-          # Use the namespace where we found the gateway service
-          if oc get hpa istio-ingressgateway -n "${GATEWAY_NS_FOUND}" &>/dev/null; then
-            HPA_NAMESPACE="${GATEWAY_NS_FOUND}"
-          fi
         else
-          # Default search order
+          # Default search order: istio-system → istio-gateways (unchanged from original)
           if oc get hpa istio-ingressgateway -n istio-system &>/dev/null; then
             HPA_NAMESPACE="istio-system"
           elif oc get hpa istio-ingressgateway -n istio-gateways &>/dev/null; then
