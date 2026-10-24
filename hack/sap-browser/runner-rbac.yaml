@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: 2026 SAP edge team
+# SPDX-License-Identifier: Apache-2.0
+
+# Apply with oc -n YOUR_PIPELINE_NAMESPACE apply -f ...
+# Select this service account only for the sap-browser PipelineTask via taskRunSpecs.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sap-browser-runner
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sap-browser-runner
+rules:
+  - apiGroups: [tekton.dev]
+    resources: [pipelineruns, taskruns]
+    verbs: [get]
+  # Names depend on hostedClusterName, so this role permits named GETs of Secrets
+  # throughout this namespace. No list/watch/write permissions are granted.
+  # For one fixed cluster, add resourceNames containing its two credential Secrets.
+  - apiGroups: ['']
+    resources: [secrets]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sap-browser-runner
+subjects:
+  - kind: ServiceAccount
+    name: sap-browser-runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: sap-browser-runner

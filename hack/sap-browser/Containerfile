@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2026 SAP edge team
+# SPDX-License-Identifier: Apache-2.0
+# cspell:words xvfb novnc websockify openbox
+
+# Build from the repository root. Browser revision comes from package-lock.json.
+FROM node:24-bookworm-slim
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+WORKDIR /opt/sap-browser
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts \
+    && npx playwright install --with-deps chromium \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+       dumb-init xvfb x11-utils x11vnc novnc websockify openbox \
+    && rm -rf /var/lib/apt/lists/* \
+    && chmod -R a+rX /ms-playwright
+COPY hack/sap-browser/ ./
+# OpenShift supplies an arbitrary non-root UID. Runtime writes go to /tmp.
+USER 1001
+ENTRYPOINT ["/usr/bin/dumb-init", "--", "/bin/bash", "/opt/sap-browser/entrypoint.sh"]

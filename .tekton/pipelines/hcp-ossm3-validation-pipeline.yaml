@@ -131,6 +131,34 @@ spec:
       default: "default"
 
     # --- Pipeline control ---
+    - name: sapBrowserMode
+      type: string
+      description: "disabled, review-registration, inspect, or run; manual approval is always retained"
+      default: "disabled"
+    - name: sapBrowserImage
+      type: string
+      description: "Set to the built SAP browser runner image before enabling sapBrowserMode"
+      default: "sap-browser:dev"
+    - name: sapElmUrl
+      type: string
+      description: "Direct SAP Edge Lifecycle Management HTTPS URL"
+      default: ""
+    - name: sapBrowserHA
+      type: string
+      description: "ELM high availability for registration review (independent of PostgreSQL HA)"
+      default: "false"
+    - name: sapBrowserFlow
+      type: string
+      description: "Reviewed .mjs flow path relative to hack/sap-browser, required for run mode"
+      default: ""
+    - name: sapBrowserSessionMinutes
+      type: string
+      description: "Total browser session deadline, including login and inspection (1-120 minutes)"
+      default: "120"
+    - name: sapBrowserLoginMinutes
+      type: string
+      description: "Interactive login deadline within the browser session"
+      default: "30"
     - name: skipTeardown
       type: string
       description: "Skip the teardown step at the end"
@@ -452,9 +480,44 @@ spec:
     # Phase 4: Manual ELM/EIC Deployment + Tests
     # =============================================
 
+    # Optional browser session; a skipped task does not skip its runAfter dependents.
+    # No retries: replaying a browser flow might duplicate SAP-side operations.
+    - name: sap-browser
+      runAfter: [get-all-accesses]
+      when:
+        - input: $(params.sapBrowserMode)
+          operator: notin
+          values: [disabled]
+      timeout: "3h"
+      taskRef: { name: hcp-sap-browser }
+      params:
+        - name: runnerImage
+          value: $(params.sapBrowserImage)
+        - name: mode
+          value: $(params.sapBrowserMode)
+        - name: elmUrl
+          value: $(params.sapElmUrl)
+        - name: pipelineRun
+          value: $(context.pipelineRun.name)
+        - name: pipelineRunUID
+          value: $(context.pipelineRun.uid)
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: highAvailability
+          value: $(params.sapBrowserHA)
+        - name: flow
+          value: $(params.sapBrowserFlow)
+        - name: sessionMinutes
+          value: $(params.sapBrowserSessionMinutes)
+        - name: loginMinutes
+          value: $(params.sapBrowserLoginMinutes)
+      workspaces:
+        - name: source
+          workspace: source
+
     # Step 13: Manual approval after ELM/EIC and iFlow deployment
     - name: approval-elm-eic-iflow-deployed
-      runAfter: [get-all-accesses]
+      runAfter: [sap-browser]
       taskRef:
         apiVersion: openshift-pipelines.org/v1alpha1
         kind: ApprovalTask
@@ -478,7 +541,9 @@ spec:
 
             Restricted kubeconfig stored as Secret 'edgelm-kubeconfig-generated-$(params.hostedClusterName)'.
 
-            Please complete the following manually:
+            Optional SAP browser mode: $(params.sapBrowserMode).
+            Registration review and inspection modes do not verify deployment readiness.
+            Confirm the following are complete (finish any remaining steps manually):
             1. Register the cluster in ELM (use restricted kubeconfig, check "Restricted Access")
             2. Deploy Edge Integration Cell (EIC)
             3. Deploy iFlows for testing

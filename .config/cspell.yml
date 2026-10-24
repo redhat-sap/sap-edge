@@ -15,6 +15,7 @@ dictionaryDefinitions:
   - name: sap-edge
     path: ./cspell-words.txt
 ignorePaths:
+  - .sap-browser/**
   - .env
   - node_modules/**
   - .git/**

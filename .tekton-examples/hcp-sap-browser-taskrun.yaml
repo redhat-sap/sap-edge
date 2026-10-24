@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2026 SAP edge team
+# SPDX-License-Identifier: Apache-2.0
+
+# Rehearse against an existing hcp-ossm3-validation-pipeline run after
+# get-all-accesses succeeds. Replace every REPLACE value before oc create.
+# No workspace is bound: helper code comes from the image, so rebuild/tag it
+# after edits without recreating the hosted cluster or modifying its source PVC.
+---
+apiVersion: tekton.dev/v1
+kind: TaskRun
+metadata:
+  generateName: sap-browser-rehearsal-
+spec:
+  taskRef:
+    name: hcp-sap-browser
+  serviceAccountName: sap-browser-runner
+  timeout: "3h"
+  params:
+    - name: runnerImage
+      value: REPLACE_REGISTRY/REPLACE_PROJECT/sap-browser:dev
+    - name: mode
+      value: review-registration
+    - name: elmUrl
+      value: https://REPLACE_TENANT/comsapclmedgelm.comsapclmedgelm/index.html
+    - name: pipelineRun
+      value: REPLACE_PIPELINERUN_NAME
+    - name: pipelineRunUID
+      value: REPLACE_PIPELINERUN_UID
+    - name: hostedClusterName
+      value: REPLACE_HOSTED_CLUSTER_NAME
