@@ -2,10 +2,16 @@
   "name": "sap-edge",
   "version": "1.0.0",
   "scripts": {
+    "sap:browser": "node hack/sap-browser/cli.mjs",
+    "sap:browser:test": "node --test hack/sap-browser/*.test.mjs",
+    "sap:browser:install": "playwright install chromium",
     "cspell": "cspell ** --no-progress --show-suggestions --show-context --config .config/cspell.yml",
     "cspell:addwords": "cspell ** --no-progress --words-only --unique --config .config/cspell.yml"
   },
   "dependencies": {
     "cspell": "^9.8.0"
+  },
+  "devDependencies": {
+    "playwright": "1.64.1"
   }
 }

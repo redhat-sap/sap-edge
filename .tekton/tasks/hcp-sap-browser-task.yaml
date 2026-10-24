@@ -1,0 +1,112 @@
+# SPDX-FileCopyrightText: 2026 SAP edge team
+# SPDX-License-Identifier: Apache-2.0
+# cspell:words Containerfile
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: hcp-sap-browser
+spec:
+  description: >-
+    Interactive SAP browser session for a specific HCP PipelineRun. Access noVNC
+    through oc port-forward; complete SAP login/MFA manually. Review mode does
+    not register an edge node or verify EIC readiness. The approval gate remains.
+  params:
+    - name: runnerImage
+      type: string
+      description: Image built with hack/sap-browser/Containerfile
+    - name: mode
+      type: string
+      default: review-registration
+      description: review-registration, inspect, or run (requires a reviewed flow)
+    - name: elmUrl
+      type: string
+    - name: pipelineRun
+      type: string
+    - name: pipelineRunUID
+      type: string
+    - name: hostedClusterName
+      type: string
+    - name: highAvailability
+      type: string
+      default: 'false'
+    - name: flow
+      type: string
+      default: ''
+      description: Relative .mjs path inside hack/sap-browser, only for run mode
+    - name: sessionMinutes
+      type: string
+      default: '120'
+    - name: loginMinutes
+      type: string
+      default: '30'
+  results:
+    - name: outcome
+      description: registration-reviewed, inspection-finished, or deployment-verified
+  workspaces:
+    - name: source
+      readOnly: true
+      optional: true
+  volumes:
+    - name: browser-runtime
+      emptyDir:
+        medium: Memory
+        sizeLimit: 1Gi
+    - name: browser-shm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 512Mi
+  steps:
+    - name: browser
+      image: $(params.runnerImage)
+      command: [/usr/bin/dumb-init, '--', /bin/bash, /opt/sap-browser/entrypoint.sh]
+      computeResources:
+        requests:
+          cpu: 500m
+          memory: 1Gi
+        limits:
+          cpu: '2'
+          memory: 4Gi
+      securityContext:
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      env:
+        - name: SAP_BROWSER_SOURCE_BOUND
+          value: $(workspaces.source.bound)
+        - name: SAP_BROWSER_SOURCE
+          value: $(workspaces.source.path)/hack/sap-browser
+        - name: SAP_BROWSER_MODE
+          value: $(params.mode)
+        - name: SAP_ELM_URL
+          value: $(params.elmUrl)
+        - name: PIPELINE_NAMESPACE
+          value: $(context.taskRun.namespace)
+        - name: PIPELINE_RUN
+          value: $(params.pipelineRun)
+        - name: PIPELINE_RUN_UID
+          value: $(params.pipelineRunUID)
+        - name: HOSTED_CLUSTER_NAME
+          value: $(params.hostedClusterName)
+        - name: SAP_BROWSER_HA
+          value: $(params.highAvailability)
+        - name: SAP_BROWSER_FLOW
+          value: $(params.flow)
+        - name: SAP_BROWSER_SESSION_MINUTES
+          value: $(params.sessionMinutes)
+        - name: SAP_BROWSER_LOGIN_MINUTES
+          value: $(params.loginMinutes)
+        - name: SAP_BROWSER_RESULT_PATH
+          value: $(results.outcome.path)
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+      volumeMounts:
+        - name: browser-runtime
+          mountPath: /tmp
+        - name: browser-shm
+          mountPath: /dev/shm

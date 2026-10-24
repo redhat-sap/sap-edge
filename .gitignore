@@ -10,6 +10,7 @@ venv
 .idea
 .env
 node_modules
+.sap-browser/
 kubeconfig
 .vscode/
 rosa/terraform/.terraform
