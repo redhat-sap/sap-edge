@@ -9,9 +9,11 @@ metadata:
   name: ossm3-download-and-apply-rbac
 spec:
   description: >-
-    Download restricted-access resource zip files from an ODF S3 bucket (via OBC),
-    extract the latest version of each bundle, and apply it on the hosted cluster
-    by running the bundle's own apply-restricted-resources.sh --yes. That SAP
+    Download restricted-access resource zip files from an ODF S3 bucket (via OBC).
+    Each subfolder of the prefix holding zips is one component (elm,
+    edge-icell-1, edge-icell-2, …; a flat prefix is a single component). The
+    latest version of each bundle per component is applied ELM first, then EIC
+    cells by name, by running the bundle's own apply-restricted-resources.sh --yes. That SAP
     script creates the namespaces, validates namespace ownership via the
     edgelm.sap.com/edge-node-id labels, and applies its numbered manifests
     (000001-*.yaml …) in order. Only the new SAP bundle format is supported.
@@ -33,7 +35,7 @@ spec:
       default: "sap-eic-restricted-cluster-config-resources"
     - name: s3Prefix
       type: string
-      description: "S3 key prefix for the restricted-resources zip files"
+      description: "S3 key prefix for the restricted-resources zip files (one subfolder per component, e.g. restricted-resources/<deployment>/)"
       default: "restricted-resources/"
     - name: useWorkspaceKubeconfig
       type: string
@@ -128,54 +130,76 @@ spec:
         ls -la "${DOWNLOAD_DIR}/"
 
         # ========================================
-        # Step 2: Select latest version of each resource type and extract
+        # Step 2: Discover components, select latest bundle per type, extract
         # ========================================
-        # Naming convention: restricted-resources-<ResourceType>-<version>.zip
-        # e.g. restricted-resources-Edge_Integration_Cell-8.41.1.zip
-        #      restricted-resources-Edge_Lifecycle_Management-1.57.0.zip
-        #      restricted-resources-IstioGateways-1.7.0.zip
-        # When multiple versions exist, only the latest of each type is used.
+        # S3 layout (docs/multi-eic-restricted-resources-convention.md):
+        #   <s3Prefix>/elm/           restricted-resources-Edge_Lifecycle_Management-<ver>.zip
+        #   <s3Prefix>/edge-icell-1/  restricted-resources-Edge_Integration_Cell-<ver>.zip
+        #   <s3Prefix>/edge-icell-2/  restricted-resources-Edge_Integration_Cell-<ver>.zip
+        # Every directory holding *.zip files is one component; a flat prefix
+        # (zips directly under it) is a single component. Within a component only
+        # the latest version of each resource type is used.
+        #
+        # Bundles are extracted into <priority>_<component>_<type> directories so
+        # Step 4 applies ELM (00) → IstioGateways (10) → EIC cells (20) → other
+        # (90), cells ordered by name. CRDs and the ELM ClusterRole(Binding) are
+        # cluster singletons, so ELM must deterministically go first.
+
+        # Print "<type>\t<zip>" for the latest version of each resource type in a
+        # component directory. Naming: restricted-resources-<Type>-<version>.zip,
+        # e.g. restricted-resources-Edge_Lifecycle_Management-1.62.0-rc.1.zip
+        select_latest_bundles() {
+          local zip base type version
+          for zip in "$1"/*.zip; do
+            [[ -f "${zip}" ]] || continue
+            base=$(basename "${zip}" .zip)
+            type=$(sed -E 's/^(restricted-resources-[A-Za-z_]+)-[0-9].*$/\1/' <<< "${base}")
+            version="${base#"${type}"}"
+            version="${version#-}"
+            printf '%s\t%s\t%s\n' "${type}" "${version:-0}" "${zip}"
+          done | sort -t $'\t' -k1,1 -k2,2V \
+            | awk -F '\t' 'NR > 1 && $1 != type { print type "\t" zip } { type = $1; zip = $3 } END { if (NR > 0) print type "\t" zip }'
+        }
+
+        bundle_priority() {
+          case "$1" in
+            *Edge_Lifecycle_Management*) echo "00" ;;
+            *IstioGateways*) echo "10" ;;
+            *Edge_Integration_Cell*) echo "20" ;;
+            *) echo "90" ;;
+          esac
+        }
 
         echo ""
-        echo "📦 Selecting latest version of each resource type..."
+        echo "📦 Discovering components and selecting latest bundle versions..."
 
         RBAC_DIR="/tmp/rbac-resources"
         mkdir -p "${RBAC_DIR}"
 
-        # Group zip files by resource type and pick the latest version
-        declare -A LATEST_FILES
-        for ZIP_FILE in "${DOWNLOAD_DIR}"/*.zip; do
-          [[ -f "${ZIP_FILE}" ]] || continue
-          BASENAME=$(basename "${ZIP_FILE}" .zip)
-          # Extract resource type by stripping the version suffix (last hyphen-separated segment with dots)
-          RESOURCE_TYPE=$(echo "${BASENAME}" | sed 's/-[0-9][0-9.]*$//')
-          VERSION=$(echo "${BASENAME}" | grep -oP '[0-9][0-9.]*$' || echo "0")
+        COMPONENT_DIRS=()
+        while IFS= read -r DIR; do
+          COMPONENT_DIRS+=("${DIR}")
+        done < <(find "${DOWNLOAD_DIR}" -type f -name '*.zip' -exec dirname {} \; | sort -u)
 
-          if [[ -z "${LATEST_FILES[${RESOURCE_TYPE}]+_}" ]]; then
-            LATEST_FILES["${RESOURCE_TYPE}"]="${ZIP_FILE}"
+        if [[ ${#COMPONENT_DIRS[@]} -eq 0 ]]; then
+          echo "❌ No *.zip bundles found under s3://${BUCKET_NAME}/${S3_PREFIX}"
+          exit 1
+        fi
+
+        for COMPONENT_DIR in "${COMPONENT_DIRS[@]}"; do
+          if [[ "${COMPONENT_DIR}" == "${DOWNLOAD_DIR}" ]]; then
+            COMPONENT="root"
           else
-            CURRENT_LATEST=$(basename "${LATEST_FILES[${RESOURCE_TYPE}]}" .zip | grep -oP '[0-9][0-9.]*$' || echo "0")
-            # Use sort -V for version comparison
-            HIGHER=$(printf '%s\n%s' "${CURRENT_LATEST}" "${VERSION}" | sort -V | tail -1)
-            if [[ "${HIGHER}" == "${VERSION}" && "${VERSION}" != "${CURRENT_LATEST}" ]]; then
-              LATEST_FILES["${RESOURCE_TYPE}"]="${ZIP_FILE}"
-            fi
+            COMPONENT="${COMPONENT_DIR#"${DOWNLOAD_DIR}"/}"
+            COMPONENT="${COMPONENT//\//__}"
           fi
-        done
-
-        echo "✅ Latest versions selected:"
-        for RESOURCE_TYPE in "${!LATEST_FILES[@]}"; do
-          echo "   ${RESOURCE_TYPE} → $(basename "${LATEST_FILES[${RESOURCE_TYPE}]}")"
-        done
-
-        echo ""
-        echo "📦 Extracting selected zip files into separate directories..."
-        for RESOURCE_TYPE in "${!LATEST_FILES[@]}"; do
-          ZIP_FILE="${LATEST_FILES[${RESOURCE_TYPE}]}"
-          EXTRACT_DIR="${RBAC_DIR}/${RESOURCE_TYPE}"
-          mkdir -p "${EXTRACT_DIR}"
-          echo "   Extracting $(basename "${ZIP_FILE}") → ${RESOURCE_TYPE}/"
-          unzip -o "${ZIP_FILE}" -d "${EXTRACT_DIR}"
+          echo "   Component: ${COMPONENT}"
+          while IFS=$'\t' read -r RESOURCE_TYPE ZIP_FILE; do
+            EXTRACT_DIR="${RBAC_DIR}/$(bundle_priority "${RESOURCE_TYPE}")_${COMPONENT}_${RESOURCE_TYPE#restricted-resources-}"
+            mkdir -p "${EXTRACT_DIR}"
+            echo "     $(basename "${ZIP_FILE}") → $(basename "${EXTRACT_DIR}")/"
+            unzip -q -o "${ZIP_FILE}" -d "${EXTRACT_DIR}"
+          done < <(select_latest_bundles "${COMPONENT_DIR}")
         done
 
         echo "✅ Extracted files:"
@@ -256,11 +280,11 @@ spec:
         echo "📦 Applying restricted-resources bundles via SAP apply script..."
         echo ""
 
-        # Iterate the extracted bundle directories (one per resource type) in a
-        # deterministic order.
+        # Iterate the extracted bundle directories in priority order (see Step 2);
+        # version sort keeps edge-icell-2 ahead of edge-icell-10.
         BUNDLE_COUNT=0
         while IFS= read -r EXTRACT_DIR; do
-          RESOURCE_TYPE="$(basename "${EXTRACT_DIR}")"
+          BUNDLE="$(basename "${EXTRACT_DIR}")"
 
           # Locate the apply script (a zip may nest its manifests in a subfolder).
           APPLY_SCRIPT=""
@@ -270,21 +294,21 @@ spec:
           done < <(find "${EXTRACT_DIR}" -type f -name 'apply-restricted-resources.sh' | sort)
 
           if [[ -z "${APPLY_SCRIPT}" ]]; then
-            echo "❌ Bundle '${RESOURCE_TYPE}' has no apply-restricted-resources.sh"
+            echo "❌ Bundle '${BUNDLE}' has no apply-restricted-resources.sh"
             echo "   Only new-format SAP bundles are supported. Aborting."
             exit 1
           fi
 
-          echo "📦 Applying bundle: ${RESOURCE_TYPE}"
+          echo "📦 Applying bundle: ${BUNDLE}"
           echo "   Using: ${APPLY_SCRIPT}"
           # KUBECONFIG is already exported above; the script resolves its own
           # manifest paths relative to itself, so the working directory does not
           # matter. A conflict or apply failure exits non-zero and fails the task.
           bash "${APPLY_SCRIPT}" --yes
-          echo "✅ ${RESOURCE_TYPE} applied"
+          echo "✅ ${BUNDLE} applied"
           echo ""
           BUNDLE_COUNT=$((BUNDLE_COUNT + 1))
-        done < <(find "${RBAC_DIR}" -mindepth 1 -maxdepth 1 -type d | sort)
+        done < <(find "${RBAC_DIR}" -mindepth 1 -maxdepth 1 -type d | sort -V)
 
         if [[ "${BUNDLE_COUNT}" -eq 0 ]]; then
           echo "❌ No extracted bundles found under ${RBAC_DIR}"

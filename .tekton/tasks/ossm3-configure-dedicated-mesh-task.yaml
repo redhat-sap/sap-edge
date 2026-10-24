@@ -223,21 +223,25 @@ spec:
         oc label namespace "${MESH_NS}" istio-discovery="${DISCOVERY_LABEL}" --overwrite
 
         # --- Label application namespaces to join the dedicated mesh ---
-        echo "🏷️ Labeling application namespaces for dedicated mesh..."
-        APP_NAMESPACES=(edgelm edge-icell edge-icell-services edge-icell-secrets edge-icell-ela istio-gateways)
-        for NS in "${APP_NAMESPACES[@]}"; do
-          echo "   Labeling ${NS} with istio-discovery=${DISCOVERY_LABEL} and istio.io/rev=${MESH_NAME}"
-          oc label namespace "${NS}" \
-            istio-discovery="${DISCOVERY_LABEL}" \
-            istio.io/rev="${MESH_NAME}" \
-            --overwrite
-        done
+        # The mesh namespaces of every EIC cell were already put on the revision
+        # (istio.io/rev) by ossm3-prepare-namespaces-dedicated, which also
+        # stripped istio-injection; select by revision so the secrets
+        # namespace stays out of the mesh.
+        echo "🏷️ Labeling application namespaces (istio.io/rev=${MESH_NAME}) for mesh discovery..."
+        APP_NAMESPACES=()
+        while IFS= read -r NS; do
+          [[ -n "${NS}" ]] && APP_NAMESPACES+=("${NS}")
+        done < <(oc get namespace -l "istio.io/rev=${MESH_NAME}" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | sort -V)
 
-        # --- Remove conflicting istio-injection label ---
-        echo ""
-        echo "🏷️ Removing istio-injection label to avoid conflicts with revision-based injection..."
+        if [[ ${#APP_NAMESPACES[@]} -eq 0 ]]; then
+          echo "❌ No namespaces labeled istio.io/rev=${MESH_NAME} found"
+          echo "   They are labeled by the prepare-namespaces task."
+          exit 1
+        fi
+
         for NS in "${APP_NAMESPACES[@]}"; do
-          oc label namespace "${NS}" istio-injection- 2>/dev/null || true
+          echo "   Labeling ${NS} with istio-discovery=${DISCOVERY_LABEL}"
+          oc label namespace "${NS}" istio-discovery="${DISCOVERY_LABEL}" --overwrite
         done
         echo "✅ Namespace labels applied"
 

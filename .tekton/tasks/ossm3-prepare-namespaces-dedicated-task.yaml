@@ -9,11 +9,12 @@ metadata:
   name: ossm3-prepare-namespaces-dedicated
 spec:
   description: >-
-    Create and configure the required namespaces for SAP Edge Lifecycle
-    Management with restricted-access RBAC model and dedicated service mesh.
-    Uses revision-based sidecar injection (istio.io/rev) instead of the
-    default istio-injection label to target the dedicated SAP mesh control
-    plane. Applies SCC security annotations.
+    Configure the SAP namespaces created by the restricted-resources bundles
+    (discovered via edgelm.sap.com/product=edgelm, any number of EIC cells
+    named <role>-N) for the dedicated service mesh. Replaces the bundles'
+    istio-injection label with revision-based injection (istio.io/rev) to
+    target the dedicated SAP mesh control plane, and applies SCC security
+    annotations per namespace role.
   params:
     - name: hostedClusterName
       type: string
@@ -106,57 +107,70 @@ spec:
         oc get nodes
         echo "✅ Successfully connected to hosted cluster"
 
-        # --- Create all required namespaces ---
+        # --- Discover the SAP namespaces created by the restricted-resources bundles ---
+        # The bundles (applied by ossm3-download-and-apply-rbac) create every
+        # namespace with edgelm.sap.com/product=edgelm. With multiple cells the
+        # names carry a trailing -N index (edge-icell-1, edge-icell-secrets-2, …),
+        # see docs/multi-eic-restricted-resources-convention.md.
         echo ""
-        echo "📦 Creating required namespaces..."
-        NAMESPACES=(edgelm istio-gateways edge-icell edge-icell-secrets edge-icell-ela edge-icell-services)
+        echo "🔍 Discovering SAP namespaces (edgelm.sap.com/product=edgelm)..."
+        NAMESPACES=()
+        while IFS= read -r NS; do
+          [[ -n "${NS}" ]] && NAMESPACES+=("${NS}")
+        done < <(oc get namespace -l edgelm.sap.com/product=edgelm -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | sort -V)
 
-        for NS in "${NAMESPACES[@]}"; do
-          echo "   Creating namespace: ${NS}"
-          oc create namespace "${NS}" --dry-run=client -o yaml | oc apply -f -
-        done
-        echo "✅ All namespaces created"
+        if [[ ${#NAMESPACES[@]} -eq 0 ]]; then
+          echo "❌ No namespaces labeled edgelm.sap.com/product=edgelm found"
+          echo "   They are created by the restricted-resources bundles (apply-rbac task)."
+          exit 1
+        fi
+        printf '   %s\n' "${NAMESPACES[@]}"
 
         # --- Label namespaces for dedicated mesh (revision-based injection) ---
+        # The bundles mark mesh namespaces with istio-injection=enabled (all but
+        # the secrets namespace). The dedicated mesh needs istio.io/rev instead.
+        # Namespaces already on the revision count too, so a re-run is idempotent.
         echo ""
         echo "🏷️ Labeling namespaces for dedicated mesh (revision-based injection)..."
-
-        MESH_NAMESPACES=(edgelm edge-icell edge-icell-ela edge-icell-services istio-gateways)
-        for NS in "${MESH_NAMESPACES[@]}"; do
-          echo "   Labeling ${NS} with istio.io/rev=${MESH_NAME} and edgelm.sap.com/product=edgelm"
-          oc label namespace "${NS}" \
-            istio.io/rev="${MESH_NAME}" \
-            edgelm.sap.com/product=edgelm \
-            --overwrite
+        for NS in "${NAMESPACES[@]}"; do
+          LABELS=$(oc get namespace "${NS}" -o jsonpath='{.metadata.labels.istio-injection}/{.metadata.labels.istio\.io/rev}')
+          if [[ "${LABELS}" == "enabled/"* || "${LABELS}" == */"${MESH_NAME}" ]]; then
+            echo "   ${NS}: istio.io/rev=${MESH_NAME}"
+            oc label namespace "${NS}" istio.io/rev="${MESH_NAME}" --overwrite
+          else
+            echo "   ${NS}: no sidecar injection"
+          fi
           # Remove istio-injection label to avoid conflicts with revision-based injection
           oc label namespace "${NS}" istio-injection- 2>/dev/null || true
         done
 
-        # edge-icell-secrets gets only the product label (no sidecar injection)
-        echo "   Labeling edge-icell-secrets with edgelm.sap.com/product=edgelm (no sidecar injection)"
-        oc label namespace edge-icell-secrets edgelm.sap.com/product=edgelm --overwrite
-        oc label namespace edge-icell-secrets istio-injection- 2>/dev/null || true
-
         echo "✅ Namespace labels applied"
 
         # --- Apply the necessary security annotations for SCCs ---
+        # Role = namespace name with the trailing -N cell index stripped; every
+        # cell gets the same values.
         echo ""
         echo "🔐 Applying SCC security annotations..."
-
-        echo "   edgelm: supplemental-groups=67000/1000"
-        oc annotate namespace edgelm openshift.io/sa.scc.supplemental-groups="67000/1000" --overwrite
-
-        echo "   edge-icell: uid-range=10000/100, supplemental-groups=1000/100"
-        oc annotate namespace edge-icell openshift.io/sa.scc.uid-range="10000/100" --overwrite
-        oc annotate namespace edge-icell openshift.io/sa.scc.supplemental-groups="1000/100" --overwrite
-
-        echo "   edge-icell-ela: uid-range=100000/1000, supplemental-groups=100002/1000"
-        oc annotate namespace edge-icell-ela openshift.io/sa.scc.uid-range="100000/1000" --overwrite
-        oc annotate namespace edge-icell-ela openshift.io/sa.scc.supplemental-groups="100002/1000" --overwrite
-
-        echo "   edge-icell-services: uid-range=1000000/1000, supplemental-groups=1000002/1000"
-        oc annotate namespace edge-icell-services openshift.io/sa.scc.uid-range="1000000/1000" --overwrite
-        oc annotate namespace edge-icell-services openshift.io/sa.scc.supplemental-groups="1000002/1000" --overwrite
+        for NS in "${NAMESPACES[@]}"; do
+          ROLE=$(sed -E 's/-[0-9]+$//' <<< "${NS}")
+          case "${ROLE}" in
+            edgelm)              UID_RANGE="";              SUPPLEMENTAL_GROUPS="67000/1000" ;;
+            edge-icell)          UID_RANGE="10000/100";     SUPPLEMENTAL_GROUPS="1000/100" ;;
+            edge-icell-ela)      UID_RANGE="100000/1000";   SUPPLEMENTAL_GROUPS="100002/1000" ;;
+            edge-icell-services) UID_RANGE="1000000/1000";  SUPPLEMENTAL_GROUPS="1000002/1000" ;;
+            edge-icell-secrets|istio-gateways)
+              echo "   ${NS}: none (role ${ROLE})"
+              continue ;;
+            *)
+              echo "   ⚠️ ${NS}: unknown role '${ROLE}', skipping SCC annotations"
+              continue ;;
+          esac
+          echo "   ${NS}: uid-range=${UID_RANGE:-<unset>}, supplemental-groups=${SUPPLEMENTAL_GROUPS}"
+          if [[ -n "${UID_RANGE}" ]]; then
+            oc annotate namespace "${NS}" openshift.io/sa.scc.uid-range="${UID_RANGE}" --overwrite
+          fi
+          oc annotate namespace "${NS}" openshift.io/sa.scc.supplemental-groups="${SUPPLEMENTAL_GROUPS}" --overwrite
+        done
 
         echo "✅ SCC annotations applied"
 
@@ -182,6 +196,6 @@ spec:
         echo ""
         echo "=========================================="
         echo "✅ Namespace preparation completed (dedicated mesh)"
-        echo "   Created and configured ${#NAMESPACES[@]} namespaces"
+        echo "   Configured ${#NAMESPACES[@]} namespaces"
         echo "   Sidecar injection via: istio.io/rev=${MESH_NAME}"
         echo "=========================================="
