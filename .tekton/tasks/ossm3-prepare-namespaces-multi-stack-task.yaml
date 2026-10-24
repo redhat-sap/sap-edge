@@ -1,0 +1,233 @@
+# SPDX-FileCopyrightText: 2026 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: ossm3-prepare-namespaces-multi-stack
+spec:
+  description: >-
+    Topology B (several SAP Edge Nodes on one hosted cluster): assign every
+    Edge Node stack's SAP namespaces to that stack's dedicated mesh, per
+    KBA 7131840 "Assign SAP Namespaces to the Dedicated Mesh" and KBA 7149262.
+    Stacks are discovered like in ossm3-configure-multi-stack-mesh (which must
+    run first). Per stack N: every namespace gets istio-discovery=sap-edge-mesh-N;
+    workload namespaces (istio-injection=enabled from the bundles, or already
+    on a revision) get istio.io/rev set to the active revision of
+    sap-mesh-istio-N read from the running control plane; istio-injection is
+    removed everywhere; the secrets namespace never gets an injection label.
+    SAP ownership labels are left untouched. Applies the SCC annotations per
+    namespace role and prints the KBA 7149262 verification view.
+  params:
+    - name: hostedClusterName
+      type: string
+      description: "Name of the hosted cluster"
+    - name: hostedClusterNamespace
+      type: string
+      description: "Namespace for HostedCluster resources"
+      default: "clusters"
+    - name: hubKubeconfigSecretName
+      type: string
+      description: "Name of the Secret containing kubeconfig for hub cluster (optional, uses in-cluster config if empty)"
+      default: ""
+  results:
+    - name: stacks
+      description: "Space-separated Edge Node stack indices found (e.g. \"1 2\")"
+  workspaces:
+    - name: source
+  steps:
+    - name: prepare-namespaces-multi-stack
+      image: registry.access.redhat.com/ubi9/ubi
+      timeout: "336h"
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        CLUSTER_NAME="$(params.hostedClusterName)"
+        CLUSTER_NS="$(params.hostedClusterNamespace)"
+        HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
+
+        echo "=========================================="
+        echo "OSSM3 Prepare Namespaces (Multi-Stack, topology B)"
+        echo "=========================================="
+        echo "Hosted Cluster: ${CLUSTER_NAME}"
+        echo "Cluster Namespace: ${CLUSTER_NS}"
+        echo "Per stack N: istio-discovery=sap-edge-mesh-N, istio.io/rev=<active revision of sap-mesh-istio-N>"
+        echo "=========================================="
+
+        # Install required tools
+        echo "📦 Installing OpenShift CLI..."
+        curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz -o /tmp/oc.tar.gz
+        tar xzf /tmp/oc.tar.gz -C /tmp
+        mv /tmp/oc /usr/local/bin/
+        cp /usr/local/bin/oc /usr/local/bin/kubectl
+        rm -f /tmp/oc.tar.gz
+        oc version --client
+
+        # Configure hub cluster kubeconfig if provided
+        if [[ -n "${HUB_KUBECONFIG_SECRET}" ]]; then
+          echo "🔐 Extracting hub cluster kubeconfig from secret: ${HUB_KUBECONFIG_SECRET}..."
+          HUB_KUBECONFIG="/tmp/hub-kubeconfig"
+          if kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.kubeconfig}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: kubeconfig)"
+          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.config}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: config)"
+          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.value}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: value)"
+          else
+            echo "❌ Failed to extract kubeconfig from secret '${HUB_KUBECONFIG_SECRET}'"
+            echo "   Secret should have kubeconfig data under key 'kubeconfig', 'config', or 'value'"
+            exit 1
+          fi
+          chmod 600 "${HUB_KUBECONFIG}"
+          export KUBECONFIG="${HUB_KUBECONFIG}"
+          echo "✅ Using hub kubeconfig for cluster operations"
+          oc whoami
+        else
+          echo "ℹ️  No hub kubeconfig secret provided, using in-cluster service account"
+        fi
+
+        # Extract kubeconfig for hosted cluster
+        echo "🔐 Extracting kubeconfig for hosted cluster..."
+        KUBECONFIG_SECRET="${CLUSTER_NAME}-admin-kubeconfig"
+
+        if ! oc get secret "${KUBECONFIG_SECRET}" -n "${CLUSTER_NS}" > /dev/null 2>&1; then
+          echo "❌ Kubeconfig secret '${KUBECONFIG_SECRET}' not found in namespace '${CLUSTER_NS}'"
+          exit 1
+        fi
+
+        HOSTED_KUBECONFIG="/tmp/hosted-kubeconfig"
+        oc get secret "${KUBECONFIG_SECRET}" -n "${CLUSTER_NS}" \
+          -o jsonpath='{.data.kubeconfig}' | base64 -d > "${HOSTED_KUBECONFIG}"
+        chmod 600 "${HOSTED_KUBECONFIG}"
+
+        export KUBECONFIG="${HOSTED_KUBECONFIG}"
+        [[ -f "$(workspaces.source.path)/.kubeconfig-rewrite.sh" ]] && source "$(workspaces.source.path)/.kubeconfig-rewrite.sh" "${HOSTED_KUBECONFIG}"
+
+        echo "🔍 Verifying access to hosted cluster..."
+        oc get nodes
+        echo "✅ Successfully connected to hosted cluster"
+
+        # --- Discover Edge Node stacks (keep identical in ossm3-configure-multi-stack-mesh and ossm3-prepare-namespaces-multi-stack) ---
+        # Stack N = the SAP namespaces (edgelm.sap.com/product=edgelm) named <role>-N.
+        # Fails on a name without -N, a stack without edgelm-N, a namespace without or a
+        # stack with more than one edgelm.sap.com/edge-node-id, or two stacks sharing one.
+        echo ""
+        echo "🔍 Discovering Edge Node stacks (edgelm.sap.com/product=edgelm)..."
+        SAP_NS=$(oc get namespace -l edgelm.sap.com/product=edgelm -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.metadata.labels.edgelm\.sap\.com/edge-node-id}{"\n"}{end}' | sort -V)
+        STACKS=$(awk 'function err(m) { print "❌ " m > "/dev/stderr"; bad = 1 }
+          NF == 0 { next }
+          { n = $1; if (!sub(/.*-/, "", n) || n !~ /^[0-9]+$/) { err("SAP namespace " $1 " has no -<N> stack suffix"); next } }
+          $2 == "" { err("SAP namespace " $1 " has no edgelm.sap.com/edge-node-id label"); next }
+          !(n in id) { id[n] = $2; first[n] = $1 }
+          id[n] != $2 { err("Stack " n ": " $1 " has edgelm.sap.com/edge-node-id " $2 ", " first[n] " has " id[n]) }
+          $1 == "edgelm-" n { elm[n] = 1 }
+          END { for (n in id) { if (!(n in elm)) err("Stack " n " has no edgelm-" n " namespace")
+                  for (m in id) if (m < n && id[m] == id[n]) err("Stacks " m " and " n " share edgelm.sap.com/edge-node-id " id[n] " (one Edge Node is topology A)") }
+                if (bad) exit 1
+                for (n in id) print n }' <<< "${SAP_NS}" | sort -n | xargs) || exit 1
+        if [[ -z "${STACKS}" ]]; then
+          echo "❌ No namespaces labeled edgelm.sap.com/product=edgelm found (created by the restricted-resources bundles)"
+          exit 1
+        fi
+        awk '{ print "   " $0 }' <<< "${SAP_NS}"
+        echo "✅ Stacks: ${STACKS}"
+        printf '%s' "${STACKS}" > "$(results.stacks.path)"
+        # --- End of stack discovery ---
+
+        # --- Resolve every stack's active revision before changing any label ---
+        # Read from the running control plane: with the RevisionBased update strategy the
+        # revision is not the Istio name. Istio and IstioRevision are cluster-scoped, so the
+        # IstioRevision fallback matches on spec.namespace (the control plane namespace).
+        echo ""
+        echo "🔍 Resolving the active revision of every stack's control plane..."
+        REVISION=()
+        for N in ${STACKS}; do
+          MESH_NS="istio-system-sap-edge-${N}"
+          REV=$(oc get istio "sap-mesh-istio-${N}" -n "${MESH_NS}" -o jsonpath='{.status.activeRevisionName}' 2>/dev/null || true)
+          if [[ -z "${REV}" ]]; then
+            REV=$(oc get istiorevisions -A -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.namespace}{"\n"}{end}' 2>/dev/null \
+              | awk -v ns="${MESH_NS}" '$2 == ns { print $1 }' || true)
+          fi
+          if [[ -z "${REV}" || "${REV}" == *$'\n'* ]]; then
+            echo "❌ Cannot determine the active revision of sap-mesh-istio-${N}: no status.activeRevisionName and ${MESH_NS} does not have exactly one IstioRevision (found: ${REV//$'\n'/, })"
+            echo "   ossm3-configure-multi-stack-mesh must run first and its control planes must be Ready."
+            exit 1
+          fi
+          REVISION[N]="${REV}"
+          echo "   Stack ${N}: sap-mesh-istio-${N} active revision ${REV}"
+        done
+
+        # --- Assign each stack's namespaces to its mesh, apply SCC annotations ---
+        # KBA 7131840 / 7149262: istio-discovery on every SAP namespace of the stack (incl.
+        # secrets); istio.io/rev only on workload namespaces (bundle set istio-injection=enabled,
+        # or already on a revision, so a re-run or a revision upgrade relabels them); never an
+        # injection label on secrets; istio-injection removed everywhere. Only these keys are
+        # touched, the bundles' edgelm.sap.com/* ownership labels stay as they are.
+        # SCC role = namespace name with the -N suffix stripped; every stack gets the same values.
+        for N in ${STACKS}; do
+          DISCOVERY_LABEL="sap-edge-mesh-${N}"
+          REV="${REVISION[N]}"
+          STACK_NS=()
+          while IFS= read -r NS; do
+            STACK_NS+=("${NS}")
+          done < <(awk -v n="${N}" '{ s = $1; sub(/.*-/, "", s) } s == n { print $1 }' <<< "${SAP_NS}")
+          echo ""
+          echo "🏷️ Stack ${N}: istio-discovery=${DISCOVERY_LABEL}, workloads istio.io/rev=${REV}"
+          for NS in "${STACK_NS[@]}"; do
+            ROLE=$(sed -E 's/-[0-9]+$//' <<< "${NS}")
+            LABELS=$(oc get namespace "${NS}" -o jsonpath='{.metadata.labels.istio-injection}/{.metadata.labels.istio\.io/rev}')
+            INJECTION="${LABELS%%/*}"
+            CURRENT_REV="${LABELS#*/}"
+            oc label namespace "${NS}" istio-discovery="${DISCOVERY_LABEL}" --overwrite
+            if [[ "${ROLE}" == "edge-icell-secrets" ]]; then
+              echo "   ${NS}: discovery only (secrets namespace, never sidecar injection)"
+              if [[ -n "${CURRENT_REV}" ]]; then
+                oc label namespace "${NS}" istio.io/rev-
+              fi
+            elif [[ "${INJECTION}" == "enabled" || -n "${CURRENT_REV}" ]]; then
+              echo "   ${NS}: istio.io/rev=${REV}"
+              oc label namespace "${NS}" istio.io/rev="${REV}" --overwrite
+            else
+              echo "   ${NS}: discovery only (no sidecar injection requested by the bundle)"
+            fi
+            # Remove istio-injection label to avoid conflicts with revision-based injection
+            oc label namespace "${NS}" istio-injection- 2>/dev/null || true
+
+            case "${ROLE}" in
+              edgelm)              UID_RANGE="";              SUPPLEMENTAL_GROUPS="67000/1000" ;;
+              edge-icell)          UID_RANGE="10000/100";     SUPPLEMENTAL_GROUPS="1000/100" ;;
+              edge-icell-ela)      UID_RANGE="100000/1000";   SUPPLEMENTAL_GROUPS="100002/1000" ;;
+              edge-icell-services) UID_RANGE="1000000/1000";  SUPPLEMENTAL_GROUPS="1000002/1000" ;;
+              edge-icell-secrets|istio-gateways)
+                echo "   ${NS}: SCC annotations none (role ${ROLE})"
+                continue ;;
+              *)
+                echo "   ⚠️ ${NS}: unknown role '${ROLE}', skipping SCC annotations"
+                continue ;;
+            esac
+            echo "   ${NS}: uid-range=${UID_RANGE:-<unset>}, supplemental-groups=${SUPPLEMENTAL_GROUPS}"
+            if [[ -n "${UID_RANGE}" ]]; then
+              oc annotate namespace "${NS}" openshift.io/sa.scc.uid-range="${UID_RANGE}" --overwrite
+            fi
+            oc annotate namespace "${NS}" openshift.io/sa.scc.supplemental-groups="${SUPPLEMENTAL_GROUPS}" --overwrite
+          done
+        done
+        echo ""
+        echo "✅ Namespace labels and SCC annotations applied"
+
+        # --- Verification view (KBA 7149262): one edge-node-id, discovery value and revision per stack ---
+        echo ""
+        echo "🔍 SAP namespaces and their mesh assignment:"
+        oc get namespaces -l edgelm.sap.com/product=edgelm -L edgelm.sap.com/edge-node-id,istio-discovery,istio.io/rev,istio-injection
+
+        echo ""
+        echo "=========================================="
+        echo "✅ Namespace preparation completed (multi-stack)"
+        for N in ${STACKS}; do
+          echo "   Stack ${N}: istio-discovery=sap-edge-mesh-${N}, sidecar injection via istio.io/rev=${REVISION[N]}"
+        done
+        echo "=========================================="

@@ -93,7 +93,9 @@ ingresscontroller
 ingressgateway
 installplan
 istag
+istiocnis
 istiorevisions
+istios
 jsonencode
 kksat
 ksatarin
