@@ -83,8 +83,8 @@ spec:
       default: "restricted-resources/"
     - name: restrictedResourcesComponents
       type: string
-      description: "Space-separated component folders under s3Prefix, created by the pipeline and required to hold a zip before apply-rbac (one ELM and one EIC folder per Edge Node: 'elm-1 edge-icell-1 elm-2 edge-icell-2'). Empty = flat prefix."
-      default: ""
+      description: "Space-separated component folders under s3Prefix (one ELM and one EIC folder per Edge Node; the pipeline is fixed at two stacks). The pipeline creates them, only they are downloaded, and each must hold a zip before apply-rbac."
+      default: "elm-1 edge-icell-1 elm-2 edge-icell-2"
     # --- Corporate proxy parameters ---
     # Proxy config is read from a Secret named {hubClusterName}-proxy-config
     # containing keys: PROXY_HOST, PROXY_PORT, PROXY_IP

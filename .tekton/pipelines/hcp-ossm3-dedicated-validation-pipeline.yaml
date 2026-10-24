@@ -83,7 +83,7 @@ spec:
       default: "restricted-resources/"
     - name: restrictedResourcesComponents
       type: string
-      description: "Space-separated component folders under s3Prefix, created by the pipeline and required to hold a zip before apply-rbac (e.g. 'elm edge-icell-1 edge-icell-2'). Empty = flat prefix."
+      description: "Space-separated component folders under s3Prefix (e.g. 'elm edge-icell-1 edge-icell-2'): the pipeline creates them, only they are downloaded, and each must hold a zip before apply-rbac. Required for the per-PR subfolder layout. Empty = flat prefix: only the zips directly under s3Prefix are applied (subfolders are ignored)."
       default: ""
     - name: cellCount
       type: string
