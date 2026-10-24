@@ -27,6 +27,7 @@ EXPECTED_VIOLATIONS=(
   "cell2-x"
   "unknownParam"
   "missing-required-workspace.*required-ws"
+  "broken-pac-pr.*unknown pipeline 'no-such-pipeline'"
 )
 
 for PATTERN in "${EXPECTED_VIOLATIONS[@]}"; do

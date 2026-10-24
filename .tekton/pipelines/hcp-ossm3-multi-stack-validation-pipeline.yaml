@@ -1,0 +1,1776 @@
+# SPDX-FileCopyrightText: 2026 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: hcp-ossm3-multi-stack-validation-pipeline
+  annotations:
+    description: "Complete SAP Edge validation pipeline for HCP KubeVirt, multi-stack (2 Edge Nodes, dedicated mesh each; multi-EIC topology B): creates hosted cluster, applies RBAC, deploys one OSSM3 control plane per Edge Node (istio-system-sap-edge-N / sap-mesh-istio-N) and assigns each stack's namespaces to it with revision-based injection, generates one restricted kubeconfig per Edge Node (edgelm-N), deploys a shared PostgreSQL and one Redis/Valkey per EIC cell, runs per-cell endpoint tests, and tears down infrastructure"
+spec:
+  params:
+    # --- Git parameters ---
+    - name: repoUrl
+      type: string
+      description: "Git repository URL"
+    - name: revision
+      type: string
+      description: "Git revision (branch/tag/commit)"
+      default: "main"
+    - name: pullRequestNumber
+      type: string
+      description: "Pull request number"
+      default: ""
+
+    # --- HCP cluster parameters ---
+    - name: hostedClusterName
+      type: string
+      description: "Name of the hosted cluster"
+    - name: hostedClusterNamespace
+      type: string
+      description: "Namespace for HostedCluster resources"
+      default: "clusters"
+    - name: releaseImage
+      type: string
+      description: "OCP release image for the hosted cluster"
+      default: "quay.io/openshift-release-dev/ocp-release:4.15.0-x86_64"
+    - name: nodePoolReplicas
+      type: string
+      description: "Number of worker nodes"
+      default: "3"
+    - name: nodePoolCpuCores
+      type: string
+      description: "vCPU cores per worker node"
+      default: "16"
+    - name: nodePoolMemoryGB
+      type: string
+      description: "RAM in GB per worker node"
+      default: "32"
+    - name: rootDiskSizeGB
+      type: string
+      description: "Root disk size in GB per worker node"
+      default: "120"
+    - name: pullSecretName
+      type: string
+      description: "Name of the Kubernetes Secret containing Red Hat pull secret"
+      default: "redhat-pull-secret"
+    - name: etcdStorageClass
+      type: string
+      description: "Storage class for etcd PVCs (leave empty for default)"
+      default: ""
+    - name: hubClusterName
+      type: string
+      description: "Name of the hub cluster (used to derive kubeconfig secret name: {hubClusterName}-kubeconfig)"
+    - name: nfsPersistenceSize
+      type: string
+      description: "NFS server provisioner PVC pool size"
+      default: "20Gi"
+
+    # --- OSSM3 parameters ---
+    - name: ossm3Channel
+      type: string
+      description: "OLM subscription channel for the OSSM3 operator"
+      default: "stable-3.2"
+    - name: obcName
+      type: string
+      description: "Name of the ObjectBucketClaim (OBC) for downloading restricted-access RBAC resources from S3"
+      default: "sap-eic-restricted-cluster-config-resources"
+    - name: s3Prefix
+      type: string
+      description: "S3 key prefix of this deployment's restricted-resources bundles (e.g. restricted-resources/pr123-multi-stack/)"
+      default: "restricted-resources/"
+    - name: restrictedResourcesComponents
+      type: string
+      description: "Space-separated component folders under s3Prefix, created by the pipeline and required to hold a zip before apply-rbac (one ELM and one EIC folder per Edge Node: 'elm-1 edge-icell-1 elm-2 edge-icell-2'). Empty = flat prefix."
+      default: ""
+    # --- Corporate proxy parameters ---
+    # Proxy config is read from a Secret named {hubClusterName}-proxy-config
+    # containing keys: PROXY_HOST, PROXY_PORT, PROXY_IP
+
+    # --- EIC services parameters ---
+    - name: postgresVersion
+      type: string
+      description: "PostgreSQL version (v15/v16/v17)"
+      default: "v15"
+    - name: postgresHA
+      type: string
+      description: "Deploy PostgreSQL in HA mode (3 replicas with anti-affinity)"
+      default: "true"
+    - name: datastoreType
+      type: string
+      description: "Datastore type: redis, valkey-standalone, or valkey-cluster"
+      default: "redis"
+    - name: redisClusterType
+      type: string
+      description: "Redis cluster type (standard/ha) - only used when datastoreType=redis"
+      default: "standard"
+
+    # --- Endpoint test parameters ---
+    - name: eicAuthSecretName
+      type: string
+      description: "EIC authentication secret name for endpoint tests"
+    - name: publicDNS
+      type: string
+      description: "Use public DNS for endpoint tests"
+      default: "false"
+    - name: testHttpbinipfilter
+      type: string
+      description: "Run httpbinipfilter endpoint tests (set false to skip)"
+      default: "true"
+    - name: testSlvredis
+      type: string
+      description: "Run slvredis endpoint and rate-limit tests (set false to skip)"
+      default: "true"
+
+    # --- Jira parameters ---
+    - name: jiraSecretName
+      type: string
+      description: "Name of the Kubernetes Secret containing Jira credentials"
+      default: ""
+    - name: jiraIssueKey
+      type: string
+      description: "Jira issue key to update with deployment results"
+      default: ""
+
+    # --- Pipeline control ---
+    - name: skipTeardown
+      type: string
+      description: "Skip the teardown step at the end"
+      default: "false"
+  workspaces:
+    - name: source
+
+  tasks:
+    # =============================================
+    # Phase 1: Create HCP KubeVirt Cluster
+    # =============================================
+
+    # Step 0: Pre-flight validation (runs in parallel with fetch-repository)
+    - name: preflight-check
+      taskRef: { name: ossm3-preflight-check }
+      params:
+        - name: obcName
+          value: $(params.obcName)
+        - name: pullSecretName
+          value: $(params.pullSecretName)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+
+    # Step 0.1: Create the per-component S3 folders (elm-N/, edge-icell-N/ per
+    #           Edge Node) under s3Prefix and render upload instructions. Runs
+    #           in parallel with cluster creation so the upload overlaps the
+    #           cluster build.
+    - name: prepare-restricted-resources-prefix
+      runAfter: [preflight-check]
+      taskRef: { name: ossm3-prepare-restricted-resources-prefix }
+      params:
+        - name: obcName
+          value: $(params.obcName)
+        - name: s3Prefix
+          value: $(params.s3Prefix)
+        - name: components
+          value: $(params.restrictedResourcesComponents)
+
+    # Step 0.2: Manual approval once the restricted-resources bundles are uploaded
+    #           (apply-rbac waits for this gate and for verify-operators)
+    - name: approval-upload-restricted-resources
+      runAfter: [prepare-restricted-resources-prefix]
+      taskRef:
+        apiVersion: openshift-pipelines.org/v1alpha1
+        kind: ApprovalTask
+      params:
+        - name: approvers
+          value:
+            - mjiao
+            - rbhandar
+            - ksatarin
+            - kubeadmin
+            - kube:admin
+            - system:admin
+        - name: description
+          value: |
+            Multi-stack (2 Edge Nodes, dedicated mesh each): upload the restricted-resources
+            zips for cluster $(params.hostedClusterName), one zip per folder as downloaded
+            from SAP ELM; apply-rbac unzips each one and runs its apply-restricted-resources.sh
+            (latest version per folder wins, ELM bundles before EIC bundles).
+
+            Minimum releases (KBA 7149262, multiple Edge Nodes on one cluster):
+              ELM 1.64, EIC 8.48 - do not upload older bundles.
+
+            One ELM and one EIC bundle per Edge Node; every SAP namespace of Edge Node N
+            must be named with the -N suffix in ELM:
+              Edge Node 1: elm-1/        (ELM namespace edgelm-1)
+                           edge-icell-1/ (edge-icell-1, edge-icell-secrets-1, edge-icell-ela-1,
+                                          edge-icell-services-1, istio-gateways-1)
+              Edge Node 2: elm-2/        (ELM namespace edgelm-2)
+                           edge-icell-2/ (edge-icell-2, edge-icell-secrets-2, edge-icell-ela-2,
+                                          edge-icell-services-2, istio-gateways-2)
+
+            $(tasks.prepare-restricted-resources-prefix.results.uploadPlan)
+
+            APPROVE: bundles uploaded; apply-rbac continues once the cluster is ready
+                     (it fails if a folder is still empty)
+            REJECT: abort the pipeline (the hosted cluster is NOT torn down automatically)
+        - name: numberOfApprovalsRequired
+          value: '1'
+        - name: timeout
+          value: '336h'
+
+    # Step 1: Clone repository
+    - name: fetch-repository
+      taskRef: { name: git-clone }
+      params:
+        - name: url
+          value: $(params.repoUrl)
+        - name: revision
+          value: $(params.revision)
+      workspaces:
+        - name: output
+          workspace: source
+
+    # Step 2: Create HostedCluster and NodePool
+    - name: create-hosted-cluster
+      runAfter: [fetch-repository, preflight-check]
+      taskRef: { name: hcp-create-hosted-cluster }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: releaseImage
+          value: $(params.releaseImage)
+        - name: nodePoolReplicas
+          value: $(params.nodePoolReplicas)
+        - name: nodePoolCpuCores
+          value: $(params.nodePoolCpuCores)
+        - name: nodePoolMemoryGB
+          value: $(params.nodePoolMemoryGB)
+        - name: rootDiskSizeGB
+          value: $(params.rootDiskSizeGB)
+        - name: pullSecretName
+          value: $(params.pullSecretName)
+        - name: etcdStorageClass
+          value: $(params.etcdStorageClass)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 3: Wait for cluster to be ready
+    - name: wait-cluster-ready
+      runAfter: [create-hosted-cluster]
+      taskRef: { name: hcp-wait-cluster-ready }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: timeoutMinutes
+          value: "90"
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 3.5: Create NFS StorageClass (nfs-rwx) on the hosted cluster
+    - name: create-nfs-storageclass
+      runAfter: [wait-cluster-ready]
+      taskRef: { name: hcp-create-nfs-storageclass }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: nfsPersistenceSize
+          value: $(params.nfsPersistenceSize)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    # =============================================
+    # Phase 2: OSSM3 Multi-Stack Mesh Setup (one control plane per Edge Node)
+    # =============================================
+
+    # Step 4: Verify Service Mesh 3.x operators on hosted cluster
+    - name: verify-operators
+      runAfter: [create-nfs-storageclass]
+      taskRef: { name: ossm3-verify-operators }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: ossm3Channel
+          value: $(params.ossm3Channel)
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 5: Download and apply RBAC permissions from S3 (restricted-access resources)
+    #         This creates namespaces and applies CRDs, ClusterRoles, RoleBindings, etc.
+    - name: apply-rbac
+      runAfter: [verify-operators, approval-upload-restricted-resources]
+      taskRef: { name: ossm3-download-and-apply-rbac }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: obcName
+          value: $(params.obcName)
+        - name: s3Prefix
+          value: $(params.s3Prefix)
+        - name: requiredComponents
+          value: $(params.restrictedResourcesComponents)
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 6: Configure one dedicated SAP Service Mesh per Edge Node stack
+    #         Discovers and validates the stacks (SAP namespaces ending in -N, one
+    #         edgelm-N and one edgelm.sap.com/edge-node-id per stack), checks that
+    #         no existing Istio already selects a planned discovery value, creates
+    #         IstioCNI once and, per stack N, istio-system-sap-edge-N with Istio
+    #         sap-mesh-istio-N (discoverySelectors istio-discovery=sap-edge-mesh-N)
+    #         and the proxy ServiceEntry in edgelm-N, then waits until each is Ready.
+    #         Mesh before namespace labels (reverse of the dedicated pipeline):
+    #         the injection revision is read from the running control plane.
+    - name: configure-multi-stack-mesh
+      runAfter: [apply-rbac]
+      taskRef: { name: ossm3-configure-multi-stack-mesh }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: proxySecretName
+          value: $(params.hubClusterName)-proxy-config
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 7: Assign each stack's SAP namespaces to its own mesh, with SCC annotations
+    #         Per stack N: istio-discovery=sap-edge-mesh-N on every namespace (secrets
+    #         included), istio.io/rev=<active revision of mesh N> on workload
+    #         namespaces (never on secrets), istio-injection removed, SCC per role.
+    #         Prints the KBA 7149262 verification view (edge-node-id, discovery, rev).
+    - name: prepare-namespaces-multi-stack
+      runAfter: [configure-multi-stack-mesh]
+      taskRef: { name: ossm3-prepare-namespaces-multi-stack }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 8: Generate one SA-based restricted kubeconfig per Edge Node for ELM
+    #         registration (parallel; SA taken from the bundle's RBAC in edgelm-N,
+    #         Secret edgelm-kubeconfig-generated-<cluster>-N, workspace file
+    #         edgelm-N-kubeconfig)
+    # --- Stack 1 (Edge Node 1, edgelm-1) ---
+    - name: stack1-generate-sa-based-kubeconfig
+      runAfter: [prepare-namespaces-multi-stack]
+      taskRef: { name: ossm3-generate-sa-based-kubeconfig }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: elmNamespace
+          value: edgelm-1
+        - name: generatedSecretName
+          value: "edgelm-kubeconfig-generated-$(params.hostedClusterName)-1"
+      workspaces:
+        - name: source
+          workspace: source
+
+    # --- Stack 2 (Edge Node 2, edgelm-2) ---
+    - name: stack2-generate-sa-based-kubeconfig
+      runAfter: [prepare-namespaces-multi-stack]
+      taskRef: { name: ossm3-generate-sa-based-kubeconfig }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: elmNamespace
+          value: edgelm-2
+        - name: generatedSecretName
+          value: "edgelm-kubeconfig-generated-$(params.hostedClusterName)-2"
+      workspaces:
+        - name: source
+          workspace: source
+
+    # =============================================
+    # Phase 3: Deploy EIC Services (after both per-stack kubeconfigs)
+    #   Shared PostgreSQL for all cells; one Redis/Valkey per EIC cell
+    #   (instance eic-N -> namespace sap-eic-external-<datastore>-eic-N).
+    #   Cell N = EIC edge-icell-N on Edge Node N; both cells always run.
+    # =============================================
+
+    # Step 9: Enable User Workload Monitoring (parallel with DB deployment)
+    #         discoverNamespaces: find the EIC and ELM namespaces of both stacks by label
+    - name: enable-monitoring
+      runAfter: [stack1-generate-sa-based-kubeconfig, stack2-generate-sa-based-kubeconfig]
+      taskRef: { name: hcp-enable-monitoring }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: discoverNamespaces
+          value: "true"
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 10: Deploy PostgreSQL on hosted cluster (shared by all EIC cells,
+    #          parallel with Redis/Valkey and monitoring)
+    - name: deploy-postgres
+      runAfter: [stack1-generate-sa-based-kubeconfig, stack2-generate-sa-based-kubeconfig]
+      taskRef: { name: hcp-deploy-postgres }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: postgresVersion
+          value: $(params.postgresVersion)
+        - name: postgresHA
+          value: $(params.postgresHA)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 10a: Deploy Redis per EIC cell (instance eic-N -> sap-eic-external-redis-eic-N;
+    #           parallel with PostgreSQL, when datastoreType=redis)
+    - name: cell1-deploy-redis
+      runAfter: [stack1-generate-sa-based-kubeconfig, stack2-generate-sa-based-kubeconfig]
+      when:
+        - input: "$(params.datastoreType)"
+          operator: in
+          values: ["redis"]
+      taskRef: { name: hcp-deploy-redis }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: redisClusterType
+          value: $(params.redisClusterType)
+        - name: instance
+          value: eic-1
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    # cell2-deploy-redis also waits for cell1-deploy-redis: both apply the same
+    # cluster-scoped Redis Enterprise SCC, and two concurrent creates can fail
+    # with AlreadyExists. Valkey installs only namespaced objects and stays parallel.
+    - name: cell2-deploy-redis
+      runAfter:
+        - stack1-generate-sa-based-kubeconfig
+        - stack2-generate-sa-based-kubeconfig
+        - cell1-deploy-redis
+      when:
+        - input: "$(params.datastoreType)"
+          operator: in
+          values: ["redis"]
+      taskRef: { name: hcp-deploy-redis }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: redisClusterType
+          value: $(params.redisClusterType)
+        - name: instance
+          value: eic-2
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 10b: Deploy Valkey per EIC cell (instance eic-N -> sap-eic-external-valkey[-cluster]-eic-N;
+    #           parallel with PostgreSQL, when datastoreType=valkey-*)
+    - name: cell1-deploy-valkey
+      runAfter: [stack1-generate-sa-based-kubeconfig, stack2-generate-sa-based-kubeconfig]
+      when:
+        - input: "$(params.datastoreType)"
+          operator: in
+          values: ["valkey-standalone", "valkey-cluster"]
+      taskRef: { name: hcp-deploy-valkey }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: datastoreType
+          value: $(params.datastoreType)
+        - name: instance
+          value: eic-1
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell2-deploy-valkey
+      runAfter: [stack1-generate-sa-based-kubeconfig, stack2-generate-sa-based-kubeconfig]
+      when:
+        - input: "$(params.datastoreType)"
+          operator: in
+          values: ["valkey-standalone", "valkey-cluster"]
+      taskRef: { name: hcp-deploy-valkey }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: datastoreType
+          value: $(params.datastoreType)
+        - name: instance
+          value: eic-2
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 11: Get all credentials per EIC cell and display them
+    #          (shared PostgreSQL + the cell's own Redis/Valkey)
+    - name: cell1-get-all-accesses
+      runAfter: [deploy-postgres, cell1-deploy-redis, cell1-deploy-valkey, enable-monitoring]
+      taskRef: { name: hcp-get-all-accesses }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: datastoreType
+          value: $(params.datastoreType)
+        - name: instance
+          value: eic-1
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell2-get-all-accesses
+      runAfter: [deploy-postgres, cell2-deploy-redis, cell2-deploy-valkey, enable-monitoring]
+      taskRef: { name: hcp-get-all-accesses }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: datastoreType
+          value: $(params.datastoreType)
+        - name: instance
+          value: eic-2
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    # =============================================
+    # Phase 4: Manual ELM/EIC Deployment + Tests (per EIC cell)
+    # =============================================
+
+    # Step 12: Manual approval after registering both Edge Nodes and deploying
+    #          EIC and iFlows on each (both cells)
+    - name: approval-elm-eic-iflow-deployed
+      runAfter: [cell1-get-all-accesses, cell2-get-all-accesses, enable-monitoring]
+      taskRef:
+        apiVersion: openshift-pipelines.org/v1alpha1
+        kind: ApprovalTask
+      params:
+        - name: approvers
+          value:
+            - mjiao
+            - rbhandar
+            - ksatarin
+            - kubeadmin
+            - kube:admin
+            - system:admin
+        - name: description
+          value: |
+            Multi-stack (2 Edge Nodes, dedicated mesh each): one OSSM3 mesh per Edge Node, namespace
+            assignment, one restricted kubeconfig per Edge Node, shared PostgreSQL and per-cell
+            Redis/Valkey deployed successfully.
+            Credentials have been displayed (cell1-/cell2-get-all-accesses logs).
+
+            Cluster: $(params.hostedClusterName)
+            Namespace: $(params.hostedClusterNamespace)
+            Workers: $(params.nodePoolReplicas) x ($(params.nodePoolCpuCores) vCPU, $(params.nodePoolMemoryGB)GB RAM)
+            Proxy: see $(params.hubClusterName)-proxy-config secret
+            Datastore: $(params.datastoreType)
+
+            Per-Edge-Node targets (<ingress domain> = ingress domain of the hosted cluster;
+            kubeconfig Secrets are in the pipeline namespace):
+            Edge Node 1 (stack 1):
+              - ELM namespace: edgelm-1
+              - Restricted kubeconfig: Secret 'edgelm-kubeconfig-generated-$(params.hostedClusterName)-1'
+              - Mesh: istio-system-sap-edge-1/sap-mesh-istio-1 (discovery istio-discovery=sap-edge-mesh-1)
+              - EIC 1 (edge-icell-1) host: eic-1.<ingress domain>
+              - Gateway namespace: istio-gateways-1 (istio-ingressgateway)
+              - Redis/Valkey namespace: sap-eic-external-redis-eic-1 (redis),
+                sap-eic-external-valkey-eic-1 (valkey-standalone) or
+                sap-eic-external-valkey-cluster-eic-1 (valkey-cluster)
+              - PostgreSQL: shared instance (same for both Edge Nodes)
+            Edge Node 2 (stack 2):
+              - ELM namespace: edgelm-2
+              - Restricted kubeconfig: Secret 'edgelm-kubeconfig-generated-$(params.hostedClusterName)-2'
+              - Mesh: istio-system-sap-edge-2/sap-mesh-istio-2 (discovery istio-discovery=sap-edge-mesh-2)
+              - EIC 2 (edge-icell-2) host: eic-2.<ingress domain>
+              - Gateway namespace: istio-gateways-2 (istio-ingressgateway)
+              - Redis/Valkey namespace: sap-eic-external-redis-eic-2 (redis),
+                sap-eic-external-valkey-eic-2 (valkey-standalone) or
+                sap-eic-external-valkey-cluster-eic-2 (valkey-cluster)
+              - PostgreSQL: shared instance (same for both Edge Nodes)
+
+            Please complete the following manually:
+            1. Register Edge Node 1 in ELM with the kubeconfig from Secret
+               'edgelm-kubeconfig-generated-$(params.hostedClusterName)-1' (check "Restricted Access")
+            2. Register Edge Node 2 in ELM with the kubeconfig from Secret
+               'edgelm-kubeconfig-generated-$(params.hostedClusterName)-2' (check "Restricted Access")
+               - Each Edge Node uses its own kubeconfig; never register both with the same one
+               - If proxy is configured, select "Enable HTTP Proxy" on each Edge Node and set proxy
+                 from $(params.hubClusterName)-proxy-config secret
+            3. Deploy EIC 1 on Edge Node 1 with host eic-1.<ingress domain> (gateway istio-gateways-1),
+               its Redis/Valkey (namespace suffix -eic-1) and the shared PostgreSQL
+            4. Deploy EIC 2 on Edge Node 2 with host eic-2.<ingress domain> (gateway istio-gateways-2),
+               its Redis/Valkey (namespace suffix -eic-2) and the shared PostgreSQL
+            5. Deploy iFlows for testing on each EIC cell
+            6. After each resource download, re-run label cleanup for that Edge Node only
+               (<id> = its edgelm.sap.com/edge-node-id, shown by
+               oc get namespace edgelm-1 edgelm-2 -L edgelm.sap.com/edge-node-id):
+                 oc label namespace -l edgelm.sap.com/edge-node-id=<id> istio-injection-
+               Do not select by edgelm.sap.com/product=edgelm here: it spans both Edge Nodes.
+
+            After deployment is complete and istio-ingressgateway in each istio-gateways-N has a LoadBalancer IP:
+            APPROVE: Continue with per-cell ConfigMap creation and endpoint tests
+            REJECT: Skip tests and proceed to teardown
+        - name: numberOfApprovalsRequired
+          value: '1'
+        - name: timeout
+          value: '336h'
+
+    # Step 13: Verify monitoring (ServiceMonitors and Prometheus targets, all cells)
+    - name: verify-monitoring
+      runAfter: [approval-elm-eic-iflow-deployed]
+      taskRef: { name: hcp-verify-monitoring }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: discoverNamespaces
+          value: "true"
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 14-16 (per cell): ConfigMap -> EndpointSlice fix -> Route
+    #   14: Validate and create ConfigMap cluster-info-hcp-<cluster>-N (host eic-N.<domain>)
+    #   15: Fix EndpointSlice for Hypershift KubeVirt OCP 4.21 bug on the cell's
+    #       gateway service (service-sync may fail to create EndpointSlices for
+    #       LoadBalancer services, breaking MetalLB routing)
+    #   16: Create OpenShift Route for the cell's EIC (passthrough TLS) and
+    #       ConfigMap route-info-hcp-<cluster>-N
+
+    # --- Cell 1 (Edge Node 1: edge-icell-1, istio-gateways-1) ---
+    - name: cell1-validate-and-create-configmap
+      runAfter: [approval-elm-eic-iflow-deployed]
+      taskRef: { name: hcp-validate-and-create-configmap }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: gatewayNamespace
+          value: istio-gateways-1
+        - name: hostPrefix
+          value: eic-1
+        - name: configMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)-1"
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell1-fix-endpointslice
+      runAfter: [cell1-validate-and-create-configmap, verify-monitoring]
+      taskRef: { name: hcp-fix-endpointslice }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: guestServiceNamespace
+          value: istio-gateways-1
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell1-create-eic-route
+      runAfter: [cell1-fix-endpointslice]
+      taskRef: { name: hcp-create-eic-route }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: gatewayNamespace
+          value: istio-gateways-1
+        - name: hostPrefix
+          value: eic-1
+        - name: routeConfigMapName
+          value: "route-info-hcp-$(params.hostedClusterName)-1"
+      workspaces:
+        - name: source
+          workspace: source
+
+    # --- Cell 2 (Edge Node 2: edge-icell-2, istio-gateways-2) ---
+    - name: cell2-validate-and-create-configmap
+      runAfter: [approval-elm-eic-iflow-deployed]
+      taskRef: { name: hcp-validate-and-create-configmap }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: gatewayNamespace
+          value: istio-gateways-2
+        - name: hostPrefix
+          value: eic-2
+        - name: configMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)-2"
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell2-fix-endpointslice
+      runAfter: [cell2-validate-and-create-configmap, verify-monitoring]
+      taskRef: { name: hcp-fix-endpointslice }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: guestServiceNamespace
+          value: istio-gateways-2
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell2-create-eic-route
+      runAfter: [cell2-fix-endpointslice]
+      taskRef: { name: hcp-create-eic-route }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: gatewayNamespace
+          value: istio-gateways-2
+        - name: hostPrefix
+          value: eic-2
+        - name: routeConfigMapName
+          value: "route-info-hcp-$(params.hostedClusterName)-2"
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 17: Endpoint Tests round 1, per cell (parallel, staggered start delays)
+    # NOTE: httpbinipfilter has an IP filter policy. The hub and managed cluster
+    # pod CIDRs must be whitelisted in the iFlow's IP filter settings (each cell).
+    # --- Round 1, cell 1 (cluster-info-hcp-<cluster>-1) ---
+    - name: cell1-test-httpbinipfilter
+      runAfter: [cell1-fix-endpointslice, cell1-create-eic-route]
+      when:
+        - input: "$(params.testHttpbinipfilter)"
+          operator: in
+          values: ["true"]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /httpbinipfilter
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)-1"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "2"
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell1-test-http-test1
+      runAfter: [cell1-fix-endpointslice, cell1-create-eic-route]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /http/test1
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)-1"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "4"
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell1-test-http-testelster
+      runAfter: [cell1-fix-endpointslice, cell1-create-eic-route]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /http/testelster
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)-1"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "6"
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell1-test-slvredis
+      runAfter: [cell1-fix-endpointslice, cell1-create-eic-route]
+      when:
+        - input: "$(params.testSlvredis)"
+          operator: in
+          values: ["true"]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /slvredis
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)-1"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell1-test-ratelimit-slvredis
+      runAfter: [cell1-test-slvredis]
+      when:
+        - input: "$(params.testSlvredis)"
+          operator: in
+          values: ["true"]
+      taskRef: { name: rate-limit-test }
+      params:
+        - name: endpointPath
+          value: /slvredis
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)-1"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Cooldown after cell 1's rate-limit test to let the rate limiter window recover
+    - name: cell1-cooldown-after-round1
+      runAfter: [cell1-test-ratelimit-slvredis]
+      when:
+        - input: "$(params.testSlvredis)"
+          operator: in
+          values: ["true"]
+      taskSpec:
+        steps:
+          - name: cooldown
+            image: registry.access.redhat.com/ubi9/ubi-minimal
+            script: |
+              echo "⏳ Cooling down for 30s to let rate limiter recover..."
+              sleep 30
+              echo "✅ Cooldown complete."
+
+    # --- Round 1, cell 2 (cluster-info-hcp-<cluster>-2) ---
+    - name: cell2-test-httpbinipfilter
+      runAfter: [cell2-fix-endpointslice, cell2-create-eic-route]
+      when:
+        - input: "$(params.testHttpbinipfilter)"
+          operator: in
+          values: ["true"]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /httpbinipfilter
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)-2"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "2"
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell2-test-http-test1
+      runAfter: [cell2-fix-endpointslice, cell2-create-eic-route]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /http/test1
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)-2"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "4"
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell2-test-http-testelster
+      runAfter: [cell2-fix-endpointslice, cell2-create-eic-route]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /http/testelster
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)-2"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "6"
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell2-test-slvredis
+      runAfter: [cell2-fix-endpointslice, cell2-create-eic-route]
+      when:
+        - input: "$(params.testSlvredis)"
+          operator: in
+          values: ["true"]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /slvredis
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)-2"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell2-test-ratelimit-slvredis
+      runAfter: [cell2-test-slvredis]
+      when:
+        - input: "$(params.testSlvredis)"
+          operator: in
+          values: ["true"]
+      taskRef: { name: rate-limit-test }
+      params:
+        - name: endpointPath
+          value: /slvredis
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)-2"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Cooldown after cell 2's rate-limit test to let the rate limiter window recover
+    - name: cell2-cooldown-after-round1
+      runAfter: [cell2-test-ratelimit-slvredis]
+      when:
+        - input: "$(params.testSlvredis)"
+          operator: in
+          values: ["true"]
+      taskSpec:
+        steps:
+          - name: cooldown
+            image: registry.access.redhat.com/ubi9/ubi-minimal
+            script: |
+              echo "⏳ Cooling down for 30s to let rate limiter recover..."
+              sleep 30
+              echo "✅ Cooldown complete."
+
+    # Step 18: Manual approval before second round of tests (waits for both cells)
+    - name: approval-second-test-round
+      runAfter:
+        - cell1-test-httpbinipfilter
+        - cell1-test-http-test1
+        - cell1-test-http-testelster
+        - cell1-test-slvredis
+        - cell1-cooldown-after-round1
+        - cell2-test-httpbinipfilter
+        - cell2-test-http-test1
+        - cell2-test-http-testelster
+        - cell2-test-slvredis
+        - cell2-cooldown-after-round1
+      taskRef:
+        apiVersion: openshift-pipelines.org/v1alpha1
+        kind: ApprovalTask
+      params:
+        - name: approvers
+          value:
+            - mjiao
+            - rbhandar
+            - ksatarin
+            - kubeadmin
+            - kube:admin
+            - system:admin
+        - name: description
+          value: |
+            First round of endpoint tests completed successfully for every EIC cell.
+
+            Cluster: $(params.hostedClusterName)
+            Mesh: multi-stack (2 Edge Nodes, dedicated mesh each):
+              istio-system-sap-edge-1/sap-mesh-istio-1, istio-system-sap-edge-2/sap-mesh-istio-2
+            Edge Node 1, cell 1 (edge-icell-1): eic-1 via istio-gateways-1, ConfigMap cluster-info-hcp-$(params.hostedClusterName)-1
+            Edge Node 2, cell 2 (edge-icell-2): eic-2 via istio-gateways-2, ConfigMap cluster-info-hcp-$(params.hostedClusterName)-2
+
+            ✅ APPROVE: Run second round of endpoint tests (both cells)
+            ❌ REJECT: Skip second round and proceed
+        - name: numberOfApprovalsRequired
+          value: '1'
+        - name: timeout
+          value: '336h'
+
+    # Step 19: Second round of endpoint tests, per cell (staggered)
+    # --- Round 2, cell 1 (cluster-info-hcp-<cluster>-1) ---
+    - name: cell1-test-httpbinipfilter-round2
+      runAfter: [approval-second-test-round]
+      when:
+        - input: "$(params.testHttpbinipfilter)"
+          operator: in
+          values: ["true"]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /httpbinipfilter
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)-1"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "2"
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell1-test-http-test1-round2
+      runAfter: [approval-second-test-round]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /http/test1
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)-1"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "4"
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell1-test-http-testelster-round2
+      runAfter: [approval-second-test-round]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /http/testelster
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)-1"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "6"
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell1-test-slvredis-round2
+      runAfter: [approval-second-test-round]
+      when:
+        - input: "$(params.testSlvredis)"
+          operator: in
+          values: ["true"]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /slvredis
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)-1"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell1-test-ratelimit-slvredis-round2
+      runAfter: [cell1-test-slvredis-round2]
+      when:
+        - input: "$(params.testSlvredis)"
+          operator: in
+          values: ["true"]
+      taskRef: { name: rate-limit-test }
+      params:
+        - name: endpointPath
+          value: /slvredis
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)-1"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Cooldown after cell 1's rate-limit test to let the rate limiter window recover
+    - name: cell1-cooldown-after-round2
+      runAfter: [cell1-test-ratelimit-slvredis-round2]
+      when:
+        - input: "$(params.testSlvredis)"
+          operator: in
+          values: ["true"]
+      taskSpec:
+        steps:
+          - name: cooldown
+            image: registry.access.redhat.com/ubi9/ubi-minimal
+            script: |
+              echo "⏳ Cooling down for 30s to let rate limiter recover..."
+              sleep 30
+              echo "✅ Cooldown complete."
+
+    # --- Round 2, cell 2 (cluster-info-hcp-<cluster>-2) ---
+    - name: cell2-test-httpbinipfilter-round2
+      runAfter: [approval-second-test-round]
+      when:
+        - input: "$(params.testHttpbinipfilter)"
+          operator: in
+          values: ["true"]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /httpbinipfilter
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)-2"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "2"
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell2-test-http-test1-round2
+      runAfter: [approval-second-test-round]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /http/test1
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)-2"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "4"
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell2-test-http-testelster-round2
+      runAfter: [approval-second-test-round]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /http/testelster
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)-2"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "6"
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell2-test-slvredis-round2
+      runAfter: [approval-second-test-round]
+      when:
+        - input: "$(params.testSlvredis)"
+          operator: in
+          values: ["true"]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /slvredis
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)-2"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell2-test-ratelimit-slvredis-round2
+      runAfter: [cell2-test-slvredis-round2]
+      when:
+        - input: "$(params.testSlvredis)"
+          operator: in
+          values: ["true"]
+      taskRef: { name: rate-limit-test }
+      params:
+        - name: endpointPath
+          value: /slvredis
+        - name: clusterConfigMapName
+          value: "cluster-info-hcp-$(params.hostedClusterName)-2"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Cooldown after cell 2's rate-limit test to let the rate limiter window recover
+    - name: cell2-cooldown-after-round2
+      runAfter: [cell2-test-ratelimit-slvredis-round2]
+      when:
+        - input: "$(params.testSlvredis)"
+          operator: in
+          values: ["true"]
+      taskSpec:
+        steps:
+          - name: cooldown
+            image: registry.access.redhat.com/ubi9/ubi-minimal
+            script: |
+              echo "⏳ Cooling down for 30s to let rate limiter recover..."
+              sleep 30
+              echo "✅ Cooldown complete."
+
+    # Step 20: Manual approval before Route-based tests (round 3, waits for both cells)
+    - name: approval-route-test-round
+      runAfter:
+        - cell1-test-httpbinipfilter-round2
+        - cell1-test-http-test1-round2
+        - cell1-test-http-testelster-round2
+        - cell1-test-slvredis-round2
+        - cell1-cooldown-after-round2
+        - cell2-test-httpbinipfilter-round2
+        - cell2-test-http-test1-round2
+        - cell2-test-http-testelster-round2
+        - cell2-test-slvredis-round2
+        - cell2-cooldown-after-round2
+      taskRef:
+        apiVersion: openshift-pipelines.org/v1alpha1
+        kind: ApprovalTask
+      params:
+        - name: approvers
+          value:
+            - mjiao
+            - rbhandar
+            - ksatarin
+            - kubeadmin
+            - kube:admin
+            - system:admin
+        - name: description
+          value: |
+            Second round of endpoint tests completed successfully for every EIC cell.
+            Now ready to run Route-based endpoint tests (round 3).
+
+            Route-based tests will send traffic through the OpenShift Router
+            (HAProxy passthrough) instead of directly to the LoadBalancer IP.
+
+            Cluster: $(params.hostedClusterName)
+            Mesh: multi-stack (2 Edge Nodes, dedicated mesh each):
+              istio-system-sap-edge-1/sap-mesh-istio-1, istio-system-sap-edge-2/sap-mesh-istio-2
+            Edge Node 1, cell 1 (edge-icell-1): Route eic-1.<ingress domain> in istio-gateways-1, ConfigMap route-info-hcp-$(params.hostedClusterName)-1
+            Edge Node 2, cell 2 (edge-icell-2): Route eic-2.<ingress domain> in istio-gateways-2, ConfigMap route-info-hcp-$(params.hostedClusterName)-2
+
+            ✅ APPROVE: Run Route-based endpoint tests (both cells)
+            ❌ REJECT: Skip Route tests and proceed
+        - name: numberOfApprovalsRequired
+          value: '1'
+        - name: timeout
+          value: '336h'
+
+    # Step 21: Route-based Endpoint Tests (round 3, via OpenShift Route, per cell, staggered)
+    # --- Round 3 (Route), cell 1 (route-info-hcp-<cluster>-1) ---
+    - name: cell1-test-httpbinipfilter-route
+      runAfter: [approval-route-test-round]
+      when:
+        - input: "$(params.testHttpbinipfilter)"
+          operator: in
+          values: ["true"]
+      taskRef: { name: endpoint-tests-expected-status }
+      params:
+        - name: endpointPath
+          value: /httpbinipfilter
+        - name: expectedStatus
+          value: "200"
+        - name: clusterConfigMapName
+          value: "route-info-hcp-$(params.hostedClusterName)-1"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: "true"
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "2"
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell1-test-http-test1-route
+      runAfter: [approval-route-test-round]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /http/test1
+        - name: clusterConfigMapName
+          value: "route-info-hcp-$(params.hostedClusterName)-1"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: "true"
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "4"
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell1-test-http-testelster-route
+      runAfter: [approval-route-test-round]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /http/testelster
+        - name: clusterConfigMapName
+          value: "route-info-hcp-$(params.hostedClusterName)-1"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: "true"
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "6"
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell1-test-slvredis-route
+      runAfter: [approval-route-test-round]
+      when:
+        - input: "$(params.testSlvredis)"
+          operator: in
+          values: ["true"]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /slvredis
+        - name: clusterConfigMapName
+          value: "route-info-hcp-$(params.hostedClusterName)-1"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: "true"
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell1-test-ratelimit-slvredis-route
+      runAfter: [cell1-test-slvredis-route]
+      when:
+        - input: "$(params.testSlvredis)"
+          operator: in
+          values: ["true"]
+      taskRef: { name: rate-limit-test }
+      params:
+        - name: endpointPath
+          value: /slvredis
+        - name: clusterConfigMapName
+          value: "route-info-hcp-$(params.hostedClusterName)-1"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: "true"
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    # --- Round 3 (Route), cell 2 (route-info-hcp-<cluster>-2) ---
+    - name: cell2-test-httpbinipfilter-route
+      runAfter: [approval-route-test-round]
+      when:
+        - input: "$(params.testHttpbinipfilter)"
+          operator: in
+          values: ["true"]
+      taskRef: { name: endpoint-tests-expected-status }
+      params:
+        - name: endpointPath
+          value: /httpbinipfilter
+        - name: expectedStatus
+          value: "200"
+        - name: clusterConfigMapName
+          value: "route-info-hcp-$(params.hostedClusterName)-2"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: "true"
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "2"
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell2-test-http-test1-route
+      runAfter: [approval-route-test-round]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /http/test1
+        - name: clusterConfigMapName
+          value: "route-info-hcp-$(params.hostedClusterName)-2"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: "true"
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "4"
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell2-test-http-testelster-route
+      runAfter: [approval-route-test-round]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /http/testelster
+        - name: clusterConfigMapName
+          value: "route-info-hcp-$(params.hostedClusterName)-2"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: "true"
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: startDelay
+          value: "6"
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell2-test-slvredis-route
+      runAfter: [approval-route-test-round]
+      when:
+        - input: "$(params.testSlvredis)"
+          operator: in
+          values: ["true"]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /slvredis
+        - name: clusterConfigMapName
+          value: "route-info-hcp-$(params.hostedClusterName)-2"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: "true"
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: cell2-test-ratelimit-slvredis-route
+      runAfter: [cell2-test-slvredis-route]
+      when:
+        - input: "$(params.testSlvredis)"
+          operator: in
+          values: ["true"]
+      taskRef: { name: rate-limit-test }
+      params:
+        - name: endpointPath
+          value: /slvredis
+        - name: clusterConfigMapName
+          value: "route-info-hcp-$(params.hostedClusterName)-2"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: "true"
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 22: Update Jira with test results (after both cells' Route-round tests)
+    - name: update-jira-test-results
+      runAfter:
+        - cell1-test-httpbinipfilter-route
+        - cell1-test-http-test1-route
+        - cell1-test-http-testelster-route
+        - cell1-test-slvredis-route
+        - cell1-test-ratelimit-slvredis-route
+        - cell2-test-httpbinipfilter-route
+        - cell2-test-http-test1-route
+        - cell2-test-http-testelster-route
+        - cell2-test-slvredis-route
+        - cell2-test-ratelimit-slvredis-route
+      when:
+        - input: "$(params.jiraIssueKey)"
+          operator: notin
+          values: [""]
+      taskRef:
+        name: jira-add-comment-custom
+      params:
+        - name: jiraSecretName
+          value: $(params.jiraSecretName)
+        - name: jiraIssueKey
+          value: $(params.jiraIssueKey)
+        - name: comment
+          value: |
+            h2. Complete EIC Validation Pipeline Completed (HCP KubeVirt + OSSM3, multi-stack (2 Edge Nodes, dedicated mesh each))
+
+            HCP KubeVirt cluster, multi-stack (2 Edge Nodes, dedicated mesh each): two Edge Nodes, each with its own ELM, its own Edge Integration Cell and its own OSSM3 control plane, full EIC infrastructure and all automated endpoint tests completed successfully.
+
+            *Infrastructure Configuration:*
+            * *Cluster Name:* $(params.hostedClusterName)
+            * *Namespace:* $(params.hostedClusterNamespace)
+            * *Release Image:* $(params.releaseImage)
+            * *Worker Nodes:* $(params.nodePoolReplicas) x ($(params.nodePoolCpuCores) vCPU, $(params.nodePoolMemoryGB)GB RAM)
+            * *Service Mesh:* multi-stack (2 Edge Nodes, dedicated mesh each): istio-system-sap-edge-1 / sap-mesh-istio-1, istio-system-sap-edge-2 / sap-mesh-istio-2
+            * *Corporate Proxy:* see $(params.hubClusterName)-proxy-config secret
+            * *PostgreSQL:* $(params.postgresVersion) (Crunchy Operator, shared by all cells)
+            * *Datastore:* $(params.datastoreType) (one instance per cell)
+
+            *Edge Nodes:*
+            * *Edge Node 1:* ELM namespace edgelm-1, mesh istio-system-sap-edge-1 / sap-mesh-istio-1, kubeconfig Secret edgelm-kubeconfig-generated-$(params.hostedClusterName)-1; cell 1 (edge-icell-1): host eic-1.<ingress domain>, gateway istio-gateways-1, datastore instance eic-1, ConfigMaps cluster-info-hcp-$(params.hostedClusterName)-1 / route-info-hcp-$(params.hostedClusterName)-1
+            * *Edge Node 2:* ELM namespace edgelm-2, mesh istio-system-sap-edge-2 / sap-mesh-istio-2, kubeconfig Secret edgelm-kubeconfig-generated-$(params.hostedClusterName)-2; cell 2 (edge-icell-2): host eic-2.<ingress domain>, gateway istio-gateways-2, datastore instance eic-2, ConfigMaps cluster-info-hcp-$(params.hostedClusterName)-2 / route-info-hcp-$(params.hostedClusterName)-2
+
+            *Pipeline Status:*
+            * Repository cloned: Completed
+            * HostedCluster deployment: Completed
+            * OSSM3 operator verification: Completed
+            * RBAC permissions: Completed
+            * Service Mesh configuration (one control plane per Edge Node): Completed
+            * Namespace preparation (per Edge Node mesh): Completed
+            * Restricted kubeconfigs (one per Edge Node): Generated
+            * PostgreSQL deployment (shared): Completed
+            * Redis/Valkey deployment (per cell): Completed
+            * Validation, ConfigMap and Route setup (per cell): Completed
+            * Endpoint tests (3 rounds, per cell): All Passed
+
+            *Executed Tests (Round 1 - LoadBalancer):*
+            * Cell 1: cell1-test-httpbinipfilter, cell1-test-http-test1, cell1-test-http-testelster, cell1-test-slvredis, cell1-test-ratelimit-slvredis
+            * Cell 2: cell2-test-httpbinipfilter, cell2-test-http-test1, cell2-test-http-testelster, cell2-test-slvredis, cell2-test-ratelimit-slvredis
+
+            *Executed Tests (Round 2 - LoadBalancer):*
+            * Cell 1: cell1-test-httpbinipfilter-round2, cell1-test-http-test1-round2, cell1-test-http-testelster-round2, cell1-test-slvredis-round2, cell1-test-ratelimit-slvredis-round2
+            * Cell 2: cell2-test-httpbinipfilter-round2, cell2-test-http-test1-round2, cell2-test-http-testelster-round2, cell2-test-slvredis-round2, cell2-test-ratelimit-slvredis-round2
+
+            *Executed Tests (Round 3 - OpenShift Route):*
+            * Cell 1: cell1-test-httpbinipfilter-route, cell1-test-http-test1-route, cell1-test-http-testelster-route, cell1-test-slvredis-route, cell1-test-ratelimit-slvredis-route
+            * Cell 2: cell2-test-httpbinipfilter-route, cell2-test-http-test1-route, cell2-test-http-testelster-route, cell2-test-slvredis-route, cell2-test-ratelimit-slvredis-route
+
+            *Pipeline Details:*
+            * *Repository:* $(params.repoUrl)
+            * *Pull Request:* $(params.repoUrl)/pull/$(params.pullRequestNumber)
+            * *Revision:* $(params.revision)
+            * *Public DNS:* $(params.publicDNS)
+
+            Ready for manual teardown approval.
+
+    # =============================================
+    # Phase 5: Teardown
+    # =============================================
+
+    # Step 23: Manual approval before teardown
+    - name: approval-teardown
+      runAfter:
+        - update-jira-test-results
+      taskRef:
+        apiVersion: openshift-pipelines.org/v1alpha1
+        kind: ApprovalTask
+      params:
+        - name: approvers
+          value:
+            - mjiao
+            - rbhandar
+            - ksatarin
+            - kubeadmin
+            - kube:admin
+            - system:admin
+        - name: description
+          value: |
+            All endpoint tests completed. Please review results.
+
+            Cluster: $(params.hostedClusterName)
+            Mesh: multi-stack (2 Edge Nodes, dedicated mesh each):
+              istio-system-sap-edge-1/sap-mesh-istio-1, istio-system-sap-edge-2/sap-mesh-istio-2
+
+            APPROVE: Tear down HCP cluster and all resources
+            REJECT: Keep cluster running (will timeout after 336h and teardown anyway)
+        - name: numberOfApprovalsRequired
+          value: '1'
+        - name: timeout
+          value: '336h'
+
+    # Step 24: Teardown hosted cluster
+    - name: teardown-hosted-cluster
+      runAfter: [approval-teardown]
+      when:
+        - input: "$(params.skipTeardown)"
+          operator: in
+          values: ["false"]
+      taskRef: { name: hcp-teardown }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: waitForDeletion
+          value: "true"
+        - name: timeoutMinutes
+          value: "30"
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source

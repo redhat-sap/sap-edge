@@ -14,3 +14,12 @@ spec:
       value: "yes"
     - name: unknownParam  # Violation: param not declared by pipeline
       value: "bad"
+---
+# Pipelines-as-Code run file: generateName only, templated (must still be checked)
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: broken-pac-pr{{ pull_request_number }}-
+spec:
+  pipelineRef:
+    name: no-such-pipeline  # Violation: no pipeline with this name
