@@ -88,6 +88,14 @@ restricted-resources/<deployment>/          <-- = pipeline s3Prefix param
 - One bundle zip per subfolder; **latest version within a subfolder wins**.
 - Add a cell → add a subfolder. Upgrade a cell → drop its newer zip in its
   subfolder. Non-destructive; versions independent per cell; recorded per run.
+- The dedicated pipeline creates the folders for you: set
+  `restrictedResourcesComponents` (e.g. `elm edge-icell-1 edge-icell-2`) and it
+  creates them under `s3Prefix`, then pauses at
+  `approval-upload-restricted-resources` (in parallel with cluster creation)
+  with upload instructions and each folder's current contents. After
+  approval, `apply-rbac` fails fast if a listed folder holds no zip. The gate
+  always pauses (ApprovalTasks cannot be skipped conditionally); with the
+  bundles already in place, approve it straight away.
 - A **flat prefix** (zips directly under it, no subfolders) is treated as a
   single component — preserves single-EIC runs. Note: ELM-first apply ordering
   (below) is applied **universally**, including the flat path. Today's flat path
