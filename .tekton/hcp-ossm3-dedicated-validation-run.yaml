@@ -84,6 +84,8 @@ spec:
       value: "restricted-resources/pr{{ pull_request_number }}/"
     - name: restrictedResourcesComponents
       value: "elm edge-icell-1 edge-icell-2"
+    - name: cellCount
+      value: "2"
 
     # --- EIC services parameters ---
     - name: postgresVersion
