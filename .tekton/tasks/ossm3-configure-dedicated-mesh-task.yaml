@@ -223,18 +223,18 @@ spec:
         oc label namespace "${MESH_NS}" istio-discovery="${DISCOVERY_LABEL}" --overwrite
 
         # --- Label application namespaces to join the dedicated mesh ---
-        # The mesh namespaces of every EIC cell were already put on the revision
-        # (istio.io/rev) by ossm3-prepare-namespaces-dedicated, which also
-        # stripped istio-injection; select by revision so the secrets
-        # namespace stays out of the mesh.
-        echo "🏷️ Labeling application namespaces (istio.io/rev=${MESH_NAME}) for mesh discovery..."
+        # Per KBA 7131840, the discovery label (istio-discovery) must be on
+        # every SAP namespace including the secrets namespace. Only sidecar
+        # injection (istio.io/rev) is workload-only, set earlier by
+        # ossm3-prepare-namespaces-dedicated.
+        echo "🏷️ Labeling SAP namespaces (edgelm.sap.com/product=edgelm) for mesh discovery..."
         APP_NAMESPACES=()
         while IFS= read -r NS; do
           [[ -n "${NS}" ]] && APP_NAMESPACES+=("${NS}")
-        done < <(oc get namespace -l "istio.io/rev=${MESH_NAME}" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | sort -V)
+        done < <(oc get namespace -l "edgelm.sap.com/product=edgelm" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | sort -V)
 
         if [[ ${#APP_NAMESPACES[@]} -eq 0 ]]; then
-          echo "❌ No namespaces labeled istio.io/rev=${MESH_NAME} found"
+          echo "❌ No namespaces labeled edgelm.sap.com/product=edgelm found"
           echo "   They are labeled by the prepare-namespaces task."
           exit 1
         fi
