@@ -116,12 +116,24 @@ restricted-resources/pr<N>-multi-stack/     <-- = pipeline s3Prefix param
   approval, `apply-rbac` fails fast if a listed folder holds no zip. The gate
   always pauses (ApprovalTasks cannot be skipped conditionally); with the
   bundles already in place, approve it straight away.
-- A **flat prefix** (zips directly under it, no subfolders) is treated as a
-  single component — preserves single-EIC runs. Note: ELM-first apply ordering
-  (below) is applied **universally**, including the flat path. Today's flat path
-  happens to apply EIC before ELM (incidental `find | sort` order); standardizing
-  on ELM-first is safe (shared CRDs/cluster-admin first never hurts) and matters
-  once a deployment has its own `elm/` component.
+- **The subfolder layout requires `restrictedResourcesComponents`** (passed to
+  `ossm3-download-and-apply-rbac` as `requiredComponents`). `apply-rbac`
+  downloads **only** the listed folders under `s3Prefix` (`aws s3 cp --recursive
+  --exclude '*' --include '<folder>/*' …`); anything else below the prefix, such
+  as other deployments' folders, is never downloaded or applied. Topology B
+  defaults to its fixed `elm-1 edge-icell-1 elm-2 edge-icell-2`; topology A
+  defaults to empty, so its runs set the folders explicitly (the PaC run does).
+- **Empty `restrictedResourcesComponents` = flat prefix**: only the zips
+  directly under `s3Prefix` are downloaded (`--exclude '*/*'`) and applied as a
+  single component; subfolders are ignored. This is how the single-EIC pipelines
+  (`hcp-ossm3-validation`, ARO, ROSA) use `restricted-resources/`, which is also
+  the parent of the per-PR folders above, so those folders never leak into a
+  flat run. A subfolder layout with an empty list therefore finds no zip and
+  fails. Note: ELM-first apply ordering (below) is applied **universally**,
+  including the flat path. Today's flat path happens to apply EIC before ELM
+  (incidental `find | sort` order); standardizing on ELM-first is safe (shared
+  CRDs/cluster-admin first never hurts) and matters once a deployment has its
+  own `elm/` component.
 
 ### Component model: gateways are embedded in the EIC bundle
 
@@ -166,6 +178,16 @@ existing `--instance` option:
 
 All cells use one shared `eic-auth-secret` (same iFlow credentials).
 
+Each cell's credentials (shared Postgres + its own Redis/Valkey) are stored in
+the pipeline namespace in Secret `eic-credentials-hcp-<cluster>-eic-N`
+(`hcp-get-all-accesses` with `instance: eic-N`; the per-cell runs are parallel,
+so the Secret and the certificate files in the workspace are per instance). Its
+`kubeconfig` key holds the restricted kubeconfig of the Edge Node hosting the
+cell: the shared `edgelm-kubeconfig` in topology A, `edgelm-N-kubeconfig` in
+topology B. `hcp-teardown` deletes these Secrets together with the per-cell
+`cluster-info-`/`route-info-hcp-<cluster>-N` ConfigMaps and the per-stack
+`edgelm-kubeconfig-generated-<cluster>-N` Secrets.
+
 ## Pipeline behavior — Topology A
 
 Reuse the existing `hcp-ossm3-dedicated-validation` pipeline (single istio
@@ -173,14 +195,18 @@ control plane, one shared `edgelm`). The pipeline provisions RBAC, mesh, and
 namespace labels via discovery, deploys backing services per cell (Redis/Valkey
 with `--instance eic-N`; shared Postgres), and validates each cell end-to-end
 (all three test rounds per cell). The pipeline supports a `cellCount` param
-(default `2`); with `cellCount: "1"`, all cell-2 tasks are skipped via `when`.
+(default `2`); with `cellCount: "1"`, all cell-2 tasks are skipped via `when`
+(also drop `edge-icell-2` from `restrictedResourcesComponents`, otherwise
+`apply-rbac` fails on its empty folder).
 
-1. **`ossm3-download-and-apply-rbac` (Steps 2–3).** Discover each directory that
-   contains `*.zip` under the downloaded prefix (= one component); within each,
-   pick the latest version per resource type; extract into order-prefixed dirs so
-   apply order is **ELM (00) → IstioGateways (10) → EIC cells (20)**, cells
-   ordered by name. Step 4 (run each bundle's `apply-restricted-resources.sh
-   --yes`) is unchanged. A flat prefix = one component (back-compat).
+1. **`ossm3-download-and-apply-rbac` (Steps 1–3).** Download only the
+   `restrictedResourcesComponents` folders (empty: only the zips directly under a
+   flat prefix, see the S3 layout rules above); each downloaded directory holding
+   `*.zip` is one component. Within each, pick the latest version per resource
+   type; extract into order-prefixed dirs so apply order is **ELM (00) →
+   IstioGateways (10) → EIC cells (20)**, cells ordered by name. Step 4 (run each
+   bundle's `apply-restricted-resources.sh --yes`) is unchanged. A flat prefix =
+   one component (back-compat).
 
 2. **`ossm3-prepare-namespaces-dedicated`.** Replace the hardcoded
    `NAMESPACES=(…)` list with discovery:
@@ -191,14 +217,20 @@ with `--instance eic-N`; shared Postgres), and validates each cell end-to-end
      (secrets/gateways get none).
 
 3. **`ossm3-configure-dedicated-mesh`.** Replace the hardcoded `APP_NAMESPACES`
-   list with discovery, but select by **`istio.io/rev=sap-mesh-istio`** (the label
-   `prepare-namespaces-dedicated` already set), *not* by `istio-injection`. This
-   task `runAfter: prepare-namespaces-dedicated`, which by then has already
-   stripped `istio-injection`, so keying on it would select nothing; keying on the
-   revision label selects exactly the mesh namespaces and keeps the secrets
-   namespace out. Then label those with `istio-discovery=sap-edge-mesh`. The single
-   control plane and the `edgelm` `ServiceEntry` are unchanged (edgelm is shared
-   in topology A).
+   list with discovery by **`edgelm.sap.com/product=edgelm`**: every SAP
+   namespace of every cell, **including the secrets namespaces**
+   (`edge-icell-secrets-N`), gets `istio-discovery=sap-edge-mesh`, because per
+   KBA 7131840 the mesh's discovery selector must cover the secrets namespace too.
+   Sidecar injection stays workload-only: `istio.io/rev=sap-mesh-istio` is set by
+   `prepare-namespaces-dedicated` (step 2) on the mesh namespaces and never on
+   the secrets namespace, and this task does not touch it. The single control
+   plane and the `edgelm` `ServiceEntry` are unchanged (edgelm is shared in
+   topology A).
+
+Order in topology A: `prepare-namespaces-dedicated` labels the namespaces
+**before** `configure-dedicated-mesh` creates the control plane. That works
+because topology A's revision is the fixed Istio name `sap-mesh-istio`, known
+before the mesh exists. Topology B runs the other way round (below).
 
 ## Topology B
 
@@ -208,7 +240,11 @@ its **own** control plane (namespace `istio-system-sap-edge-N`, Istio resource
 `sap-mesh-istio-N`, discovery selector `istio-discovery=sap-edge-mesh-N`) and
 its **own** restricted kubeconfig Secret (`edgelm-kubeconfig-generated-<cluster>-N`).
 
-Key provisioning tasks (after the shared `ossm3-download-and-apply-rbac`):
+Key provisioning tasks (after the shared `ossm3-download-and-apply-rbac`), in
+this order. **Topology B creates the meshes before it labels the namespaces —
+the reverse of topology A** — because the revision label is read from each
+running control plane (with the `RevisionBased` update strategy the revision is
+not the Istio name), so the control planes must exist first:
 
 1. **`ossm3-configure-multi-stack-mesh`**: discovers stacks (SAP namespaces =
    `edgelm.sap.com/product=edgelm`, stack N = names ending `-N`); validates that
@@ -219,8 +255,10 @@ Key provisioning tasks (after the shared `ossm3-download-and-apply-rbac`):
    metadata when a proxy is configured); waits Ready; labels the control plane ns;
    proxy ServiceEntry in `edgelm-N`.
 
-2. **`ossm3-prepare-namespaces-multi-stack`**: per stack reads the active revision
-   from the running control plane; labels all the stack's namespaces
+2. **`ossm3-prepare-namespaces-multi-stack`** (`runAfter` the mesh task): per
+   stack reads the active revision (`status.activeRevisionName`, falling back to
+   the single `IstioRevision` of the control plane namespace) from the running
+   control plane; labels all the stack's namespaces
    `istio-discovery=sap-edge-mesh-N`; workload namespaces get
    `istio.io/rev=<active revision of mesh N>`; removes `istio-injection`; never
    an injection label on secrets; SCC per role; preserves ownership labels; prints
