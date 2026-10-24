@@ -64,11 +64,11 @@ for label, path in (("A", sys.argv[1]), ("B", sys.argv[2])):
             check(task_param(tasks[f"cell{n}-get-all-accesses"], "elmKubeconfigFile") is None,
                   f"A: cell{n}-get-all-accesses must use the shared edgelm-kubeconfig (task default)")
         comment = task_param(tasks["update-jira-test-results"], "comment")
-        cell2_lines = [line for line in comment.splitlines() if line.strip().startswith("* Cell 2: cell2-test-")]
+        cell2_lines = [line.strip() for line in comment.split("\n") if line.strip().startswith("* Cell 2: cell2-test-")]
         check(len(cell2_lines) == 3, f"A: expected 3 cell-2 test lines in the Jira comment, got {len(cell2_lines)}")
         for line in cell2_lines:
-            check(line.rstrip().endswith("(skipped when cellCount=1)"),
-                  f"A: Jira cell-2 test line not tagged as skipped when cellCount=1: {line.strip()[:60]}")
+            check(line.endswith("(skipped when cellCount=1)"),
+                  f"A: Jira cell-2 test line not tagged as skipped when cellCount=1: {line[:60]}")
         check("restrictedResourcesComponents without edge-icell-2" in params["cellCount"]["description"],
               "A: cellCount description must say that 1 needs restrictedResourcesComponents without edge-icell-2")
     else:

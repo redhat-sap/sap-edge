@@ -82,6 +82,7 @@ gitops
 gsub
 gtimeout
 horizontalpodautoscaler
+hostedcluster
 hostnames
 httpbinipfilter
 iFlows

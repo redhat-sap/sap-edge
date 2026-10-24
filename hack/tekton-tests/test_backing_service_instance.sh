@@ -212,8 +212,8 @@ echo "✅ PASS: valkey_cluster_instance"
 # ----------------------------------------------------------------------------
 # Fixtures are base64-encoded at runtime (keeps cspell quiet).
 PG_ROOT_CA_B64=$(printf 'pg-root-ca' | base64)
-REDIS_PASS_B64=$(printf 'redispass' | base64)
-VALKEY_PASS_B64=$(printf 'valkeypass' | base64)
+REDIS_PASS_B64=$(printf 'redis-pass' | base64)
+VALKEY_PASS_B64=$(printf 'valkey-pass' | base64)
 
 # Write the shared hosted-cluster + PostgreSQL rules to $1.
 write_pg_rules() {
