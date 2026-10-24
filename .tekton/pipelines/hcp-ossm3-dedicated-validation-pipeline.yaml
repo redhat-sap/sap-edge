@@ -522,7 +522,9 @@ spec:
           workspace: source
 
     # Step 11: Get all credentials per EIC cell and display them
-    #          (shared PostgreSQL + the cell's own Redis/Valkey)
+    #          (shared PostgreSQL + the cell's own Redis/Valkey). Each cell stores
+    #          them in Secret eic-credentials-hcp-<cluster>-eic-N together with
+    #          the Edge Node's single restricted kubeconfig (edgelm-kubeconfig).
     - name: cell1-get-all-accesses
       runAfter: [deploy-postgres, cell1-deploy-redis, cell1-deploy-valkey, enable-monitoring]
       taskRef: { name: hcp-get-all-accesses }
@@ -585,7 +587,10 @@ spec:
         - name: description
           value: |
             Dedicated OSSM3 mesh setup, shared PostgreSQL and per-cell Redis/Valkey deployed successfully.
-            Credentials have been displayed (cell1-/cell2-get-all-accesses logs). Restricted kubeconfig generated.
+            Credentials have been displayed (cell1-/cell2-get-all-accesses logs) and stored per cell in
+            Secrets 'eic-credentials-hcp-$(params.hostedClusterName)-eic-1' and
+            'eic-credentials-hcp-$(params.hostedClusterName)-eic-2' (pipeline namespace) (eic-2 skipped when cellCount=1).
+            Restricted kubeconfig generated.
 
             Cluster: $(params.hostedClusterName)
             Namespace: $(params.hostedClusterNamespace)

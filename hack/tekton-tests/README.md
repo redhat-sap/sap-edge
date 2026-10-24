@@ -76,6 +76,7 @@ Test helper functions:
 source lib.sh
 
 run_task TASK.yaml [extract args...]  # Extract and run, stores output/rc
+TASK_CWD=DIR run_task TASK.yaml ...   # Same, run in DIR (stands in for the step's workingDir)
 assert_called PATTERN                  # Check fake oc was called
 assert_not_called PATTERN              # Check fake oc was NOT called
 assert_file_contains FILE PATTERN      # Check file content
