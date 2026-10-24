@@ -93,7 +93,7 @@ spec:
       default: "sap-eic-restricted-cluster-config-resources"
     - name: s3Prefix
       type: string
-      description: "S3 key prefix for the restricted-resources zip files"
+      description: "S3 key prefix holding the restricted-resources zip files directly (flat prefix; subfolders such as per-PR folders are ignored)"
       default: "restricted-resources/"
     - name: enableMasterScheduling
       type: string

@@ -10,13 +10,16 @@ metadata:
 spec:
   description: >-
     Download restricted-access resource zip files from an ODF S3 bucket (via OBC).
-    Each subfolder of the prefix holding zips is one component (elm,
-    edge-icell-1, edge-icell-2, …; a flat prefix is a single component). The
-    latest version of each bundle per component is applied ELM first, then EIC
-    cells by name, by running the bundle's own apply-restricted-resources.sh --yes. That SAP
-    script creates the namespaces, validates namespace ownership via the
-    edgelm.sap.com/edge-node-id labels, and applies its numbered manifests
-    (000001-*.yaml …) in order. Only the new SAP bundle format is supported.
+    With requiredComponents set, only those component folders under the prefix
+    are downloaded (elm, edge-icell-1, edge-icell-2, …), each one component.
+    With requiredComponents empty, only the zips directly under the prefix are
+    downloaded (flat prefix = a single component); subfolders such as other
+    deployments' per-PR folders are ignored. The latest version of each bundle
+    per component is applied ELM first, then EIC cells by name, by running the
+    bundle's own apply-restricted-resources.sh --yes. That SAP script creates the
+    namespaces, validates namespace ownership via the edgelm.sap.com/edge-node-id
+    labels, and applies its numbered manifests (000001-*.yaml …) in order. Only
+    the new SAP bundle format is supported.
   params:
     - name: hostedClusterName
       type: string
@@ -35,11 +38,11 @@ spec:
       default: "sap-eic-restricted-cluster-config-resources"
     - name: s3Prefix
       type: string
-      description: "S3 key prefix for the restricted-resources zip files (one subfolder per component, e.g. restricted-resources/<deployment>/)"
+      description: "S3 key prefix for the restricted-resources zip files: either a deployment prefix with one subfolder per component listed in requiredComponents (e.g. restricted-resources/<deployment>/), or a flat prefix holding the zips directly (requiredComponents empty)"
       default: "restricted-resources/"
     - name: requiredComponents
       type: string
-      description: "Space-separated component folders that must each contain a zip under the prefix (e.g. 'elm edge-icell-1 edge-icell-2'). Empty = no check."
+      description: "Space-separated component folders under the prefix (e.g. 'elm edge-icell-1 edge-icell-2'): only these folders are downloaded, and each must contain a zip. Empty = flat prefix: only the zips directly under the prefix are downloaded (subfolders are ignored)."
       default: ""
     - name: useWorkspaceKubeconfig
       type: string
@@ -119,6 +122,13 @@ spec:
         # ========================================
         # Step 1: Download zip files from S3
         # ========================================
+        # Download only what this run applies. Other deployments' per-PR folders
+        # (restricted-resources/pr<N>/, restricted-resources/pr<N>-multi-stack/, …)
+        # live in the same bucket, often below a prefix a flat run also uses, and
+        # must never become components here:
+        #   requiredComponents set   -> only <prefix><component>/* per component
+        #   requiredComponents empty -> only objects directly under the prefix
+        #                               (flat prefix = a single component)
         echo ""
         echo "📥 Downloading restricted-resources from S3..."
 
@@ -126,18 +136,42 @@ spec:
         DOWNLOAD_DIR="/tmp/restricted-resources"
         mkdir -p "${DOWNLOAD_DIR}"
 
+        # The filters below match keys relative to the prefix, so it has to end
+        # with "/" (otherwise "…/pr1" would also list "…/pr10/…").
+        if [[ -n "${S3_PREFIX}" ]] && [[ "${S3_PREFIX}" != */ ]]; then
+          S3_PREFIX="${S3_PREFIX}/"
+        fi
+
+        REQUIRED_LIST=()
+        if [[ -n "${REQUIRED_COMPONENTS}" ]]; then
+          read -r -a REQUIRED_LIST <<< "${REQUIRED_COMPONENTS}"
+        fi
+
+        # aws s3 filters: evaluated in order, the last matching filter wins.
+        S3_FILTERS=()
+        if [[ ${#REQUIRED_LIST[@]} -gt 0 ]]; then
+          S3_FILTERS+=(--exclude '*')
+          for C in "${REQUIRED_LIST[@]}"; do
+            S3_FILTERS+=(--include "${C}/*")
+          done
+          echo "   Components (only these folders are downloaded): ${REQUIRED_LIST[*]}"
+        else
+          S3_FILTERS+=(--exclude '*/*')
+          echo "   Flat prefix: only zips directly under s3://${BUCKET_NAME}/${S3_PREFIX} are downloaded (subfolders ignored)"
+        fi
+
         aws s3 cp "s3://${BUCKET_NAME}/${S3_PREFIX}" "${DOWNLOAD_DIR}/" \
           --endpoint-url "${S3_ENDPOINT}" \
           --no-verify-ssl \
-          --recursive
+          --recursive \
+          "${S3_FILTERS[@]}"
 
         echo "✅ Downloaded files:"
-        ls -la "${DOWNLOAD_DIR}/"
+        find "${DOWNLOAD_DIR}" -type f | sort
 
         # Every required component folder must hold at least one bundle zip
         # (guards against approving the upload gate with a folder left empty).
-        if [[ -n "${REQUIRED_COMPONENTS}" ]]; then
-          read -r -a REQUIRED_LIST <<< "${REQUIRED_COMPONENTS}"
+        if [[ ${#REQUIRED_LIST[@]} -gt 0 ]]; then
           MISSING=()
           for C in "${REQUIRED_LIST[@]}"; do
             compgen -G "${DOWNLOAD_DIR}/${C}/*.zip" > /dev/null || MISSING+=("${C}")
@@ -156,9 +190,11 @@ spec:
         #   <s3Prefix>/elm/           restricted-resources-Edge_Lifecycle_Management-<ver>.zip
         #   <s3Prefix>/edge-icell-1/  restricted-resources-Edge_Integration_Cell-<ver>.zip
         #   <s3Prefix>/edge-icell-2/  restricted-resources-Edge_Integration_Cell-<ver>.zip
-        # Every directory holding *.zip files is one component; a flat prefix
-        # (zips directly under it) is a single component. Within a component only
-        # the latest version of each resource type is used.
+        # Step 1 downloaded only the requiredComponents folders (or, with none
+        # listed, only the zips directly under the prefix), so every directory
+        # holding *.zip files here is one of this run's components; a flat prefix
+        # is a single component. Within a component only the latest version of
+        # each resource type is used.
         #
         # Bundles are extracted into <priority>_<component>_<type> directories so
         # Step 4 applies ELM (00) → IstioGateways (10) → EIC cells (20) → other
@@ -203,6 +239,11 @@ spec:
 
         if [[ ${#COMPONENT_DIRS[@]} -eq 0 ]]; then
           echo "❌ No *.zip bundles found under s3://${BUCKET_NAME}/${S3_PREFIX}"
+          if [[ -z "${REQUIRED_COMPONENTS// /}" ]]; then
+            echo "   Flat prefix: only zips directly under the prefix are used. If the"
+            echo "   bundles are in component subfolders, list them in requiredComponents"
+            echo "   (pipeline param restrictedResourcesComponents)."
+          fi
           exit 1
         fi
 
