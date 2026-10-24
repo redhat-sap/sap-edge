@@ -26,6 +26,7 @@ EXPECTED_VIOLATIONS=(
   "ApprovalTask.*when"
   "cell2-x"
   "unknownParam"
+  "missing-required-workspace.*required-ws"
 )
 
 for PATTERN in "${EXPECTED_VIOLATIONS[@]}"; do
@@ -38,6 +39,16 @@ for PATTERN in "${EXPECTED_VIOLATIONS[@]}"; do
 done
 
 echo "✅ PASS: checker detected all seeded violations"
+
+# Verify that optional-workspace-ok task does NOT trigger a violation
+if grep -qE "optional-workspace-ok" <<< "${OUTPUT}"; then
+  echo "❌ FAIL: checker incorrectly flagged optional workspace as missing"
+  echo "Checker output:"
+  echo "${OUTPUT}"
+  exit 1
+fi
+
+echo "✅ PASS: checker correctly allows unbound optional workspaces"
 
 echo ""
 echo "============================================"

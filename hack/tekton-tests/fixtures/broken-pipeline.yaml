@@ -61,6 +61,22 @@ spec:
       params:
         - name: validParam
           value: "test"
+    - name: optional-workspace-ok
+      # OK: binds required workspace, optional workspace unbound is allowed
+      taskRef:
+        name: task-with-workspaces
+      workspaces:
+        - name: required-ws
+          workspace: shared-workspace
+    - name: missing-required-workspace
+      # Violation: missing required workspace binding
+      taskRef:
+        name: task-with-workspaces
+      workspaces:
+        - name: optional-ws
+          workspace: shared-workspace
+  workspaces:
+    - name: shared-workspace
 ---
 apiVersion: tekton.dev/v1
 kind: Task
@@ -87,3 +103,19 @@ spec:
     - name: step1
       image: ubi9
       script: echo "result" > $(results.output.path)
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: task-with-workspaces
+spec:
+  workspaces:
+    - name: required-ws
+      description: "Required workspace"
+    - name: optional-ws
+      description: "Optional workspace"
+      optional: true
+  steps:
+    - name: step1
+      image: ubi9
+      script: echo "test"
