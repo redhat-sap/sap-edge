@@ -277,18 +277,26 @@ if [[ "${STACK1_SIZE}" -ne "${STACK1_SIZE_AFTER}" ]]; then
   exit 1
 fi
 
-# Verify both Secret names were used (check stdin captures)
-if ! find "${FAKE_OC_STDIN_DIR}" -name "*.yaml" -exec grep -l "edgelm-kubeconfig-generated-c1" {} \; | grep -v "c1-2" > /dev/null; then
-  echo "❌ FAIL: Secret edgelm-kubeconfig-generated-c1 not found"
-  find "${FAKE_OC_STDIN_DIR}" -name "*.yaml" -exec cat {} \;
-  exit 1
-fi
-
-if ! find "${FAKE_OC_STDIN_DIR}" -name "*.yaml" -exec grep -l "edgelm-kubeconfig-generated-c1-2" {} \; > /dev/null; then
-  echo "❌ FAIL: Secret edgelm-kubeconfig-generated-c1-2 not found"
-  find "${FAKE_OC_STDIN_DIR}" -name "*.yaml" -exec cat {} \;
-  exit 1
-fi
+# Verify each stack stored its own kubeconfig under its own Secret name:
+# exactly one captured Secret manifest per exact name, and its kubeconfig
+# carries that stack's token (stack 1: token111, stack 2: token222).
+for PAIR in "edgelm-kubeconfig-generated-c1:token111" "edgelm-kubeconfig-generated-c1-2:token222"; do
+  NAME="${PAIR%%:*}"
+  TOKEN="${PAIR##*:}"
+  MATCHES=$(grep -lE "^[[:space:]]*name: ${NAME}[[:space:]]*$" "${FAKE_OC_STDIN_DIR}"/*.yaml || true)
+  COUNT=$(grep -c . <<< "${MATCHES}" || true)
+  if [[ "${COUNT}" -ne 1 ]]; then
+    cat "${FAKE_OC_STDIN_DIR}"/*.yaml
+    fail "expected exactly one captured Secret named ${NAME}, found ${COUNT}"
+  fi
+  KUBECONFIG_B64=$(sed -nE 's/^[[:space:]]*kubeconfig:[[:space:]]*//p' "${MATCHES}")
+  [[ -n "${KUBECONFIG_B64}" ]] || fail "Secret ${NAME} has no kubeconfig data"
+  DECODED=$(printf '%s' "${KUBECONFIG_B64}" | base64 --decode)
+  if [[ "${DECODED}" != *"token: ${TOKEN}"* ]]; then
+    echo "${DECODED}"
+    fail "Secret ${NAME} does not carry its own stack's token (${TOKEN})"
+  fi
+done
 
 echo "✅ PASS: two_stacks_distinct_outputs"
 

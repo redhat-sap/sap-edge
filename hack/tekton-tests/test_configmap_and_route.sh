@@ -66,6 +66,8 @@ run_task ../../.tekton/tasks/hcp-validate-and-create-configmap-task.yaml \
 
 assert_rc 0
 assert_called "create configmap cluster-info-hcp-c1 --from-literal=host=eic.apps.test.example"
+# istio-system has the service but no IP, so the IP comes from istio-gateways
+grep -qF "Gateway Namespace: istio-gateways" <<< "${TASK_OUT}" || fail "summary does not name gateway namespace istio-gateways"
 
 echo "✅ PASS: configmap_defaults"
 
@@ -179,6 +181,7 @@ assert_not_called "get svc istio-ingressgateway -n istio-gateways-1"
 assert_not_called "get svc istio-ingressgateway -n istio-system"
 assert_called "create configmap cluster-info-hcp-c1-2 --from-literal=host=eic-2.apps.test.example --from-literal=ingressIP=10.0.0.5"
 assert_called "get hpa istio-ingressgateway -n istio-gateways-2"
+grep -qF "Gateway Namespace: istio-gateways-2" <<< "${TASK_OUT}" || fail "summary does not name gateway namespace istio-gateways-2"
 
 echo "✅ PASS: configmap_cell2"
 

@@ -240,6 +240,7 @@ spec:
         echo ""
         echo "📊 Ingress Configuration:"
         echo "  Domain: ${INGRESS_DOMAIN:-'Not determined'}"
+        echo "  Gateway Namespace: ${GATEWAY_NS_FOUND:-'Not found'}"
         echo "  LoadBalancer IP: ${INGRESS_IP:-'Not determined'}"
 
         # Build the EIC host URL
