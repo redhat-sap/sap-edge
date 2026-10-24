@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: 2026 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: broken-run
+spec:
+  pipelineRef:
+    name: broken
+  params:
+    - name: existingParam
+      value: "yes"
+    - name: unknownParam  # Violation: param not declared by pipeline
+      value: "bad"

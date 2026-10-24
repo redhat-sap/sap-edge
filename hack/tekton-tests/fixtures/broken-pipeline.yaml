@@ -1,0 +1,89 @@
+# SPDX-FileCopyrightText: 2026 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: broken
+spec:
+  params:
+    - name: existingParam
+      type: string
+    - name: cellCount
+      type: string
+      default: "1"
+  tasks:
+    - name: a
+      taskRef:
+        name: existing-task
+      params:
+        - name: validParam
+          value: "test"
+    - name: b
+      taskRef:
+        name: task-with-results
+      runAfter:
+        - a
+        - no-such-task  # Violation: unknown runAfter target
+    - name: c
+      taskRef:
+        name: existing-task
+      params:
+        - name: validParam
+          value: "$(params.missing)"  # Violation: undeclared pipeline param
+    - name: d
+      taskRef:
+        name: existing-task
+      params:
+        - name: validParam
+          value: "$(tasks.a.results.nope)"  # Violation: task 'a' doesn't have result 'nope'
+    - name: e
+      taskRef:
+        name: existing-task
+      params:
+        - name: validParam
+          value: "ok"
+        - name: bogus  # Violation: param not declared by task
+          value: "bad"
+    - name: approval
+      taskRef:
+        apiVersion: openshift-pipelines.org/v1alpha1
+        kind: ApprovalTask
+      when:  # Violation: ApprovalTask with when
+        - input: "$(params.existingParam)"
+          operator: in
+          values: ["yes"]
+    - name: cell2-x
+      # Violation: cell2-* task without the cell gate (when checked with --cell-gate broken:cellCount:2)
+      taskRef:
+        name: existing-task
+      params:
+        - name: validParam
+          value: "test"
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: existing-task
+spec:
+  params:
+    - name: validParam
+      type: string
+  steps:
+    - name: step1
+      image: ubi9
+      script: echo "test"
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: task-with-results
+spec:
+  results:
+    - name: output
+      description: "Test output"
+  steps:
+    - name: step1
+      image: ubi9
+      script: echo "result" > $(results.output.path)
