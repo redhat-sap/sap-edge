@@ -566,7 +566,9 @@ spec:
           workspace: source
 
     # Step 11: Get all credentials per EIC cell and display them
-    #          (shared PostgreSQL + the cell's own Redis/Valkey)
+    #          (shared PostgreSQL + the cell's own Redis/Valkey). Each cell stores
+    #          them in Secret eic-credentials-hcp-<cluster>-eic-N together with
+    #          the restricted kubeconfig of its own Edge Node (edgelm-N-kubeconfig).
     - name: cell1-get-all-accesses
       runAfter: [deploy-postgres, cell1-deploy-redis, cell1-deploy-valkey, enable-monitoring]
       taskRef: { name: hcp-get-all-accesses }
@@ -579,6 +581,8 @@ spec:
           value: $(params.datastoreType)
         - name: instance
           value: eic-1
+        - name: elmKubeconfigFile
+          value: edgelm-1-kubeconfig
         - name: hubKubeconfigSecretName
           value: $(params.hubClusterName)-kubeconfig
       workspaces:
@@ -597,6 +601,8 @@ spec:
           value: $(params.datastoreType)
         - name: instance
           value: eic-2
+        - name: elmKubeconfigFile
+          value: edgelm-2-kubeconfig
         - name: hubKubeconfigSecretName
           value: $(params.hubClusterName)-kubeconfig
       workspaces:
@@ -628,7 +634,9 @@ spec:
             Multi-stack (2 Edge Nodes, dedicated mesh each): one OSSM3 mesh per Edge Node, namespace
             assignment, one restricted kubeconfig per Edge Node, shared PostgreSQL and per-cell
             Redis/Valkey deployed successfully.
-            Credentials have been displayed (cell1-/cell2-get-all-accesses logs).
+            Credentials have been displayed (cell1-/cell2-get-all-accesses logs) and stored per cell in
+            Secrets 'eic-credentials-hcp-$(params.hostedClusterName)-eic-1' and
+            'eic-credentials-hcp-$(params.hostedClusterName)-eic-2' (pipeline namespace).
 
             Cluster: $(params.hostedClusterName)
             Namespace: $(params.hostedClusterNamespace)

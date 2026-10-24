@@ -229,6 +229,43 @@ spec:
         oc delete secret "${SCC_SECRET_NAME}" --ignore-not-found=true && echo "   Deleted secret: ${SCC_SECRET_NAME}" || true
         oc delete secret "${CREDS_SECRET_NAME}" --ignore-not-found=true && echo "   Deleted secret: ${CREDS_SECRET_NAME}" || true
 
+        # Per-cell / per-stack artifacts of the multi-EIC pipelines (cells of
+        # hcp-ossm3-dedicated-validation, stacks of hcp-ossm3-multi-stack-validation;
+        # N = 1, 2). Their tasks create them with the in-cluster service account in
+        # the pipeline namespace, so delete them there. Only exact names derived
+        # from this cluster are used and missing ones are a no-op (other pipelines
+        # never create them). A name that is also the default artifact name of
+        # another live HostedCluster (e.g. cluster-info-hcp-<cluster>-1 of a
+        # cluster named <cluster>-1) is skipped.
+        echo ""
+        echo "🧹 Cleaning up per-cell/per-stack pipeline artifacts (multi-EIC pipelines)..."
+        PIPELINE_NS="$(context.taskRun.namespace)"
+        LIVE_CLUSTERS=$(oc get hostedcluster -A -o jsonpath='{.items[*].metadata.name}' 2>/dev/null \
+          || oc get hostedcluster -n "${CLUSTER_NS}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null \
+          || true)
+        # " name1 name2 … " for whole-word matching
+        LIVE_CLUSTERS=" $(tr -s '[:space:]' ' ' <<< "${LIVE_CLUSTERS}") "
+
+        # Usage: delete_pipeline_artifact KIND/NAME CLUSTER_WHOSE_DEFAULT_NAME_IT_COULD_BE
+        delete_pipeline_artifact() {
+          local OBJ="$1" CLASHES_WITH="$2" OUT
+          if [[ "${LIVE_CLUSTERS}" == *" ${CLASHES_WITH} "* ]]; then
+            echo "   ⚠️  Skipping ${OBJ}: HostedCluster '${CLASHES_WITH}' exists and may own it"
+            return 0
+          fi
+          OUT=$(KUBECONFIG="" oc delete "${OBJ}" -n "${PIPELINE_NS}" --ignore-not-found=true 2>&1) || true
+          if [[ -n "${OUT}" ]]; then
+            echo "   ${OUT}"
+          fi
+        }
+
+        for N in 1 2; do
+          delete_pipeline_artifact "configmap/cluster-info-hcp-${CLUSTER_NAME}-${N}" "${CLUSTER_NAME}-${N}"
+          delete_pipeline_artifact "configmap/route-info-hcp-${CLUSTER_NAME}-${N}" "${CLUSTER_NAME}-${N}"
+          delete_pipeline_artifact "secret/edgelm-kubeconfig-generated-${CLUSTER_NAME}-${N}" "${CLUSTER_NAME}-${N}"
+          delete_pipeline_artifact "secret/eic-credentials-hcp-${CLUSTER_NAME}-eic-${N}" "${CLUSTER_NAME}-eic-${N}"
+        done
+
         # Clean up Loki OBC on hub cluster
         echo ""
         echo "🧹 Cleaning up Loki OBC..."

@@ -10,7 +10,10 @@ metadata:
 spec:
   description: >-
     Retrieves and displays all PostgreSQL and Redis/Valkey credentials from the hosted
-    cluster after deployment. Also displays the content of generated certificate files.
+    cluster after deployment. Also displays the content of generated certificate files
+    and stores everything in the Secret eic-credentials-hcp-<cluster> on the pipeline
+    cluster (eic-credentials-hcp-<cluster>-<instance> when instance is set, so per-cell
+    runs in parallel never overwrite each other's Secret or certificate files).
   params:
     - name: hostedClusterName
       type: string
@@ -29,8 +32,12 @@ spec:
       default: ""
     - name: instance
       type: string
-      description: "Optional EIC instance suffix for Redis/Valkey namespace (Postgres remains shared)"
+      description: "Optional EIC instance suffix for the Redis/Valkey namespace (Postgres remains shared). Also suffixes the credentials Secret (eic-credentials-hcp-<cluster>-<instance>) and the certificate files written to the workspace (e.g. external_redis_tls_certificate_<instance>.pem)."
       default: ""
+    - name: elmKubeconfigFile
+      type: string
+      description: "Workspace file stored under the credentials Secret's kubeconfig key (the restricted ELM kubeconfig of the Edge Node hosting this EIC, written by ossm3-generate-sa-based-kubeconfig as <elmNamespace>-kubeconfig). The key is omitted, with a log line, when the file does not exist."
+      default: "edgelm-kubeconfig"
   workspaces:
     - name: source
   results:
@@ -57,6 +64,7 @@ spec:
         DATASTORE_TYPE="$(params.datastoreType)"
         HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
         INSTANCE="$(params.instance)"
+        ELM_KUBECONFIG_FILE="$(params.elmKubeconfigFile)"
 
         echo "=============================================="
         echo "📋 Retrieving All Access Credentials"
@@ -68,6 +76,20 @@ spec:
           INSTANCE_SUFFIX="-${INSTANCE}"
         else
           INSTANCE_SUFFIX=""
+        fi
+
+        # Per-cell runs of this task execute in parallel on one shared workspace
+        # and pipeline namespace: with an instance, the credentials Secret and
+        # every file written to the workspace are instance-specific.
+        CREDS_SECRET_NAME="eic-credentials-hcp-${HOSTED_CLUSTER_NAME}${INSTANCE_SUFFIX}"
+        if [[ -n "${INSTANCE}" ]]; then
+          PG_CERT_FILE="external_postgres_db_tls_root_cert_${INSTANCE}.crt"
+          REDIS_CERT_FILE="external_redis_tls_certificate_${INSTANCE}.pem"
+          VALKEY_CERT_FILE="external_valkey_tls_certificate_${INSTANCE}.pem"
+        else
+          PG_CERT_FILE="external_postgres_db_tls_root_cert.crt"
+          REDIS_CERT_FILE="external_redis_tls_certificate.pem"
+          VALKEY_CERT_FILE="external_valkey_tls_certificate.pem"
         fi
 
         # Install required packages
@@ -158,12 +180,12 @@ spec:
             if oc get secret "${PGO_SECRET}" -n "${PG_NAMESPACE}" &>/dev/null; then
               ROOT_CRT=$(oc get secret "${PGO_SECRET}" -n "${PG_NAMESPACE}" -o json | jq -r '.data["root.crt"]' | base64 -d)
               if [[ -n "${ROOT_CRT}" ]]; then
-                echo "${ROOT_CRT}" > external_postgres_db_tls_root_cert.crt
-                echo "External DB TLS Root Certificate saved to external_postgres_db_tls_root_cert.crt"
+                echo "${ROOT_CRT}" > "${PG_CERT_FILE}"
+                echo "External DB TLS Root Certificate saved to ${PG_CERT_FILE}"
                 echo ""
                 echo "📜 PostgreSQL TLS Root Certificate content:"
                 echo "----------------------------------------------"
-                cat external_postgres_db_tls_root_cert.crt
+                cat "${PG_CERT_FILE}"
                 echo "----------------------------------------------"
               fi
             fi
@@ -211,14 +233,14 @@ spec:
                 echo "🔐 Extracting Redis TLS certificate..."
                 if oc get pod rec-0 -n "${REDIS_NAMESPACE}" &>/dev/null; then
                   oc exec -n "${REDIS_NAMESPACE}" rec-0 -c redis-enterprise-node -- \
-                    cat /etc/opt/redislabs/proxy_cert.pem > external_redis_tls_certificate.pem 2>/dev/null || true
+                    cat /etc/opt/redislabs/proxy_cert.pem > "${REDIS_CERT_FILE}" 2>/dev/null || true
 
-                  if [[ -f "external_redis_tls_certificate.pem" ]] && [[ -s "external_redis_tls_certificate.pem" ]]; then
-                    echo "External Redis TLS Certificate saved to external_redis_tls_certificate.pem"
+                  if [[ -f "${REDIS_CERT_FILE}" ]] && [[ -s "${REDIS_CERT_FILE}" ]]; then
+                    echo "External Redis TLS Certificate saved to ${REDIS_CERT_FILE}"
                     echo ""
                     echo "📜 Redis TLS Certificate content:"
                     echo "----------------------------------------------"
-                    cat external_redis_tls_certificate.pem
+                    cat "${REDIS_CERT_FILE}"
                     echo "----------------------------------------------"
                   fi
                 else
@@ -288,14 +310,14 @@ spec:
               echo "🔐 Extracting Valkey TLS certificate..."
               if oc get configmap valkey-service-ca -n "${VALKEY_NAMESPACE}" &>/dev/null; then
                 oc get configmap valkey-service-ca -n "${VALKEY_NAMESPACE}" \
-                  -o jsonpath='{.data.service-ca\.crt}' > external_valkey_tls_certificate.pem 2>/dev/null || true
+                  -o jsonpath='{.data.service-ca\.crt}' > "${VALKEY_CERT_FILE}" 2>/dev/null || true
 
-                if [[ -f "external_valkey_tls_certificate.pem" ]] && [[ -s "external_valkey_tls_certificate.pem" ]]; then
-                  echo "External Valkey TLS Certificate saved to external_valkey_tls_certificate.pem"
+                if [[ -f "${VALKEY_CERT_FILE}" ]] && [[ -s "${VALKEY_CERT_FILE}" ]]; then
+                  echo "External Valkey TLS Certificate saved to ${VALKEY_CERT_FILE}"
                   echo ""
                   echo "📜 Valkey TLS Certificate content:"
                   echo "----------------------------------------------"
-                  cat external_valkey_tls_certificate.pem
+                  cat "${VALKEY_CERT_FILE}"
                   echo "----------------------------------------------"
                 fi
               else
@@ -310,8 +332,7 @@ spec:
 
         # ================== Store credentials in Secret ==================
         echo ""
-        echo "📦 Storing credentials in a Kubernetes Secret on management cluster..."
-        CREDS_SECRET_NAME="eic-credentials-hcp-${HOSTED_CLUSTER_NAME}"
+        echo "📦 Storing credentials in Secret '${CREDS_SECRET_NAME}' on management cluster..."
 
         # Switch to management cluster (pipeline cluster, not the remote hub)
         # Use empty KUBECONFIG to fall back to in-cluster service account
@@ -325,29 +346,37 @@ spec:
         SECRET_ARGS+=(--from-literal=postgres-user="${PG_USER:-N/A}")
         SECRET_ARGS+=(--from-literal=postgres-password="${PG_PASSWORD:-N/A}")
 
-        if [[ -f "external_postgres_db_tls_root_cert.crt" ]]; then
-          SECRET_ARGS+=(--from-file=postgres-tls-root-cert=external_postgres_db_tls_root_cert.crt)
+        if [[ -f "${PG_CERT_FILE}" ]]; then
+          SECRET_ARGS+=(--from-file=postgres-tls-root-cert="${PG_CERT_FILE}")
         fi
 
         if [[ "${DATASTORE_TYPE}" == "redis" ]]; then
           SECRET_ARGS+=(--from-literal=redis-address="${REDIS_SERVICE_FQDN:-N/A}:${REDIS_PORT:-N/A}")
           SECRET_ARGS+=(--from-literal=redis-password="${REDIS_PASSWORD:-N/A}")
           SECRET_ARGS+=(--from-literal=redis-server-name="${REDIS_SERVER_NAME:-N/A}")
-          if [[ -f "external_redis_tls_certificate.pem" ]]; then
-            SECRET_ARGS+=(--from-file=redis-tls-cert=external_redis_tls_certificate.pem)
+          if [[ -f "${REDIS_CERT_FILE}" ]]; then
+            SECRET_ARGS+=(--from-file=redis-tls-cert="${REDIS_CERT_FILE}")
           fi
         elif [[ "${DATASTORE_TYPE}" == "valkey-standalone" ]] || [[ "${DATASTORE_TYPE}" == "valkey-cluster" ]]; then
           SECRET_ARGS+=(--from-literal=valkey-address="${VALKEY_HOST:-N/A}")
           SECRET_ARGS+=(--from-literal=valkey-password="${VALKEY_PASSWORD:-N/A}")
           SECRET_ARGS+=(--from-literal=valkey-mode="${VALKEY_MODE:-N/A}")
           SECRET_ARGS+=(--from-literal=valkey-server-name="${VALKEY_SERVER_NAME:-N/A}")
-          if [[ -f "external_valkey_tls_certificate.pem" ]]; then
-            SECRET_ARGS+=(--from-file=valkey-tls-cert=external_valkey_tls_certificate.pem)
+          if [[ -f "${VALKEY_CERT_FILE}" ]]; then
+            SECRET_ARGS+=(--from-file=valkey-tls-cert="${VALKEY_CERT_FILE}")
           fi
         fi
 
-        if [[ -f "edgelm-kubeconfig" ]]; then
-          SECRET_ARGS+=(--from-file=kubeconfig=edgelm-kubeconfig)
+        # Restricted ELM kubeconfig of the Edge Node hosting this EIC: one shared
+        # edgelm-kubeconfig in topology A (both cells), edgelm-N-kubeconfig per
+        # Edge Node in topology B (passed in elmKubeconfigFile).
+        HAS_KUBECONFIG_KEY="false"
+        if [[ -n "${ELM_KUBECONFIG_FILE}" ]] && [[ -f "${ELM_KUBECONFIG_FILE}" ]]; then
+          SECRET_ARGS+=(--from-file=kubeconfig="${ELM_KUBECONFIG_FILE}")
+          HAS_KUBECONFIG_KEY="true"
+          echo "   kubeconfig key: restricted ELM kubeconfig from workspace file ${ELM_KUBECONFIG_FILE}"
+        else
+          echo "   ℹ️  No workspace file '${ELM_KUBECONFIG_FILE}': Secret '${CREDS_SECRET_NAME}' gets no kubeconfig key"
         fi
 
         KUBECONFIG="${MGMT_KUBECONFIG}" oc delete secret "${CREDS_SECRET_NAME}" --ignore-not-found=true
@@ -355,10 +384,16 @@ spec:
         echo "✅ Secret '${CREDS_SECRET_NAME}' created on management cluster"
 
         echo ""
-        echo "📋 To retrieve credentials:"
+        echo "📋 To retrieve credentials${INSTANCE:+ of EIC instance ${INSTANCE}} (Secret ${CREDS_SECRET_NAME}):"
         echo "   oc get secret ${CREDS_SECRET_NAME} -o jsonpath='{.data.postgres-password}' | base64 -d"
-        echo "   oc get secret ${CREDS_SECRET_NAME} -o jsonpath='{.data.redis-password}' | base64 -d"
-        echo "   oc get secret ${CREDS_SECRET_NAME} -o jsonpath='{.data.kubeconfig}' | base64 -d > kubeconfig.yaml"
+        if [[ "${DATASTORE_TYPE}" == "redis" ]]; then
+          echo "   oc get secret ${CREDS_SECRET_NAME} -o jsonpath='{.data.redis-password}' | base64 -d"
+        else
+          echo "   oc get secret ${CREDS_SECRET_NAME} -o jsonpath='{.data.valkey-password}' | base64 -d"
+        fi
+        if [[ "${HAS_KUBECONFIG_KEY}" == "true" ]]; then
+          echo "   oc get secret ${CREDS_SECRET_NAME} -o jsonpath='{.data.kubeconfig}' | base64 -d > kubeconfig.yaml"
+        fi
         echo "   oc get secret ${CREDS_SECRET_NAME} -o jsonpath='{.data.postgres-tls-root-cert}' | base64 -d > postgres-tls-root-cert.crt"
 
         # Switch back to hosted cluster

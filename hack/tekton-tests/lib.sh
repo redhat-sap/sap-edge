@@ -39,7 +39,9 @@ tmp_dir() {
 }
 
 # Run a task script extracted by extract_task_script.py
-# Usage: run_task TASK_YAML [extract args...]
+# Usage: [TASK_CWD=DIR] run_task TASK_YAML [extract args...]
+# TASK_CWD (optional) is the directory the script runs in, standing in for the
+# step's workingDir (e.g. the temp source workspace); default: current dir.
 run_task() {
   local TASK_YAML="$1"
   shift
@@ -62,7 +64,7 @@ run_task() {
 
   # Run the script and capture output and exit code
   set +e
-  bash "${SCRIPT}" > "${OUT_FILE}" 2>&1
+  (cd "${TASK_CWD:-.}" && bash "${SCRIPT}") > "${OUT_FILE}" 2>&1
   TASK_RC=$?
   set -e
 
