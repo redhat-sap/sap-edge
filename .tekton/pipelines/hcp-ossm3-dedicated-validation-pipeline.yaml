@@ -79,8 +79,12 @@ spec:
       default: "sap-eic-restricted-cluster-config-resources"
     - name: s3Prefix
       type: string
-      description: "S3 key prefix for the restricted-resources zip files"
+      description: "S3 key prefix of this deployment's restricted-resources bundles (e.g. restricted-resources/multi-eic/)"
       default: "restricted-resources/"
+    - name: restrictedResourcesComponents
+      type: string
+      description: "Space-separated component folders under s3Prefix, created by the pipeline and required to hold a zip before apply-rbac (e.g. 'elm edge-icell-1 edge-icell-2'). Empty = flat prefix."
+      default: ""
     # --- Corporate proxy parameters ---
     # Proxy config is read from a Secret named {hubClusterName}-proxy-config
     # containing keys: PROXY_HOST, PROXY_PORT, PROXY_IP
@@ -153,6 +157,52 @@ spec:
           value: $(params.pullSecretName)
         - name: hubKubeconfigSecretName
           value: $(params.hubClusterName)-kubeconfig
+
+    # Step 0.1: Create the per-component S3 folders (elm/, edge-icell-N/) under
+    #           s3Prefix and render upload instructions. Runs in parallel with
+    #           cluster creation so the upload overlaps the cluster build.
+    - name: prepare-restricted-resources-prefix
+      runAfter: [preflight-check]
+      taskRef: { name: ossm3-prepare-restricted-resources-prefix }
+      params:
+        - name: obcName
+          value: $(params.obcName)
+        - name: s3Prefix
+          value: $(params.s3Prefix)
+        - name: components
+          value: $(params.restrictedResourcesComponents)
+
+    # Step 0.2: Manual approval once the restricted-resources bundles are uploaded
+    #           (apply-rbac waits for this gate and for verify-operators)
+    - name: approval-upload-restricted-resources
+      runAfter: [prepare-restricted-resources-prefix]
+      taskRef:
+        apiVersion: openshift-pipelines.org/v1alpha1
+        kind: ApprovalTask
+      params:
+        - name: approvers
+          value:
+            - mjiao
+            - rbhandar
+            - ksatarin
+            - kubeadmin
+            - kube:admin
+            - system:admin
+        - name: description
+          value: |
+            Upload the restricted-resources zips for cluster $(params.hostedClusterName),
+            one zip per folder as downloaded from SAP; apply-rbac unzips each one and
+            runs its apply-restricted-resources.sh (latest version per folder wins).
+
+            $(tasks.prepare-restricted-resources-prefix.results.uploadPlan)
+
+            APPROVE: bundles uploaded; apply-rbac continues once the cluster is ready
+                     (it fails if a folder is still empty)
+            REJECT: abort the pipeline (the hosted cluster is NOT torn down automatically)
+        - name: numberOfApprovalsRequired
+          value: '1'
+        - name: timeout
+          value: '336h'
 
     # Step 1: Clone repository
     - name: fetch-repository
@@ -253,7 +303,7 @@ spec:
     # Step 5: Download and apply RBAC permissions from S3 (restricted-access resources)
     #         This creates namespaces and applies CRDs, ClusterRoles, RoleBindings, etc.
     - name: apply-rbac
-      runAfter: [verify-operators]
+      runAfter: [verify-operators, approval-upload-restricted-resources]
       taskRef: { name: ossm3-download-and-apply-rbac }
       params:
         - name: hostedClusterName
@@ -266,6 +316,8 @@ spec:
           value: $(params.obcName)
         - name: s3Prefix
           value: $(params.s3Prefix)
+        - name: requiredComponents
+          value: $(params.restrictedResourcesComponents)
       workspaces:
         - name: source
           workspace: source
@@ -457,7 +509,7 @@ spec:
             2. Deploy Edge Integration Cell (EIC)
             3. Deploy iFlows for testing
             4. After each resource download, re-run label cleanup:
-               oc label namespace edgelm edge-icell edge-icell-services edge-icell-secrets edge-icell-ela istio-gateways istio-injection-
+               oc label namespace -l edgelm.sap.com/product=edgelm istio-injection-
 
             After deployment is complete and istio-ingressgateway has a LoadBalancer IP:
             APPROVE: Continue with ConfigMap creation and endpoint tests

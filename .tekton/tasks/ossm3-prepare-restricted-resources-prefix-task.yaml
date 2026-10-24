@@ -1,0 +1,167 @@
+# SPDX-FileCopyrightText: 2026 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: ossm3-prepare-restricted-resources-prefix
+spec:
+  description: >-
+    Prepare the S3 layout for the restricted-resources bundles of one cluster
+    deployment: create an (empty) folder per component under the prefix
+    (e.g. elm/, edge-icell-1/, edge-icell-2/) in the ODF bucket of the OBC,
+    report what is already uploaded, and render upload instructions for the
+    approval gate that follows. Non-destructive: existing zips are untouched.
+    See docs/multi-eic-restricted-resources-convention.md.
+  params:
+    - name: obcName
+      type: string
+      description: "Name of the ObjectBucketClaim (OBC) — used to look up the S3 credentials Secret and endpoint ConfigMap"
+      default: "sap-eic-restricted-cluster-config-resources"
+    - name: s3Prefix
+      type: string
+      description: "S3 key prefix of the deployment (e.g. restricted-resources/multi-eic/)"
+      default: "restricted-resources/"
+    - name: components
+      type: string
+      description: "Space-separated component folders to create under the prefix (e.g. 'elm edge-icell-1 edge-icell-2'). Empty = flat prefix, nothing is created."
+      default: ""
+  results:
+    - name: bucketName
+      description: "Name of the OBC bucket"
+    - name: uploadPlan
+      description: "Human-readable upload instructions (folders, current contents, console and CLI steps)"
+  steps:
+    - name: prepare-prefix
+      image: registry.access.redhat.com/ubi9/ubi
+      env:
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: $(params.obcName)
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: $(params.obcName)
+              key: AWS_SECRET_ACCESS_KEY
+        - name: BUCKET_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: $(params.obcName)
+              key: BUCKET_HOST
+        - name: BUCKET_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: $(params.obcName)
+              key: BUCKET_PORT
+        - name: BUCKET_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: $(params.obcName)
+              key: BUCKET_NAME
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        OBC_NAME="$(params.obcName)"
+        S3_PREFIX="$(params.s3Prefix)"
+        COMPONENTS="$(params.components)"
+        NAMESPACE="$(context.taskRun.namespace)"
+        PREFIX="${S3_PREFIX%/}/"
+
+        echo "=========================================="
+        echo "OSSM3 Prepare Restricted-Resources Prefix"
+        echo "=========================================="
+        echo "S3 Bucket: ${BUCKET_NAME}"
+        echo "S3 Prefix: ${PREFIX}"
+        echo "Components: ${COMPONENTS:-<none, flat prefix>}"
+        echo "=========================================="
+
+        # Install required tools
+        echo "📦 Installing required packages..."
+        dnf install -y unzip > /dev/null 2>&1
+
+        echo "📦 Installing OpenShift CLI..."
+        curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz -o /tmp/oc.tar.gz
+        tar xzf /tmp/oc.tar.gz -C /tmp
+        mv /tmp/oc /usr/local/bin/
+        rm -f /tmp/oc.tar.gz
+
+        echo "📦 Installing AWS CLI..."
+        curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+        unzip -q /tmp/awscliv2.zip -d /tmp
+        /tmp/aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli
+        rm -rf /tmp/awscliv2.zip /tmp/aws
+        aws --version
+
+        S3_ENDPOINT="https://${BUCKET_HOST}:${BUCKET_PORT}"
+        s3() { aws "$@" --endpoint-url "${S3_ENDPOINT}" --no-verify-ssl; }
+
+        # Comma-separated zip names directly under an S3 folder, or EMPTY.
+        zips_in() {
+          local names
+          names=$(s3 s3 ls "s3://${BUCKET_NAME}/$1" 2>/dev/null | awk '$4 ~ /\.zip$/ { print $4 }' | paste -sd, - || true)
+          echo "${names:-EMPTY}"
+        }
+
+        # External S3 endpoint for uploads from outside the cluster (best effort:
+        # the pipeline SA may not be allowed to read routes in openshift-storage).
+        S3_ROUTE=$(oc get route s3 -n openshift-storage -o jsonpath='{.spec.host}' 2>/dev/null || true)
+        if [[ -z "${S3_ROUTE}" ]]; then
+          S3_ROUTE="\$(oc get route s3 -n openshift-storage -o jsonpath='{.spec.host}')"
+        fi
+
+        # ========================================
+        # Create component folders (zero-byte "<folder>/" marker objects)
+        # ========================================
+        COMPONENT_LIST=()
+        if [[ -n "${COMPONENTS}" ]]; then
+          read -r -a COMPONENT_LIST <<< "${COMPONENTS}"
+          echo ""
+          echo "📁 Creating component folders..."
+          for C in "${COMPONENT_LIST[@]}"; do
+            s3 s3api put-object --bucket "${BUCKET_NAME}" --key "${PREFIX}${C}/" > /dev/null
+            echo "   ✅ s3://${BUCKET_NAME}/${PREFIX}${C}/"
+          done
+        fi
+
+        # ========================================
+        # Render upload plan (also passed to the approval gate)
+        # ========================================
+        PLAN="/tmp/upload-plan.txt"
+        {
+          echo "Upload to bucket ${BUCKET_NAME} (OBC ${OBC_NAME}); [current contents]:"
+          if [[ ${#COMPONENT_LIST[@]} -eq 0 ]]; then
+            echo "- ${PREFIX}  all bundle zips, flat  [$(zips_in "${PREFIX}")]"
+          else
+            for C in "${COMPONENT_LIST[@]}"; do
+              case "${C}" in
+                elm) WHAT="ELM restricted-resources zip" ;;
+                edge-icell-*) WHAT="EIC restricted-resources zip" ;;
+                *) WHAT="restricted-resources zip" ;;
+              esac
+              echo "- ${PREFIX}${C}/  ${WHAT}  [$(zips_in "${PREFIX}${C}/")]"
+            done
+          fi
+          echo ""
+          echo "Console: Storage > Object Storage > Buckets > ${BUCKET_NAME} > open folder > Upload"
+          echo "CLI (oc logged in to the pipeline cluster):"
+          for KEY in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+            printf "  export %s=\$(oc get secret %s -n %s -o jsonpath='{.data.%s}' | base64 -d)\n" "${KEY}" "${OBC_NAME}" "${NAMESPACE}" "${KEY}"
+          done
+          echo "  aws s3 cp <bundle>.zip s3://${BUCKET_NAME}/${PREFIX}<folder>/ --endpoint-url https://${S3_ROUTE} --no-verify-ssl"
+        } > "${PLAN}"
+
+        echo ""
+        cat "${PLAN}"
+
+        printf '%s' "${BUCKET_NAME}" > "$(results.bucketName.path)"
+        cat "${PLAN}" > "$(results.uploadPlan.path)"
+
+        echo ""
+        echo "=========================================="
+        echo "✅ Prefix prepared — upload the bundles, then approve the gate"
+        echo "=========================================="
