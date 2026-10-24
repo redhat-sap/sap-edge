@@ -33,6 +33,10 @@ spec:
       type: string
       description: "Name of the Secret containing kubeconfig for hub cluster (optional, uses in-cluster config if empty)"
       default: ""
+    - name: instance
+      type: string
+      description: "Optional EIC instance suffix for the namespace (e.g., eic-2 → sap-eic-external-redis-eic-2)"
+      default: ""
   workspaces:
     - name: source
   results:
@@ -54,10 +58,18 @@ spec:
         # Parameters
         CLUSTER_NAME="$(params.hostedClusterName)"
         CLUSTER_NS="$(params.hostedClusterNamespace)"
-        REDIS_NAMESPACE="$(params.redisNamespace)"
+        REDIS_NAMESPACE_BASE="$(params.redisNamespace)"
         REDIS_TYPE="$(params.redisClusterType)"
         SKIP_WAIT="$(params.skipWait)"
         HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
+        INSTANCE="$(params.instance)"
+
+        # Compute instance-aware namespace
+        if [[ -n "${INSTANCE}" ]]; then
+          REDIS_NAMESPACE="${REDIS_NAMESPACE_BASE}-${INSTANCE}"
+        else
+          REDIS_NAMESPACE="${REDIS_NAMESPACE_BASE}"
+        fi
 
         echo "=========================================="
         echo "HCP Deploy Redis Task"

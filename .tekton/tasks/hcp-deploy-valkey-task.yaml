@@ -28,6 +28,10 @@ spec:
       type: string
       description: "Name of the Secret containing kubeconfig for hub cluster (optional, uses in-cluster config if empty)"
       default: ""
+    - name: instance
+      type: string
+      description: "Optional EIC instance suffix for the namespace (e.g., eic-1 → sap-eic-external-valkey-eic-1)"
+      default: ""
   workspaces:
     - name: source
   results:
@@ -50,22 +54,30 @@ spec:
         CLUSTER_NAME="$(params.hostedClusterName)"
         CLUSTER_NS="$(params.hostedClusterNamespace)"
         DATASTORE_TYPE="$(params.datastoreType)"
-        VALKEY_NAMESPACE="$(params.valkeyNamespace)"
+        VALKEY_NAMESPACE_PARAM="$(params.valkeyNamespace)"
         HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
+        INSTANCE="$(params.instance)"
 
-        # Determine mode and defaults based on datastoreType
+        # Determine mode and default namespace base based on datastoreType
         if [[ "${DATASTORE_TYPE}" == "valkey-standalone" ]]; then
           MODE="standalone"
-          VALKEY_NAMESPACE="${VALKEY_NAMESPACE:-sap-eic-external-valkey}"
+          VALKEY_NAMESPACE_BASE="${VALKEY_NAMESPACE_PARAM:-sap-eic-external-valkey}"
           DEPLOY_DIR="edge-integration-cell/external-valkey"
         elif [[ "${DATASTORE_TYPE}" == "valkey-cluster" ]]; then
           MODE="cluster"
-          VALKEY_NAMESPACE="${VALKEY_NAMESPACE:-sap-eic-external-valkey-cluster}"
+          VALKEY_NAMESPACE_BASE="${VALKEY_NAMESPACE_PARAM:-sap-eic-external-valkey-cluster}"
           DEPLOY_DIR="edge-integration-cell/external-valkey-cluster"
         else
           echo "❌ Invalid datastoreType: ${DATASTORE_TYPE}"
           echo "   Must be 'valkey-standalone' or 'valkey-cluster'"
           exit 1
+        fi
+
+        # Compute instance-aware namespace
+        if [[ -n "${INSTANCE}" ]]; then
+          VALKEY_NAMESPACE="${VALKEY_NAMESPACE_BASE}-${INSTANCE}"
+        else
+          VALKEY_NAMESPACE="${VALKEY_NAMESPACE_BASE}"
         fi
 
         echo "=========================================="

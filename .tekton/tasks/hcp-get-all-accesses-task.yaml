@@ -27,6 +27,10 @@ spec:
       type: string
       description: "Name of the Secret containing kubeconfig for hub cluster (optional)"
       default: ""
+    - name: instance
+      type: string
+      description: "Optional EIC instance suffix for Redis/Valkey namespace (Postgres remains shared)"
+      default: ""
   workspaces:
     - name: source
   results:
@@ -43,23 +47,28 @@ spec:
       image: registry.access.redhat.com/ubi9/ubi
       workingDir: $(workspaces.source.path)
       timeout: "336h"
-      env:
-        - name: HOSTED_CLUSTER_NAME
-          value: "$(params.hostedClusterName)"
-        - name: HOSTED_CLUSTER_NAMESPACE
-          value: "$(params.hostedClusterNamespace)"
-        - name: DATASTORE_TYPE
-          value: "$(params.datastoreType)"
-        - name: HUB_KUBECONFIG_SECRET
-          value: "$(params.hubKubeconfigSecretName)"
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
+
+        # Parameters
+        HOSTED_CLUSTER_NAME="$(params.hostedClusterName)"
+        HOSTED_CLUSTER_NAMESPACE="$(params.hostedClusterNamespace)"
+        DATASTORE_TYPE="$(params.datastoreType)"
+        HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
+        INSTANCE="$(params.instance)"
 
         echo "=============================================="
         echo "📋 Retrieving All Access Credentials"
         echo "=============================================="
         echo ""
+
+        # Compute instance suffix for datastore namespaces (Postgres is always shared)
+        if [[ -n "${INSTANCE}" ]]; then
+          INSTANCE_SUFFIX="-${INSTANCE}"
+        else
+          INSTANCE_SUFFIX=""
+        fi
 
         # Install required packages
         echo "📦 Installing required packages..."
@@ -170,7 +179,7 @@ spec:
           if [[ "${DATASTORE_TYPE}" == "redis" ]]; then
             echo "======================================Redis==========================================="
 
-            REDIS_NAMESPACE="sap-eic-external-redis"
+            REDIS_NAMESPACE="sap-eic-external-redis${INSTANCE_SUFFIX}"
             REDIS_DB="redb"
 
             if oc get RedisEnterpriseDatabase "${REDIS_DB}" -n "${REDIS_NAMESPACE}" &>/dev/null; then
@@ -230,10 +239,10 @@ spec:
             echo "======================================Valkey==========================================="
 
             if [[ "${DATASTORE_TYPE}" == "valkey-standalone" ]]; then
-              VALKEY_NAMESPACE="sap-eic-external-valkey"
+              VALKEY_NAMESPACE="sap-eic-external-valkey${INSTANCE_SUFFIX}"
               VALKEY_MODE="standalone"
             else
-              VALKEY_NAMESPACE="sap-eic-external-valkey-cluster"
+              VALKEY_NAMESPACE="sap-eic-external-valkey-cluster${INSTANCE_SUFFIX}"
               VALKEY_MODE="cluster"
             fi
 
