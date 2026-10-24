@@ -6,6 +6,6 @@
     "cspell:addwords": "cspell ** --no-progress --words-only --unique --config .config/cspell.yml"
   },
   "dependencies": {
-    "cspell": "^8.13.1"
+    "cspell": "^9.8.0"
   }
 }
