@@ -25,6 +25,10 @@ metadata:
 spec:
   pipelineRef:
     name: hcp-ossm3-validation-pipeline
+  # When enabling sapBrowserMode, install the runner's RBAC and uncomment:
+  # taskRunSpecs:
+  #   - pipelineTaskName: sap-browser
+  #     serviceAccountName: sap-browser-runner
   timeouts:
     pipeline: "336h"      # Total pipeline timeout (14 days)
     tasks: "335h"         # Individual task timeout (tasks + finally must be <= pipeline)
@@ -98,6 +102,14 @@ spec:
       value: ""
 
     # --- Pipeline control ---
+    # Optional browser runner (disabled unless explicitly configured).
+    # Build/install/access instructions: hack/sap-browser/PIPELINE.md
+    # - name: sapBrowserMode
+    #   value: "review-registration"
+    # - name: sapBrowserImage
+    #   value: "YOUR_REGISTRY/YOUR_PROJECT/sap-browser:dev"
+    # - name: sapElmUrl
+    #   value: "https://YOUR-TENANT/comsapclmedgelm.comsapclmedgelm/index.html"
     - name: skipTeardown
       value: "false"
   workspaces:
