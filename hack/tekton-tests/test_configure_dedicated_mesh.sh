@@ -21,9 +21,8 @@ echo ""
 echo "Test: secrets_gets_discovery_not_rev"
 echo "--------------------------------------------"
 
-FAKE_OC_LOG=$(mktemp)
-FAKE_OC_RULES=$(mktemp)
-trap 'rm -f "${FAKE_OC_LOG}" "${FAKE_OC_RULES}"' EXIT
+FAKE_OC_LOG=$(tmp_file)
+FAKE_OC_RULES=$(tmp_file)
 
 # Set up fake oc rules
 # Use printf to properly encode \n in the multi-line output
@@ -69,15 +68,14 @@ echo ""
 echo "Test: none_found_fails"
 echo "--------------------------------------------"
 
-FAKE_OC_LOG_2=$(mktemp)
-FAKE_OC_RULES_2=$(mktemp)
-trap 'rm -f "${FAKE_OC_LOG_2}" "${FAKE_OC_RULES_2}"' EXIT
+FAKE_OC_LOG=$(tmp_file)
+FAKE_OC_RULES=$(tmp_file)
 
 # Set up fake oc rules with empty namespace list
-printf 'get namespace -l edgelm.sap.com/product=edgelm*\t0\t\n' > "${FAKE_OC_RULES_2}"
-printf 'label namespace *\t0\tnamespace/test labeled\n' >> "${FAKE_OC_RULES_2}"
+printf 'get namespace -l edgelm.sap.com/product=edgelm*\t0\t\n' > "${FAKE_OC_RULES}"
+printf 'label namespace *\t0\tnamespace/test labeled\n' >> "${FAKE_OC_RULES}"
 
-export FAKE_OC_LOG="${FAKE_OC_LOG_2}" FAKE_OC_RULES="${FAKE_OC_RULES_2}"
+export FAKE_OC_LOG FAKE_OC_RULES
 
 # Run the labeling section of the task
 run_task ../../.tekton/tasks/ossm3-configure-dedicated-mesh-task.yaml \

@@ -14,9 +14,8 @@ echo "Test: download-and-apply-rbac Step 2"
 echo "============================================"
 
 # Create temp directories for test
-TEST_DOWNLOAD_DIR=$(mktemp -d)
-TEST_RBAC_DIR=$(mktemp -d)
-trap 'rm -rf "${TEST_DOWNLOAD_DIR}" "${TEST_RBAC_DIR}"' EXIT
+TEST_DOWNLOAD_DIR=$(tmp_dir)
+TEST_RBAC_DIR=$(tmp_dir)
 
 # Create test zip files matching the expected structure
 # elm-1/ and elm-2/ with different versions
@@ -42,8 +41,7 @@ echo "test" > "${TEST_DOWNLOAD_DIR}/elm-1/dummy.txt"
 
 # Extract the Step 2 script and run it with test directories
 # We need to set DOWNLOAD_DIR and RBAC_DIR to our test directories
-SCRIPT=$(mktemp)
-trap 'rm -f "${SCRIPT}"' EXIT
+SCRIPT=$(tmp_file)
 
 # Extract Step 2 from the task, replacing the directory assignments
 # Provide required parameters with dummy values
