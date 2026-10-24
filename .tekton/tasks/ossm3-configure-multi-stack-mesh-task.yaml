@@ -1,0 +1,323 @@
+# SPDX-FileCopyrightText: 2026 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: ossm3-configure-multi-stack-mesh
+spec:
+  description: >-
+    Topology B (several SAP Edge Nodes on one hosted cluster, KBA 7149262
+    "Multiple Edge Nodes with Dedicated Meshes"): deploy one dedicated
+    OSSM 3.x control plane per Edge Node stack. Stacks are discovered from the
+    SAP namespaces created by the restricted-resources bundles
+    (edgelm.sap.com/product=edgelm, names <role>-N). Creates the shared Istio
+    CNI once, then per stack N the namespace istio-system-sap-edge-N and the
+    Istio sap-mesh-istio-N selecting istio-discovery=sap-edge-mesh-N, plus the
+    corporate proxy ServiceEntry in edgelm-N when a proxy is configured. Fails
+    if two Istio resources on the cluster select the same istio-discovery value.
+    Run before ossm3-prepare-namespaces-multi-stack (it reads the revisions).
+  params:
+    - name: hostedClusterName
+      type: string
+      description: "Name of the hosted cluster"
+    - name: hostedClusterNamespace
+      type: string
+      description: "Namespace for HostedCluster resources"
+      default: "clusters"
+    - name: hubKubeconfigSecretName
+      type: string
+      description: "Name of the Secret containing kubeconfig for hub cluster (optional, uses in-cluster config if empty)"
+      default: ""
+    - name: proxySecretName
+      type: string
+      description: "Name of the Secret containing proxy config (keys: PROXY_HOST, PROXY_PORT, PROXY_IP). Leave empty to skip proxy configuration."
+      default: ""
+  results:
+    - name: stacks
+      description: "Space-separated Edge Node stack indices found (e.g. \"1 2\")"
+  workspaces:
+    - name: source
+  steps:
+    - name: configure-multi-stack-mesh
+      image: registry.access.redhat.com/ubi9/ubi
+      timeout: "336h"
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        CLUSTER_NAME="$(params.hostedClusterName)"
+        CLUSTER_NS="$(params.hostedClusterNamespace)"
+        HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
+        PROXY_SECRET="$(params.proxySecretName)"
+
+        # Install required tools
+        echo "📦 Installing OpenShift CLI..."
+        curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz -o /tmp/oc.tar.gz
+        tar xzf /tmp/oc.tar.gz -C /tmp
+        mv /tmp/oc /usr/local/bin/
+        cp /usr/local/bin/oc /usr/local/bin/kubectl
+        rm -f /tmp/oc.tar.gz
+        oc version --client
+
+        # Read proxy config (must be after kubectl is installed)
+        PROXY_HOST=""
+        PROXY_PORT="3128"
+        PROXY_IP=""
+        if [[ -n "${PROXY_SECRET}" ]]; then
+          if kubectl get secret "${PROXY_SECRET}" > /dev/null 2>&1; then
+            PROXY_HOST=$(kubectl get secret "${PROXY_SECRET}" -o jsonpath='{.data.PROXY_HOST}' 2>/dev/null | base64 -d 2>/dev/null || true)
+            PROXY_PORT=$(kubectl get secret "${PROXY_SECRET}" -o jsonpath='{.data.PROXY_PORT}' 2>/dev/null | base64 -d 2>/dev/null || echo "3128")
+            PROXY_IP=$(kubectl get secret "${PROXY_SECRET}" -o jsonpath='{.data.PROXY_IP}' 2>/dev/null | base64 -d 2>/dev/null || true)
+          else
+            echo "⚠️ Proxy secret '${PROXY_SECRET}' not found, skipping proxy configuration"
+          fi
+        fi
+
+        echo "=========================================="
+        echo "OSSM3 Configure Multi-Stack SAP Service Meshes (topology B)"
+        echo "=========================================="
+        echo "Hosted Cluster: ${CLUSTER_NAME}"
+        echo "Cluster Namespace: ${CLUSTER_NS}"
+        echo "Per stack N: namespace istio-system-sap-edge-N, Istio sap-mesh-istio-N, istio-discovery=sap-edge-mesh-N"
+        if [[ -n "${PROXY_HOST}" ]]; then
+          echo "Corporate Proxy: ${PROXY_HOST}:${PROXY_PORT} (${PROXY_IP})"
+        else
+          echo "Corporate Proxy: disabled"
+        fi
+        echo "=========================================="
+
+        # Configure hub cluster kubeconfig if provided
+        if [[ -n "${HUB_KUBECONFIG_SECRET}" ]]; then
+          echo "🔐 Extracting hub cluster kubeconfig from secret: ${HUB_KUBECONFIG_SECRET}..."
+          HUB_KUBECONFIG="/tmp/hub-kubeconfig"
+          if kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.kubeconfig}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: kubeconfig)"
+          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.config}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: config)"
+          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.value}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+            echo "✅ Kubeconfig extracted (key: value)"
+          else
+            echo "❌ Failed to extract kubeconfig from secret '${HUB_KUBECONFIG_SECRET}'"
+            echo "   Secret should have kubeconfig data under key 'kubeconfig', 'config', or 'value'"
+            exit 1
+          fi
+          chmod 600 "${HUB_KUBECONFIG}"
+          export KUBECONFIG="${HUB_KUBECONFIG}"
+          echo "✅ Using hub kubeconfig for cluster operations"
+          oc whoami
+        else
+          echo "ℹ️  No hub kubeconfig secret provided, using in-cluster service account"
+        fi
+
+        # Extract kubeconfig for hosted cluster
+        echo "🔐 Extracting kubeconfig for hosted cluster..."
+        KUBECONFIG_SECRET="${CLUSTER_NAME}-admin-kubeconfig"
+
+        if ! oc get secret "${KUBECONFIG_SECRET}" -n "${CLUSTER_NS}" > /dev/null 2>&1; then
+          echo "❌ Kubeconfig secret '${KUBECONFIG_SECRET}' not found in namespace '${CLUSTER_NS}'"
+          exit 1
+        fi
+
+        HOSTED_KUBECONFIG="/tmp/hosted-kubeconfig"
+        oc get secret "${KUBECONFIG_SECRET}" -n "${CLUSTER_NS}" \
+          -o jsonpath='{.data.kubeconfig}' | base64 -d > "${HOSTED_KUBECONFIG}"
+        chmod 600 "${HOSTED_KUBECONFIG}"
+
+        export KUBECONFIG="${HOSTED_KUBECONFIG}"
+        [[ -f "$(workspaces.source.path)/.kubeconfig-rewrite.sh" ]] && source "$(workspaces.source.path)/.kubeconfig-rewrite.sh" "${HOSTED_KUBECONFIG}"
+
+        echo "🔍 Verifying access to hosted cluster..."
+        oc get nodes
+        echo "✅ Successfully connected to hosted cluster"
+
+        # --- Discover Edge Node stacks (keep identical in ossm3-configure-multi-stack-mesh and ossm3-prepare-namespaces-multi-stack) ---
+        # Stack N = the SAP namespaces (edgelm.sap.com/product=edgelm) named <role>-N.
+        # Fails on a name without -N, a stack without edgelm-N, a namespace without or a
+        # stack with more than one edgelm.sap.com/edge-node-id, or two stacks sharing one.
+        echo ""
+        echo "🔍 Discovering Edge Node stacks (edgelm.sap.com/product=edgelm)..."
+        SAP_NS=$(oc get namespace -l edgelm.sap.com/product=edgelm -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.metadata.labels.edgelm\.sap\.com/edge-node-id}{"\n"}{end}' | sort -V)
+        STACKS=$(awk 'function err(m) { print "❌ " m > "/dev/stderr"; bad = 1 }
+          NF == 0 { next }
+          { n = $1; if (!sub(/.*-/, "", n) || n !~ /^[0-9]+$/) { err("SAP namespace " $1 " has no -<N> stack suffix"); next } }
+          $2 == "" { err("SAP namespace " $1 " has no edgelm.sap.com/edge-node-id label"); next }
+          !(n in id) { id[n] = $2; first[n] = $1 }
+          id[n] != $2 { err("Stack " n ": " $1 " has edgelm.sap.com/edge-node-id " $2 ", " first[n] " has " id[n]) }
+          $1 == "edgelm-" n { elm[n] = 1 }
+          END { for (n in id) { if (!(n in elm)) err("Stack " n " has no edgelm-" n " namespace")
+                  for (m in id) if (m < n && id[m] == id[n]) err("Stacks " m " and " n " share edgelm.sap.com/edge-node-id " id[n] " (one Edge Node is topology A)") }
+                if (bad) exit 1
+                for (n in id) print n }' <<< "${SAP_NS}" | sort -n | xargs) || exit 1
+        if [[ -z "${STACKS}" ]]; then
+          echo "❌ No namespaces labeled edgelm.sap.com/product=edgelm found (created by the restricted-resources bundles)"
+          exit 1
+        fi
+        awk '{ print "   " $0 }' <<< "${SAP_NS}"
+        echo "✅ Stacks: ${STACKS}"
+        printf '%s' "${STACKS}" > "$(results.stacks.path)"
+        # --- End of stack discovery ---
+
+        # --- Wait for OSSM3 CRDs to be available ---
+        echo ""
+        echo "⏳ Waiting for OSSM3 CRDs to be registered..."
+        MAX_RETRIES=30
+        RETRY_INTERVAL=30
+        for CRD in "istiocnis.sailoperator.io" "istios.sailoperator.io"; do
+          for i in $(seq 1 ${MAX_RETRIES}); do
+            if oc get crd "${CRD}" > /dev/null 2>&1; then
+              echo "   ✅ CRD ${CRD} is available"
+              break
+            fi
+            if [[ ${i} -eq ${MAX_RETRIES} ]]; then
+              echo "   ❌ CRD ${CRD} not found after $((MAX_RETRIES * RETRY_INTERVAL)) seconds"
+              exit 1
+            fi
+            echo "   Attempt ${i}/${MAX_RETRIES}: CRD ${CRD} not ready, retrying in ${RETRY_INTERVAL}s..."
+            sleep ${RETRY_INTERVAL}
+          done
+        done
+        echo "✅ All OSSM3 CRDs are available"
+
+        # --- Create CNI namespace and resource (cluster-wide, shared by all stacks) ---
+        echo ""
+        echo "📦 Creating istio-cni namespace..."
+        oc create namespace istio-cni --dry-run=client -o yaml | oc apply -f -
+
+        echo ""
+        echo "🔧 Creating IstioCNI resource..."
+        cat <<EOF | oc apply -f -
+        apiVersion: sailoperator.io/v1
+        kind: IstioCNI
+        metadata:
+          name: default
+          namespace: istio-cni
+        spec:
+          namespace: istio-cni
+        EOF
+        echo "✅ IstioCNI resource created"
+
+        # --- One dedicated Istio control plane per stack ---
+        # With a corporate proxy, sidecars capture DNS so the proxy ServiceEntry resolves.
+        PROXY_DEFAULT_CONFIG=""
+        if [[ -n "${PROXY_HOST}" ]]; then
+          PROXY_DEFAULT_CONFIG='
+              defaultConfig:
+                proxyMetadata:
+                  ISTIO_META_DNS_CAPTURE: "true"
+                  ISTIO_META_DNS_AUTO_ALLOCATE: "true"'
+        fi
+        for N in ${STACKS}; do
+          MESH_NS="istio-system-sap-edge-${N}"
+          MESH_NAME="sap-mesh-istio-${N}"
+          DISCOVERY_LABEL="sap-edge-mesh-${N}"
+          echo ""
+          echo "📦 Stack ${N}: creating control plane namespace ${MESH_NS}..."
+          oc create namespace "${MESH_NS}" --dry-run=client -o yaml | oc apply -f -
+          echo "🔧 Stack ${N}: creating Istio control plane '${MESH_NAME}' (istio-discovery=${DISCOVERY_LABEL}${PROXY_HOST:+, corporate proxy support})..."
+          cat <<EOF | oc apply -f -
+        apiVersion: sailoperator.io/v1
+        kind: Istio
+        metadata:
+          name: ${MESH_NAME}
+          namespace: ${MESH_NS}
+        spec:
+          namespace: ${MESH_NS}
+          values:
+            meshConfig:
+              discoverySelectors:
+                - matchLabels:
+                    istio-discovery: ${DISCOVERY_LABEL}${PROXY_DEFAULT_CONFIG}
+        EOF
+          echo "🏷️ Stack ${N}: labeling ${MESH_NS} for mesh discovery..."
+          oc label namespace "${MESH_NS}" istio-discovery="${DISCOVERY_LABEL}" --overwrite
+        done
+        echo "✅ Istio control plane resources created"
+
+        # --- No two control planes may select the same namespaces (KBA 7149262 "Keep Mesh Assignments Separate") ---
+        echo ""
+        echo "🔍 Discovery selectors of all Istio resources (name: istio-discovery values):"
+        SELECTORS=$(oc get istios.sailoperator.io -A -o jsonpath='{range .items[*]}{.metadata.name}{":"}{range .spec.values.meshConfig.discoverySelectors[*]}{" "}{.matchLabels.istio-discovery}{end}{"\n"}{end}')
+        awk 'NF == 0 { next }
+          { name = $1; sub(/:$/, "", name); print "   " $0 }
+          NF == 1 { print "   ⚠️ " name " has no istio-discovery selector: check that it does not select SAP namespaces" }
+          { for (i = 2; i <= NF; i++) { if ($i in owner) { print "❌ Istio " owner[$i] " and " name " both select istio-discovery=" $i; bad = 1 } else owner[$i] = name } }
+          END { exit bad }' <<< "${SELECTORS}" || exit 1
+        echo "✅ No overlapping istio-discovery selectors"
+
+        # --- Create ServiceEntry for corporate proxy in every stack's ELM namespace (if configured) ---
+        if [[ -n "${PROXY_HOST}" ]]; then
+          # Build addresses array from comma-separated IPs
+          ADDRESSES=""
+          for ip in ${PROXY_IP//,/ }; do
+            ADDRESSES="${ADDRESSES}
+            - ${ip}"
+          done
+          for N in ${STACKS}; do
+            echo ""
+            echo "🌐 Stack ${N}: creating ServiceEntry for corporate proxy in edgelm-${N}..."
+            cat <<EOF | oc apply -f -
+        apiVersion: networking.istio.io/v1alpha3
+        kind: ServiceEntry
+        metadata:
+          name: allow-http-proxy
+          namespace: edgelm-${N}
+        spec:
+          hosts:
+            - ${PROXY_HOST}
+          addresses:${ADDRESSES}
+          ports:
+            - number: ${PROXY_PORT}
+              name: tcp-proxy-tunnel
+              protocol: TCP
+          location: MESH_EXTERNAL
+          resolution: NONE
+        EOF
+          done
+          echo "✅ ServiceEntry for proxy created in every stack's ELM namespace"
+        fi
+
+        # --- Wait for every control plane to be ready ---
+        for N in ${STACKS}; do
+          MESH_NS="istio-system-sap-edge-${N}"
+          MESH_NAME="sap-mesh-istio-${N}"
+          echo ""
+          echo "⏳ Stack ${N}: waiting for Istio control plane '${MESH_NAME}' to become ready (timeout: 600s)..."
+          if oc wait --for=condition=Ready "istio/${MESH_NAME}" -n "${MESH_NS}" --timeout=600s; then
+            echo "✅ Stack ${N}: Istio control plane is ready"
+          else
+            echo "❌ Stack ${N}: Istio control plane did not become ready within 600s"
+            echo ""
+            echo "   Istio status:"
+            oc get "istio/${MESH_NAME}" -n "${MESH_NS}" -o yaml || true
+            echo ""
+            echo "   Pods in ${MESH_NS}:"
+            oc get pods -n "${MESH_NS}" || true
+            exit 1
+          fi
+        done
+
+        # --- Verify IstioRevisions and components ---
+        echo ""
+        echo "🔍 Verifying IstioRevisions..."
+        oc get istiorevisions || true
+        for N in ${STACKS}; do
+          echo ""
+          echo "   Pods in istio-system-sap-edge-${N}:"
+          oc get pods -n "istio-system-sap-edge-${N}"
+        done
+        echo ""
+        echo "   Pods in istio-cni:"
+        oc get pods -n istio-cni
+
+        echo ""
+        echo "=========================================="
+        echo "✅ Multi-stack SAP Service Mesh configuration completed"
+        for N in ${STACKS}; do
+          echo "   Stack ${N}: Istio sap-mesh-istio-${N} in istio-system-sap-edge-${N}, selects istio-discovery=sap-edge-mesh-${N}"
+        done
+        echo "   Next: ossm3-prepare-namespaces-multi-stack labels each stack's namespaces"
+        echo "=========================================="
