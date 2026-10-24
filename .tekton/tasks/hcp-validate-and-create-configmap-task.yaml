@@ -23,6 +23,18 @@ spec:
       type: string
       description: "Name of the Secret containing kubeconfig for hub cluster (optional)"
       default: ""
+    - name: gatewayNamespace
+      type: string
+      description: "Namespace containing istio-ingressgateway (optional; defaults to search order istio-system → istio-gateways → all namespaces)"
+      default: ""
+    - name: hostPrefix
+      type: string
+      description: "Host prefix for EIC ingress (e.g., 'eic', 'eic-2')"
+      default: "eic"
+    - name: configMapName
+      type: string
+      description: "ConfigMap name for cluster info (optional; defaults to cluster-info-hcp-<cluster>)"
+      default: ""
   workspaces:
     - name: source
   results:
@@ -40,9 +52,22 @@ spec:
           value: "$(params.hostedClusterNamespace)"
         - name: HUB_KUBECONFIG_SECRET
           value: "$(params.hubKubeconfigSecretName)"
+        - name: GATEWAY_NAMESPACE
+          value: "$(params.gatewayNamespace)"
+        - name: HOST_PREFIX
+          value: "$(params.hostPrefix)"
+        - name: CONFIGMAP_NAME
+          value: "$(params.configMapName)"
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
+
+        HOSTED_CLUSTER_NAME="$(params.hostedClusterName)"
+        HOSTED_CLUSTER_NAMESPACE="$(params.hostedClusterNamespace)"
+        HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
+        GATEWAY_NAMESPACE="$(params.gatewayNamespace)"
+        HOST_PREFIX="$(params.hostPrefix)"
+        CONFIGMAP_NAME="$(params.configMapName)"
 
         echo "✅ Validating HCP hosted cluster and creating endpoint test ConfigMap..."
         echo "=============================================="
@@ -139,43 +164,67 @@ spec:
         echo ""
         echo "📋 Getting LoadBalancer IP from istio-ingressgateway..."
         INGRESS_IP=""
+        GATEWAY_NS_FOUND=""
 
-        # Try istio-system namespace first
-        if oc get svc istio-ingressgateway -n istio-system &>/dev/null; then
-          echo "Found istio-ingressgateway in istio-system namespace"
-          INGRESS_IP=$(oc get svc istio-ingressgateway -n istio-system \
+        if [[ -n "${GATEWAY_NAMESPACE}" ]]; then
+          # If gatewayNamespace is specified, look ONLY in that namespace
+          echo "Looking for istio-ingressgateway in specified namespace: ${GATEWAY_NAMESPACE}"
+          if ! oc get svc istio-ingressgateway -n "${GATEWAY_NAMESPACE}" &>/dev/null; then
+            echo "❌ istio-ingressgateway not found in namespace ${GATEWAY_NAMESPACE}"
+            exit 1
+          fi
+          GATEWAY_NS_FOUND="${GATEWAY_NAMESPACE}"
+          echo "Found istio-ingressgateway in ${GATEWAY_NAMESPACE} namespace"
+          INGRESS_IP=$(oc get svc istio-ingressgateway -n "${GATEWAY_NAMESPACE}" \
             -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
 
           if [[ -z "${INGRESS_IP}" ]]; then
             # Try hostname instead (for cloud providers)
+            INGRESS_IP=$(oc get svc istio-ingressgateway -n "${GATEWAY_NAMESPACE}" \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+          fi
+        else
+          # Default search order: istio-system → istio-gateways → all namespaces
+          # Try istio-system namespace first
+          if oc get svc istio-ingressgateway -n istio-system &>/dev/null; then
+            echo "Found istio-ingressgateway in istio-system namespace"
+            GATEWAY_NS_FOUND="istio-system"
             INGRESS_IP=$(oc get svc istio-ingressgateway -n istio-system \
-              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
-          fi
-        fi
-
-        # Try istio-gateways namespace if not found
-        if [[ -z "${INGRESS_IP}" ]] && oc get svc istio-ingressgateway -n istio-gateways &>/dev/null; then
-          echo "Found istio-ingressgateway in istio-gateways namespace"
-          INGRESS_IP=$(oc get svc istio-ingressgateway -n istio-gateways \
-            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
-
-          if [[ -z "${INGRESS_IP}" ]]; then
-            INGRESS_IP=$(oc get svc istio-ingressgateway -n istio-gateways \
-              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
-          fi
-        fi
-
-        # Fallback: try any service named istio-ingressgateway
-        if [[ -z "${INGRESS_IP}" ]]; then
-          echo "Searching for istio-ingressgateway in all namespaces..."
-          ISTIO_SVC=$(oc get svc --all-namespaces -o json | jq -r '.items[] | select(.metadata.name=="istio-ingressgateway") | "\(.metadata.namespace)"' | head -1)
-          if [[ -n "${ISTIO_SVC}" ]]; then
-            echo "Found istio-ingressgateway in ${ISTIO_SVC} namespace"
-            INGRESS_IP=$(oc get svc istio-ingressgateway -n "${ISTIO_SVC}" \
               -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+
             if [[ -z "${INGRESS_IP}" ]]; then
-              INGRESS_IP=$(oc get svc istio-ingressgateway -n "${ISTIO_SVC}" \
+              # Try hostname instead (for cloud providers)
+              INGRESS_IP=$(oc get svc istio-ingressgateway -n istio-system \
                 -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+            fi
+          fi
+
+          # Try istio-gateways namespace if not found
+          if [[ -z "${INGRESS_IP}" ]] && oc get svc istio-ingressgateway -n istio-gateways &>/dev/null; then
+            echo "Found istio-ingressgateway in istio-gateways namespace"
+            GATEWAY_NS_FOUND="istio-gateways"
+            INGRESS_IP=$(oc get svc istio-ingressgateway -n istio-gateways \
+              -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+
+            if [[ -z "${INGRESS_IP}" ]]; then
+              INGRESS_IP=$(oc get svc istio-ingressgateway -n istio-gateways \
+                -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+            fi
+          fi
+
+          # Fallback: try any service named istio-ingressgateway
+          if [[ -z "${INGRESS_IP}" ]]; then
+            echo "Searching for istio-ingressgateway in all namespaces..."
+            ISTIO_SVC=$(oc get svc --all-namespaces -o json | jq -r '.items[] | select(.metadata.name=="istio-ingressgateway") | "\(.metadata.namespace)"' | head -1)
+            if [[ -n "${ISTIO_SVC}" ]]; then
+              echo "Found istio-ingressgateway in ${ISTIO_SVC} namespace"
+              GATEWAY_NS_FOUND="${ISTIO_SVC}"
+              INGRESS_IP=$(oc get svc istio-ingressgateway -n "${ISTIO_SVC}" \
+                -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+              if [[ -z "${INGRESS_IP}" ]]; then
+                INGRESS_IP=$(oc get svc istio-ingressgateway -n "${ISTIO_SVC}" \
+                  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+              fi
             fi
           fi
         fi
@@ -196,8 +245,8 @@ spec:
         # Build the EIC host URL
         EIC_HOST=""
         if [[ -n "${INGRESS_DOMAIN}" ]]; then
-          # Standard EIC pattern: eic.{ingress-domain}
-          EIC_HOST="eic.${INGRESS_DOMAIN}"
+          # EIC pattern: {hostPrefix}.{ingress-domain}
+          EIC_HOST="${HOST_PREFIX}.${INGRESS_DOMAIN}"
         fi
 
         echo "  EIC Host: ${EIC_HOST:-'Not configured'}"
@@ -209,10 +258,23 @@ spec:
         echo "   Managed cluster node count: ${NODE_COUNT}"
 
         HPA_NAMESPACE=""
-        if oc get hpa istio-ingressgateway -n istio-system &>/dev/null; then
-          HPA_NAMESPACE="istio-system"
-        elif oc get hpa istio-ingressgateway -n istio-gateways &>/dev/null; then
-          HPA_NAMESPACE="istio-gateways"
+        if [[ -n "${GATEWAY_NAMESPACE}" ]]; then
+          # If gatewayNamespace is specified, look only there
+          if oc get hpa istio-ingressgateway -n "${GATEWAY_NAMESPACE}" &>/dev/null; then
+            HPA_NAMESPACE="${GATEWAY_NAMESPACE}"
+          fi
+        elif [[ -n "${GATEWAY_NS_FOUND}" ]]; then
+          # Use the namespace where we found the gateway service
+          if oc get hpa istio-ingressgateway -n "${GATEWAY_NS_FOUND}" &>/dev/null; then
+            HPA_NAMESPACE="${GATEWAY_NS_FOUND}"
+          fi
+        else
+          # Default search order
+          if oc get hpa istio-ingressgateway -n istio-system &>/dev/null; then
+            HPA_NAMESPACE="istio-system"
+          elif oc get hpa istio-ingressgateway -n istio-gateways &>/dev/null; then
+            HPA_NAMESPACE="istio-gateways"
+          fi
         fi
 
         if [[ -n "${HPA_NAMESPACE}" ]]; then
@@ -296,7 +358,9 @@ spec:
         # Create ConfigMap for endpoint tests on the pipeline cluster
         # (unset KUBECONFIG to use in-cluster SA, so ConfigMap is accessible
         # by endpoint test tasks running on the pipeline cluster)
-        CONFIGMAP_NAME="cluster-info-hcp-${HOSTED_CLUSTER_NAME}"
+        if [[ -z "${CONFIGMAP_NAME}" ]]; then
+          CONFIGMAP_NAME="cluster-info-hcp-${HOSTED_CLUSTER_NAME}"
+        fi
         echo ""
         echo "📝 Creating ConfigMap '${CONFIGMAP_NAME}' for endpoint tests..."
 

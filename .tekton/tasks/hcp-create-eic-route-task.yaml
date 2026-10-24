@@ -26,6 +26,18 @@ spec:
       type: string
       description: "Name of the Secret containing kubeconfig for hub cluster (optional, uses in-cluster config if empty)"
       default: ""
+    - name: gatewayNamespace
+      type: string
+      description: "Namespace containing istio-ingressgateway (optional; defaults to search order istio-gateways → istio-system → all namespaces)"
+      default: ""
+    - name: hostPrefix
+      type: string
+      description: "Host prefix for EIC Route (e.g., 'eic', 'eic-2')"
+      default: "eic"
+    - name: routeConfigMapName
+      type: string
+      description: "ConfigMap name for route info (optional; defaults to route-info-hcp-<cluster>)"
+      default: ""
   workspaces:
     - name: source
   steps:
@@ -40,6 +52,9 @@ spec:
         CLUSTER_NAME="$(params.hostedClusterName)"
         CLUSTER_NS="$(params.hostedClusterNamespace)"
         HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
+        GATEWAY_NAMESPACE="$(params.gatewayNamespace)"
+        HOST_PREFIX="$(params.hostPrefix)"
+        ROUTE_CONFIGMAP_NAME="$(params.routeConfigMapName)"
 
         echo "=========================================="
         echo "HCP Create EIC Route Task"
@@ -98,18 +113,29 @@ spec:
         echo ""
         echo "🔍 Determining gateway namespace..."
         GW_NS=""
-        if oc get svc istio-ingressgateway -n istio-gateways &>/dev/null; then
-          GW_NS="istio-gateways"
-        elif oc get svc istio-ingressgateway -n istio-system &>/dev/null; then
-          GW_NS="istio-system"
+        if [[ -n "${GATEWAY_NAMESPACE}" ]]; then
+          # If gatewayNamespace is specified, look ONLY in that namespace
+          echo "Looking for istio-ingressgateway in specified namespace: ${GATEWAY_NAMESPACE}"
+          if ! oc get svc istio-ingressgateway -n "${GATEWAY_NAMESPACE}" &>/dev/null; then
+            echo "❌ istio-ingressgateway not found in namespace ${GATEWAY_NAMESPACE}"
+            exit 1
+          fi
+          GW_NS="${GATEWAY_NAMESPACE}"
         else
-          echo "🔍 Searching for istio-ingressgateway in all namespaces..."
-          GW_NS=$(oc get svc --all-namespaces -o json | jq -r '.items[] | select(.metadata.name=="istio-ingressgateway") | .metadata.namespace' | head -1)
-        fi
+          # Default search order: istio-gateways → istio-system → all namespaces
+          if oc get svc istio-ingressgateway -n istio-gateways &>/dev/null; then
+            GW_NS="istio-gateways"
+          elif oc get svc istio-ingressgateway -n istio-system &>/dev/null; then
+            GW_NS="istio-system"
+          else
+            echo "🔍 Searching for istio-ingressgateway in all namespaces..."
+            GW_NS=$(oc get svc --all-namespaces -o json | jq -r '.items[] | select(.metadata.name=="istio-ingressgateway") | .metadata.namespace' | head -1)
+          fi
 
-        if [[ -z "${GW_NS}" ]]; then
-          echo "❌ Could not find istio-ingressgateway service in any namespace"
-          exit 1
+          if [[ -z "${GW_NS}" ]]; then
+            echo "❌ Could not find istio-ingressgateway service in any namespace"
+            exit 1
+          fi
         fi
         echo "✅ Gateway namespace: ${GW_NS}"
 
@@ -137,7 +163,7 @@ spec:
         echo "✅ Ingress domain: ${INGRESS_DOMAIN}"
 
         # Build Route hostname
-        ROUTE_HOST="eic.${INGRESS_DOMAIN}"
+        ROUTE_HOST="${HOST_PREFIX}.${INGRESS_DOMAIN}"
         echo "✅ Route hostname: ${ROUTE_HOST}"
 
         # Create passthrough Route
@@ -178,7 +204,11 @@ spec:
         # Create ConfigMap with Route info for Route-based endpoint tests
         echo ""
         echo "📦 Creating ConfigMap with Route info..."
-        CONFIGMAP_NAME="route-info-hcp-${CLUSTER_NAME}"
+        if [[ -z "${ROUTE_CONFIGMAP_NAME}" ]]; then
+          CONFIGMAP_NAME="route-info-hcp-${CLUSTER_NAME}"
+        else
+          CONFIGMAP_NAME="${ROUTE_CONFIGMAP_NAME}"
+        fi
         cat <<EOCM | oc apply -f -
         apiVersion: v1
         kind: ConfigMap
