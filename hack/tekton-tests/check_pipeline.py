@@ -223,12 +223,12 @@ def check_pipeline_run(pipeline_run, pipelines):
     """Check a PipelineRun for violations."""
     violations = []
 
-    # Handle PipelineRuns with missing or templated metadata
-    if "metadata" not in pipeline_run or "name" not in pipeline_run["metadata"]:
-        # Skip PipelineRuns without proper metadata (e.g., with PaC templating)
-        return violations
-
-    run_name = pipeline_run["metadata"]["name"]
+    # Pipelines-as-Code run files only set metadata.generateName (templated,
+    # e.g. "hcp-x-pr{{ pull_request_number }}-"); check them under that label.
+    metadata = pipeline_run.get("metadata") or {}
+    run_name = (
+        metadata.get("name") or metadata.get("generateName") or "<unnamed PipelineRun>"
+    )
 
     # Get pipeline reference
     pipeline_ref = (
