@@ -87,7 +87,7 @@ spec:
       default: ""
     - name: cellCount
       type: string
-      description: "Number of EIC cells to validate (2 = edge-icell-1 and edge-icell-2; 1 skips every cell2-* task)"
+      description: "Number of EIC cells to validate (2 = edge-icell-1 and edge-icell-2; 1 skips every cell2-* task). \"1\" also requires restrictedResourcesComponents without edge-icell-2 (e.g. 'elm edge-icell-1'): apply-rbac fails on a listed folder without a zip."
       default: "2"
     # --- Corporate proxy parameters ---
     # Proxy config is read from a Secret named {hubClusterName}-proxy-config
@@ -447,8 +447,11 @@ spec:
         - name: source
           workspace: source
 
+    # cell2-deploy-redis also waits for cell1-deploy-redis: both apply the same
+    # cluster-scoped Redis Enterprise SCC, and two concurrent creates can fail
+    # with AlreadyExists. Valkey installs only namespaced objects and stays parallel.
     - name: cell2-deploy-redis
-      runAfter: [generate-sa-based-kubeconfig]
+      runAfter: [generate-sa-based-kubeconfig, cell1-deploy-redis]
       when:
         - input: "$(params.datastoreType)"
           operator: in
@@ -589,7 +592,7 @@ spec:
             Dedicated OSSM3 mesh setup, shared PostgreSQL and per-cell Redis/Valkey deployed successfully.
             Credentials have been displayed (cell1-/cell2-get-all-accesses logs) and stored per cell in
             Secrets 'eic-credentials-hcp-$(params.hostedClusterName)-eic-1' and
-            'eic-credentials-hcp-$(params.hostedClusterName)-eic-2' (pipeline namespace) (eic-2 skipped when cellCount=1).
+            'eic-credentials-hcp-$(params.hostedClusterName)-eic-2' (pipeline namespace; eic-2 skipped when cellCount=1).
             Restricted kubeconfig generated.
 
             Cluster: $(params.hostedClusterName)
@@ -1716,19 +1719,19 @@ spec:
             * PostgreSQL deployment (shared): Completed
             * Redis/Valkey deployment (per cell): Completed
             * Validation, ConfigMap and Route setup (per cell): Completed
-            * Endpoint tests (3 rounds, per cell): All Passed
+            * Endpoint tests (3 rounds, per enabled cell): All Passed (cell 2 skipped when cellCount=1)
 
             *Executed Tests (Round 1 - LoadBalancer):*
             * Cell 1: cell1-test-httpbinipfilter, cell1-test-http-test1, cell1-test-http-testelster, cell1-test-slvredis, cell1-test-ratelimit-slvredis
-            * Cell 2: cell2-test-httpbinipfilter, cell2-test-http-test1, cell2-test-http-testelster, cell2-test-slvredis, cell2-test-ratelimit-slvredis
+            * Cell 2: cell2-test-httpbinipfilter, cell2-test-http-test1, cell2-test-http-testelster, cell2-test-slvredis, cell2-test-ratelimit-slvredis (skipped when cellCount=1)
 
             *Executed Tests (Round 2 - LoadBalancer):*
             * Cell 1: cell1-test-httpbinipfilter-round2, cell1-test-http-test1-round2, cell1-test-http-testelster-round2, cell1-test-slvredis-round2, cell1-test-ratelimit-slvredis-round2
-            * Cell 2: cell2-test-httpbinipfilter-round2, cell2-test-http-test1-round2, cell2-test-http-testelster-round2, cell2-test-slvredis-round2, cell2-test-ratelimit-slvredis-round2
+            * Cell 2: cell2-test-httpbinipfilter-round2, cell2-test-http-test1-round2, cell2-test-http-testelster-round2, cell2-test-slvredis-round2, cell2-test-ratelimit-slvredis-round2 (skipped when cellCount=1)
 
             *Executed Tests (Round 3 - OpenShift Route):*
             * Cell 1: cell1-test-httpbinipfilter-route, cell1-test-http-test1-route, cell1-test-http-testelster-route, cell1-test-slvredis-route, cell1-test-ratelimit-slvredis-route
-            * Cell 2: cell2-test-httpbinipfilter-route, cell2-test-http-test1-route, cell2-test-http-testelster-route, cell2-test-slvredis-route, cell2-test-ratelimit-slvredis-route
+            * Cell 2: cell2-test-httpbinipfilter-route, cell2-test-http-test1-route, cell2-test-http-testelster-route, cell2-test-slvredis-route, cell2-test-ratelimit-slvredis-route (skipped when cellCount=1)
 
             *Pipeline Details:*
             * *Repository:* $(params.repoUrl)
