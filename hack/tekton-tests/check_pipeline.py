@@ -17,41 +17,7 @@ import yaml
 # Allowlist for existing violations in pipelines not touched by this plan
 # Format: (pipeline_name, rule, item)
 ALLOWLIST = [
-    # git-clone task optional workspace bindings (not used in our pipelines)
-    ("aro-edgelm-validation-pipeline", "workspace", "fetch-repository.basic-auth"),
-    ("aro-edgelm-validation-pipeline", "workspace", "fetch-repository.ssl-ca-directory"),
-    ("aro-edgelm-validation-pipeline", "workspace", "fetch-repository.ssh-directory"),
-    ("aro-eic-full-test-pipeline", "workspace", "fetch-repository.basic-auth"),
-    ("aro-eic-full-test-pipeline", "workspace", "fetch-repository.ssl-ca-directory"),
-    ("aro-eic-full-test-pipeline", "workspace", "fetch-repository.ssh-directory"),
-    ("aro-validation-pipeline", "workspace", "fetch-repository.basic-auth"),
-    ("aro-validation-pipeline", "workspace", "fetch-repository.ssl-ca-directory"),
-    ("aro-validation-pipeline", "workspace", "fetch-repository.ssh-directory"),
-    ("endpoint-test-pipeline", "workspace", "fetch-repository.basic-auth"),
-    ("endpoint-test-pipeline", "workspace", "fetch-repository.ssl-ca-directory"),
-    ("endpoint-test-pipeline", "workspace", "fetch-repository.ssh-directory"),
-    ("hcp-cloud-connector-validation-pipeline", "workspace", "fetch-repository.basic-auth"),
-    ("hcp-cloud-connector-validation-pipeline", "workspace", "fetch-repository.ssl-ca-directory"),
-    ("hcp-cloud-connector-validation-pipeline", "workspace", "fetch-repository.ssh-directory"),
-    ("hcp-kubevirt-validation-pipeline", "workspace", "fetch-repository.basic-auth"),
-    ("hcp-kubevirt-validation-pipeline", "workspace", "fetch-repository.ssl-ca-directory"),
-    ("hcp-kubevirt-validation-pipeline", "workspace", "fetch-repository.ssh-directory"),
-    ("hcp-ossm3-dedicated-validation-pipeline", "workspace", "fetch-repository.basic-auth"),
-    ("hcp-ossm3-dedicated-validation-pipeline", "workspace", "fetch-repository.ssl-ca-directory"),
-    ("hcp-ossm3-dedicated-validation-pipeline", "workspace", "fetch-repository.ssh-directory"),
-    ("hcp-ossm3-validation-pipeline", "workspace", "fetch-repository.basic-auth"),
-    ("hcp-ossm3-validation-pipeline", "workspace", "fetch-repository.ssl-ca-directory"),
-    ("hcp-ossm3-validation-pipeline", "workspace", "fetch-repository.ssh-directory"),
-    ("rosa-edgelm-validation-pipeline", "workspace", "fetch-repository.basic-auth"),
-    ("rosa-edgelm-validation-pipeline", "workspace", "fetch-repository.ssl-ca-directory"),
-    ("rosa-edgelm-validation-pipeline", "workspace", "fetch-repository.ssh-directory"),
-    ("rosa-eic-full-test-pipeline", "workspace", "fetch-repository.basic-auth"),
-    ("rosa-eic-full-test-pipeline", "workspace", "fetch-repository.ssl-ca-directory"),
-    ("rosa-eic-full-test-pipeline", "workspace", "fetch-repository.ssh-directory"),
-    ("rosa-validation-pipeline", "workspace", "fetch-repository.basic-auth"),
-    ("rosa-validation-pipeline", "workspace", "fetch-repository.ssl-ca-directory"),
-    ("rosa-validation-pipeline", "workspace", "fetch-repository.ssh-directory"),
-    # ApprovalTasks with when (existing pattern, not fixed in this task)
+    # Pre-existing defect: ApprovalTask with when (violates memory doc; requires computed-timeout workaround)
     ("aro-edgelm-validation-pipeline", "ApprovalTask.when", "manual-approval-post-deployment"),
     ("aro-edgelm-validation-pipeline", "ApprovalTask.when", "approval-second-validation-round"),
     ("aro-eic-full-test-pipeline", "ApprovalTask.when", "approval-elm-eic-iflow-deployed"),
@@ -60,7 +26,7 @@ ALLOWLIST = [
     ("rosa-edgelm-validation-pipeline", "ApprovalTask.when", "approval-second-validation-round"),
     ("rosa-eic-full-test-pipeline", "ApprovalTask.when", "approval-elm-eic-iflow-deployed"),
     ("rosa-eic-full-test-pipeline", "ApprovalTask.when", "approval-second-test-round"),
-    # ROSA param issue (postgresAdminPassword was removed from task but still in pipeline)
+    # Pre-existing defect: postgresAdminPassword param removed from rosa-deploy-with-eic-services task but pipeline still passes it
     ("rosa-edgelm-validation-pipeline", "param.undeclared", "deploy-rosa.postgresAdminPassword"),
     ("rosa-validation-pipeline", "param.undeclared", "deploy-rosa.postgresAdminPassword"),
 ]
@@ -160,16 +126,18 @@ def check_pipeline(pipeline, tasks, cell_gates):
                                 f"{pipeline_name}: task '{task_name}' missing required param '{param_name}' for Task '{ref_name}'"
                             )
 
-                # Check workspaces
+                # Check workspaces (only required workspaces must be bound)
                 task_workspaces = {
-                    w["name"]
+                    w["name"]: w
                     for w in referenced_task.get("spec", {}).get("workspaces", [])
                 }
                 bound_workspaces = {
                     w["name"] for w in task.get("workspaces", [])
                 }
-                for ws_name in task_workspaces:
-                    if ws_name not in bound_workspaces:
+                for ws_name, ws_def in task_workspaces.items():
+                    # Only require binding if workspace is not optional
+                    is_optional = ws_def.get("optional", False)
+                    if not is_optional and ws_name not in bound_workspaces:
                         if (pipeline_name, "workspace", f"{task_name}.{ws_name}") not in ALLOWLIST:
                             violations.append(
                                 f"{pipeline_name}: task '{task_name}' missing workspace binding '{ws_name}' for Task '{ref_name}'"
