@@ -63,6 +63,10 @@ spec:
     - name: hubClusterName
       type: string
       description: "Name of the hub cluster (used to derive kubeconfig secret name: {hubClusterName}-kubeconfig)"
+    - name: nfsPersistenceSize
+      type: string
+      description: "NFS server provisioner PVC pool size"
+      default: "20Gi"
 
     # --- OSSM3 parameters ---
     - name: ossm3Channel
@@ -208,13 +212,30 @@ spec:
         - name: source
           workspace: source
 
+    # Step 3.5: Create NFS StorageClass (nfs-rwx) on the hosted cluster
+    - name: create-nfs-storageclass
+      runAfter: [wait-cluster-ready]
+      taskRef: { name: hcp-create-nfs-storageclass }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: nfsPersistenceSize
+          value: $(params.nfsPersistenceSize)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
     # =============================================
     # Phase 2: OSSM3 Dedicated Mesh Setup
     # =============================================
 
     # Step 4: Verify Service Mesh 3.x operators on hosted cluster
     - name: verify-operators
-      runAfter: [wait-cluster-ready]
+      runAfter: [create-nfs-storageclass]
       taskRef: { name: ossm3-verify-operators }
       params:
         - name: hostedClusterName
