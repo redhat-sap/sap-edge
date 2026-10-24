@@ -69,6 +69,61 @@ assert_called "create configmap cluster-info-hcp-c1 --from-literal=host=eic.apps
 
 echo "✅ PASS: configmap_defaults"
 
+# Test case: configmap_hpa_cross_namespace
+# Service in istio-gateways, HPA in istio-system → HPA should be found and patched
+echo ""
+echo "Test: configmap_hpa_cross_namespace"
+echo "--------------------------------------------"
+
+FAKE_OC_LOG=$(tmp_file)
+FAKE_OC_RULES=$(tmp_file)
+FAKE_OC_STDIN_DIR=$(tmp_dir)
+
+cat > "${FAKE_OC_RULES}" <<'EOF'
+get secret c1-admin-kubeconfig -n clusters*	0	{"data":{"kubeconfig":"YWJjCg=="}}
+get nodes*	0	node1\nnode2
+get clusterversion*	1
+get ingresscontroller default -n openshift-ingress-operator -o jsonpath*	0	apps.test.example
+get ingresscontroller default -n openshift-ingress-operator -o json*	0	{"status":{"domain":"apps.test.example"}}
+get svc istio-ingressgateway -n istio-system -o jsonpath=\{.status.loadBalancer.ingress\[0\].ip\}	0
+get svc istio-ingressgateway -n istio-system -o jsonpath=\{.status.loadBalancer.ingress\[0\].hostname\}	0
+get svc istio-ingressgateway -n istio-system	0
+get svc istio-ingressgateway -n istio-gateways -o jsonpath=\{.status.loadBalancer.ingress\[0\].ip\}	0	10.0.0.5
+get svc istio-ingressgateway -n istio-gateways	0
+get svc --all-namespaces -o json*	0	{"items":[{"metadata":{"name":"istio-ingressgateway","namespace":"istio-gateways"},"status":{"loadBalancer":{"ingress":[{"ip":"10.0.0.5"}]}}}]}
+get hpa istio-ingressgateway -n istio-system -o jsonpath=\{.spec.minReplicas\}	0	1
+get hpa istio-ingressgateway -n istio-system -o jsonpath=\{.spec.maxReplicas\}	0	1
+get hpa istio-ingressgateway -n istio-system	0
+patch hpa istio-ingressgateway -n istio-system*	0	patched
+get svc -n clusters-c1 -o json*	0	{"items":[{"metadata":{"name":"lb-10-0-0-5"},"status":{"loadBalancer":{"ingress":[{"ip":"10.0.0.5"}]}}}]}
+get svc lb-10-0-0-5 -n clusters-c1 -o jsonpath=\{.spec.externalTrafficPolicy\}	0	Cluster
+get svc lb-10-0-0-5 -n clusters-c1	0
+patch svc lb-10-0-0-5 -n clusters-c1*	0	patched
+delete configmap cluster-info-hcp-c1*	0	deleted
+create configmap cluster-info-hcp-c1*	0	configmap/cluster-info-hcp-c1 created
+get configmap cluster-info-hcp-c1 -o yaml*	0	name: cluster-info-hcp-c1
+EOF
+
+export FAKE_OC_LOG FAKE_OC_RULES FAKE_OC_STDIN_DIR
+
+RESULTS_DIR=$(tmp_dir)
+run_task ../../.tekton/tasks/hcp-validate-and-create-configmap-task.yaml \
+  --param hostedClusterName=c1 \
+  --param hostedClusterNamespace=clusters \
+  --results-dir "${RESULTS_DIR}" \
+  --from 'INGRESS_DOMAIN=' \
+  --to '# Generate summary' \
+  --drop '# Install' 'oc version --client' \
+  --drop '# Configure hub cluster kubeconfig' 'fi' \
+  --drop '# Extract kubeconfig for hosted cluster' 'Hosted cluster kubeconfig extracted'
+
+assert_rc 0
+# Verify HPA was looked up in istio-system (not istio-gateways where service is)
+assert_called "get hpa istio-ingressgateway -n istio-system"
+assert_called "patch hpa istio-ingressgateway -n istio-system"
+
+echo "✅ PASS: configmap_hpa_cross_namespace"
+
 # Test case: configmap_cell2
 # With gatewayNamespace=istio-gateways-2, hostPrefix=eic-2, configMapName=cluster-info-hcp-c1-2
 # → looks only in istio-gateways-2, creates configmap with host=eic-2.apps.test.example
@@ -126,6 +181,58 @@ assert_called "create configmap cluster-info-hcp-c1-2 --from-literal=host=eic-2.
 assert_called "get hpa istio-ingressgateway -n istio-gateways-2"
 
 echo "✅ PASS: configmap_cell2"
+
+# Test case: configmap_cell_hpa_isolated
+# With gatewayNamespace set, HPA lookup should ONLY check that namespace, not istio-system
+echo ""
+echo "Test: configmap_cell_hpa_isolated"
+echo "--------------------------------------------"
+
+FAKE_OC_LOG=$(tmp_file)
+FAKE_OC_RULES=$(tmp_file)
+FAKE_OC_STDIN_DIR=$(tmp_dir)
+
+cat > "${FAKE_OC_RULES}" <<'EOF'
+get secret c1-admin-kubeconfig -n clusters*	0	{"data":{"kubeconfig":"YWJjCg=="}}
+get nodes*	0	node1\nnode2
+get clusterversion*	1
+get ingresscontroller default -n openshift-ingress-operator -o jsonpath*	0	apps.test.example
+get ingresscontroller default -n openshift-ingress-operator -o json*	0	{"status":{"domain":"apps.test.example"}}
+get svc istio-ingressgateway -n istio-gateways-2 -o jsonpath=\{.status.loadBalancer.ingress\[0\].ip\}	0	10.0.0.5
+get svc istio-ingressgateway -n istio-gateways-2 -o jsonpath=\{.status.loadBalancer.ingress\[0\].hostname\}	0
+get svc istio-ingressgateway -n istio-gateways-2	0
+get hpa istio-ingressgateway -n istio-gateways-2	1
+get svc -n clusters-c1 -o json*	0	{"items":[{"metadata":{"name":"lb-10-0-0-5"},"status":{"loadBalancer":{"ingress":[{"ip":"10.0.0.5"}]}}}]}
+get svc lb-10-0-0-5 -n clusters-c1 -o jsonpath=\{.spec.externalTrafficPolicy\}	0	Cluster
+get svc lb-10-0-0-5 -n clusters-c1	0
+patch svc lb-10-0-0-5 -n clusters-c1*	0	patched
+delete configmap cluster-info-hcp-c1-2*	0	deleted
+create configmap cluster-info-hcp-c1-2*	0	configmap/cluster-info-hcp-c1-2 created
+get configmap cluster-info-hcp-c1-2 -o yaml*	0	name: cluster-info-hcp-c1-2
+EOF
+
+export FAKE_OC_LOG FAKE_OC_RULES FAKE_OC_STDIN_DIR
+
+RESULTS_DIR=$(tmp_dir)
+run_task ../../.tekton/tasks/hcp-validate-and-create-configmap-task.yaml \
+  --param hostedClusterName=c1 \
+  --param hostedClusterNamespace=clusters \
+  --param gatewayNamespace=istio-gateways-2 \
+  --param hostPrefix=eic-2 \
+  --param configMapName=cluster-info-hcp-c1-2 \
+  --results-dir "${RESULTS_DIR}" \
+  --from 'INGRESS_DOMAIN=' \
+  --to '# Generate summary' \
+  --drop '# Install' 'oc version --client' \
+  --drop '# Configure hub cluster kubeconfig' 'fi' \
+  --drop '# Extract kubeconfig for hosted cluster' 'Hosted cluster kubeconfig extracted'
+
+assert_rc 0
+# Verify HPA was looked up ONLY in istio-gateways-2, not istio-system
+assert_called "get hpa istio-ingressgateway -n istio-gateways-2"
+assert_not_called "get hpa istio-ingressgateway -n istio-system"
+
+echo "✅ PASS: configmap_cell_hpa_isolated"
 
 # Test case: route_defaults
 # No params → Route with host: eic.apps.test.example, ConfigMap route-info-hcp-c1
