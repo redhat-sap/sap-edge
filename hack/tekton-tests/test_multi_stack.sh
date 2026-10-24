@@ -53,11 +53,11 @@ base_rules() {
     "$(awk 'NR > 1 { printf "\\n" } { printf "%s", $0 }' <<< "$1")"
 }
 
-# Mesh task: CRDs present at once; Istio selectors as given ($1, default: disjoint).
+# Mesh task: CRDs present at once; existing Istio resources as "<name>: <istio-discovery values>"
+# lines ($1, default: none, i.e. a fresh cluster).
 mesh_rules() {
   printf 'get crd *\t0\tcrd\n'
-  printf 'get istios.sailoperator.io -A -o jsonpath=*\t0\t%s\n' \
-    "${1:-sap-mesh-istio-1: sap-edge-mesh-1\\nsap-mesh-istio-2: sap-edge-mesh-2}"
+  printf 'get istios.sailoperator.io -A -o jsonpath=*\t0\t%s\n' "${1:-}"
 }
 
 # Prepare task: active revisions from the Istio status, fresh bundle labels.
@@ -133,7 +133,10 @@ F=$(manifest_with '^kind: IstioCNI$')
 assert_file_contains "${F}" "^  name: default$"
 assert_file_contains "${F}" "^  namespace: istio-cni$"
 [[ "$(count_manifests '^kind: ServiceEntry$')" -eq 0 ]] || fail "no proxy: no ServiceEntry expected"
-assert_called "get istios.sailoperator.io -A -o jsonpath="
+# The selector check runs before anything is applied.
+CHECK_LINE=$(grep -n -m1 '^get istios.sailoperator.io -A -o jsonpath=' "${FAKE_OC_LOG}" | cut -d: -f1)
+APPLY_LINE=$(grep -n -m1 '^apply ' "${FAKE_OC_LOG}" | cut -d: -f1)
+[[ -n "${CHECK_LINE}" && "${CHECK_LINE}" -lt "${APPLY_LINE}" ]] || fail "selector check must run before the first apply"
 assert_stacks_result
 echo "✅ PASS: mesh_creates_one_control_plane_per_stack"
 
@@ -166,12 +169,29 @@ done
 echo "✅ PASS: mesh_proxy_serviceentry_per_stack"
 
 # ---------------------------------------------------------------------------
+# A foreign Istio already selecting a planned discovery value fails before anything is applied.
 new_case mesh_overlapping_selectors_fails
-{ base_rules "${TWO_STACKS}"; mesh_rules 'sap-mesh-istio-1: sap-edge-mesh-1\nsap-mesh-istio-2: sap-edge-mesh-2\nlegacy-mesh: sap-edge-mesh-2'; } > "${FAKE_OC_RULES}"
+{ base_rules "${TWO_STACKS}"; mesh_rules 'sap-mesh-istio-1: sap-edge-mesh-1\nlegacy-mesh: sap-edge-mesh-2'; } > "${FAKE_OC_RULES}"
 run_on "${MESH_TASK}"
-expect_fail_with "sap-mesh-istio-2 and legacy-mesh both select istio-discovery=sap-edge-mesh-2"
-assert_not_called "^wait "
+expect_fail_with "Istio legacy-mesh already selects istio-discovery=sap-edge-mesh-2 (planned for sap-mesh-istio-2)"
+[[ "$(count_manifests '^kind: Istio(CNI)?$')" -eq 0 ]] || fail "no Istio or IstioCNI may be applied when selectors overlap"
+assert_not_called "^(apply|label|wait) "
 echo "✅ PASS: mesh_overlapping_selectors_fails"
+
+# ---------------------------------------------------------------------------
+# Re-run: our own sap-mesh-istio-N from an earlier run (and unrelated meshes) do not trip the check.
+new_case mesh_rerun_own_istio_passes
+{ base_rules "${TWO_STACKS}"; mesh_rules 'sap-mesh-istio-1: sap-edge-mesh-1\nsap-mesh-istio-2: sap-edge-mesh-2\nother-mesh: other-discovery'; } > "${FAKE_OC_RULES}"
+run_on "${MESH_TASK}"
+[[ "${TASK_RC}" -eq 0 ]] || echo "${TASK_OUT}"
+assert_rc 0
+for N in 1 2; do
+  F=$(manifest_with '^kind: Istio$' "^  name: sap-mesh-istio-${N}$")
+  assert_file_contains "${F}" "istio-discovery: sap-edge-mesh-${N}$"
+  assert_called "wait --for=condition=Ready istio/sap-mesh-istio-${N} -n istio-system-sap-edge-${N} --timeout=600s"
+done
+[[ "$(count_manifests '^kind: IstioCNI$')" -eq 1 ]] || fail "IstioCNI must be applied exactly once"
+echo "✅ PASS: mesh_rerun_own_istio_passes"
 
 # ---------------------------------------------------------------------------
 # Stack validation is shared (identical block) by both tasks: run every case on both.
