@@ -25,17 +25,21 @@ FAKE_OC_STDIN_DIR=$(tmp_dir)
 WORKSPACE_DIR=$(tmp_dir)
 RESULTS_DIR=$(tmp_dir)
 
+# Generate base64 fixtures at runtime to avoid cspell issues
+TOKEN_B64=$(printf 'token123' | base64)
+CA_CERT_B64=$(printf 'caCert' | base64)
+
 # Set up fake oc rules
-cat > "${FAKE_OC_RULES}" <<'EOF'
+cat > "${FAKE_OC_RULES}" <<EOF
 get secret c1-admin-kubeconfig -n clusters*	0	{"data":{"kubeconfig":"YWJjCg=="}}
 get nodes*	0	node1
 get sa edgelm -n edgelm*	1
 create sa edgelm -n edgelm*	0	serviceaccount/edgelm created
 apply -n edgelm -f -*	0	secret/edgelm-kubeconfig-token configured
-get secret edgelm-kubeconfig-token -n edgelm -o jsonpath=*	0	dG9rZW4xMjMK
-get secret edgelm-kubeconfig-token -n edgelm*	0	{"data":{"token":"dG9rZW4xMjMK"}}
+get secret edgelm-kubeconfig-token -n edgelm -o jsonpath=*	0	${TOKEN_B64}
+get secret edgelm-kubeconfig-token -n edgelm*	0	{"data":{"token":"${TOKEN_B64}"}}
 config view --minify*	0	{"clusters":[{"cluster":{"server":"https://api.example.com:6443"},"name":"c1"}]}
-config view --raw --minify*	0	{"clusters":[{"cluster":{"certificate-authority-data":"Y2FDZXJ0Cg==","server":"https://api.example.com:6443"},"name":"c1"}]}
+config view --raw --minify*	0	{"clusters":[{"cluster":{"certificate-authority-data":"${CA_CERT_B64}","server":"https://api.example.com:6443"},"name":"c1"}]}
 --kubeconfig=* auth can-i list pods -n edgelm*	0	yes
 --kubeconfig=* get namespaces*	0	edgelm
 apply -f -*	0	secret/edgelm-kubeconfig-generated-c1 configured
@@ -100,18 +104,22 @@ FAKE_OC_STDIN_DIR=$(tmp_dir)
 WORKSPACE_DIR=$(tmp_dir)
 RESULTS_DIR=$(tmp_dir)
 
+# Generate base64 fixtures at runtime to avoid cspell issues
+TOKEN_B64=$(printf 'token222' | base64)
+CA_CERT_B64=$(printf 'caCert' | base64)
+
 # Set up fake oc rules
-cat > "${FAKE_OC_RULES}" <<'EOF'
+cat > "${FAKE_OC_RULES}" <<EOF
 get secret c1-admin-kubeconfig -n clusters*	0	{"data":{"kubeconfig":"YWJjCg=="}}
 get nodes*	0	node1
 get rolebinding rb-edgelm-manage -n edgelm-2*	0	{"subjects":[{"kind":"ServiceAccount","name":"edgelm","namespace":"edgelm-2"}]}
 get sa edgelm -n edgelm-2*	1
 create sa edgelm -n edgelm-2*	0	serviceaccount/edgelm created
 apply -n edgelm-2 -f -*	0	secret/edgelm-kubeconfig-token configured
-get secret edgelm-kubeconfig-token -n edgelm-2 -o jsonpath=*	0	dG9rZW4yMjIK
-get secret edgelm-kubeconfig-token -n edgelm-2*	0	{"data":{"token":"dG9rZW4yMjIK"}}
+get secret edgelm-kubeconfig-token -n edgelm-2 -o jsonpath=*	0	${TOKEN_B64}
+get secret edgelm-kubeconfig-token -n edgelm-2*	0	{"data":{"token":"${TOKEN_B64}"}}
 config view --minify*	0	{"clusters":[{"cluster":{"server":"https://api.example.com:6443"},"name":"c1"}]}
-config view --raw --minify*	0	{"clusters":[{"cluster":{"certificate-authority-data":"Y2FDZXJ0Cg==","server":"https://api.example.com:6443"},"name":"c1"}]}
+config view --raw --minify*	0	{"clusters":[{"cluster":{"certificate-authority-data":"${CA_CERT_B64}","server":"https://api.example.com:6443"},"name":"c1"}]}
 --kubeconfig=* auth can-i list pods -n edgelm-2*	0	yes
 --kubeconfig=* get namespaces*	0	edgelm-2
 apply -f -*	0	secret/edgelm-kubeconfig-generated-c1-2 configured
@@ -184,8 +192,13 @@ WORKSPACE_DIR=$(tmp_dir)
 RESULTS_DIR_1=$(tmp_dir)
 RESULTS_DIR_2=$(tmp_dir)
 
+# Generate base64 fixtures at runtime to avoid cspell issues
+TOKEN1_B64=$(printf 'token111' | base64)
+TOKEN2_B64=$(printf 'token222' | base64)
+CA_CERT_B64=$(printf 'caCert' | base64)
+
 # Set up fake oc rules (combined for both runs)
-cat > "${FAKE_OC_RULES}" <<'EOF'
+cat > "${FAKE_OC_RULES}" <<EOF
 get secret c1-admin-kubeconfig -n clusters*	0	{"data":{"kubeconfig":"YWJjCg=="}}
 get nodes*	0	node1
 get rolebinding rb-edgelm-manage -n edgelm-2*	0	{"subjects":[{"kind":"ServiceAccount","name":"edgelm","namespace":"edgelm-2"}]}
@@ -196,12 +209,12 @@ create sa edgelm -n edgelm-2*	0	serviceaccount/edgelm created
 create sa edgelm -n edgelm*	0	serviceaccount/edgelm created
 apply -n edgelm-2 -f -*	0	secret/edgelm-kubeconfig-token configured
 apply -n edgelm -f -*	0	secret/edgelm-kubeconfig-token configured
-get secret edgelm-kubeconfig-token -n edgelm-2 -o jsonpath=*	0	dG9rZW4yMjIK
-get secret edgelm-kubeconfig-token -n edgelm-2*	0	{"data":{"token":"dG9rZW4yMjIK"}}
-get secret edgelm-kubeconfig-token -n edgelm -o jsonpath=*	0	dG9rZW4xMTEK
-get secret edgelm-kubeconfig-token -n edgelm*	0	{"data":{"token":"dG9rZW4xMTEK"}}
+get secret edgelm-kubeconfig-token -n edgelm-2 -o jsonpath=*	0	${TOKEN2_B64}
+get secret edgelm-kubeconfig-token -n edgelm-2*	0	{"data":{"token":"${TOKEN2_B64}"}}
+get secret edgelm-kubeconfig-token -n edgelm -o jsonpath=*	0	${TOKEN1_B64}
+get secret edgelm-kubeconfig-token -n edgelm*	0	{"data":{"token":"${TOKEN1_B64}"}}
 config view --minify*	0	{"clusters":[{"cluster":{"server":"https://api.example.com:6443"},"name":"c1"}]}
-config view --raw --minify*	0	{"clusters":[{"cluster":{"certificate-authority-data":"Y2FDZXJ0Cg==","server":"https://api.example.com:6443"},"name":"c1"}]}
+config view --raw --minify*	0	{"clusters":[{"cluster":{"certificate-authority-data":"${CA_CERT_B64}","server":"https://api.example.com:6443"},"name":"c1"}]}
 --kubeconfig=* auth can-i list pods*	0	yes
 --kubeconfig=* get namespaces*	0	edgelm
 apply -f -*	0	secret applied
