@@ -11,9 +11,15 @@ Date: 2026-10-17
 
 ## Status
 
-- **Topology A — shared core**: specified here and to be implemented.
-- **Topology B — 1:1:1 stacks**: specified as a described extension; implemented
-  later as its **own pipeline**, not now.
+- **Topology A — shared core**: implemented in the `hcp-ossm3-dedicated-validation-pipeline`,
+  including per-cell backing services and per-cell validation (all three test rounds
+  for each cell).
+- **Topology B — 1:1:1 stacks**: implemented in the
+  `hcp-ossm3-multi-stack-validation-pipeline` (KBA 7149262 "Scenario 2: Multiple Edge
+  Nodes with Dedicated Meshes"; minimum releases ELM 1.64, EIC 8.48).
+
+See the [2026-10-24 design spec](superpowers/specs/2026-10-24-multi-eic-per-cell-and-topology-b-design.md)
+for the full requirements and implementation decisions.
 
 ## Why
 
@@ -61,7 +67,7 @@ The cell index is a **trailing `-N`** appended to each base role name. Namespace
 names are operator-configured when the bundle is generated; cells on one cluster
 MUST follow this scheme.
 
-| Role                 | Base name             | Cell 1                  | Cell 2                  |
+| Role                 | Base name             | Cell/Stack 1            | Cell/Stack 2            |
 |----------------------|-----------------------|-------------------------|-------------------------|
 | main                 | `edge-icell`          | `edge-icell-1`          | `edge-icell-2`          |
 | secrets              | `edge-icell-secrets`  | `edge-icell-secrets-1`  | `edge-icell-secrets-2`  |
@@ -69,6 +75,7 @@ MUST follow this scheme.
 | services             | `edge-icell-services` | `edge-icell-services-1` | `edge-icell-services-2` |
 | gateways             | `istio-gateways`      | `istio-gateways-1`      | `istio-gateways-2`      |
 | edgelm (topology A)  | `edgelm`              | shared `edgelm`         | shared `edgelm`         |
+| edgelm (topology B)  | `edgelm`              | `edgelm-1`              | `edgelm-2`              |
 
 **Role detection:** strip the trailing `-<digits>`, then exact-match the base
 name. e.g. `edge-icell-services-2` → `edge-icell-services` → services role.
@@ -76,21 +83,34 @@ name. e.g. `edge-icell-services-2` → `edge-icell-services` → services role.
 ## S3 layout convention
 
 One **fixed prefix per cluster deployment** (the "set"), one subfolder per
-component, named by the component (`elm` for the shared manager):
+component, named by the component (`elm` for the shared manager in topology A,
+`elm-N` per Edge Node in topology B):
+
+**Topology A** (shared ELM, one mesh, N cells):
 
 ```
-restricted-resources/<deployment>/          <-- = pipeline s3Prefix param
+restricted-resources/pr<N>/                 <-- = pipeline s3Prefix param
   elm/            restricted-resources-Edge_Lifecycle_Management-<ver>.zip
   edge-icell-1/   restricted-resources-Edge_Integration_Cell-<ver>.zip
+  edge-icell-2/   restricted-resources-Edge_Integration_Cell-<ver>.zip
+```
+
+**Topology B** (N Edge Nodes, N ELMs, N meshes; sibling of A's prefix, not a subfolder):
+
+```
+restricted-resources/pr<N>-multi-stack/     <-- = pipeline s3Prefix param
+  elm-1/          restricted-resources-Edge_Lifecycle_Management-<ver>.zip
+  edge-icell-1/   restricted-resources-Edge_Integration_Cell-<ver>.zip
+  elm-2/          restricted-resources-Edge_Lifecycle_Management-<ver>.zip
   edge-icell-2/   restricted-resources-Edge_Integration_Cell-<ver>.zip
 ```
 
 - One bundle zip per subfolder; **latest version within a subfolder wins**.
 - Add a cell → add a subfolder. Upgrade a cell → drop its newer zip in its
   subfolder. Non-destructive; versions independent per cell; recorded per run.
-- The dedicated pipeline creates the folders for you: set
-  `restrictedResourcesComponents` (e.g. `elm edge-icell-1 edge-icell-2`) and it
-  creates them under `s3Prefix`, then pauses at
+- The pipelines create the folders for you: set `restrictedResourcesComponents`
+  (e.g. `elm edge-icell-1 edge-icell-2` for topology A, `elm-1 edge-icell-1 elm-2 edge-icell-2`
+  for topology B) and the pipeline creates them under `s3Prefix`, then pauses at
   `approval-upload-restricted-resources` (in parallel with cluster creation)
   with upload instructions and each folder's current contents. After
   approval, `apply-rbac` fails fast if a listed folder holds no zip. The gate
@@ -116,33 +136,44 @@ SAP ever ships one again; with today's bundles it simply never matches.
 
 ## Role → mesh / SCC table (same values for all cells)
 
-| Base role             | `istio.io/rev` (mesh) | SCC `uid-range` | SCC `supplemental-groups` |
-|-----------------------|-----------------------|-----------------|---------------------------|
-| `edgelm`              | yes                   | —               | `67000/1000`              |
-| `edge-icell` (main)   | yes                   | `10000/100`     | `1000/100`                |
-| `edge-icell-ela`      | yes                   | `100000/1000`   | `100002/1000`             |
-| `edge-icell-services` | yes                   | `1000000/1000`  | `1000002/1000`            |
-| `edge-icell-secrets`  | no                    | —               | —                         |
-| `istio-gateways`      | yes                   | —               | —                         |
+| Base role             | `istio.io/rev` (mesh) | `istio-discovery` | SCC `uid-range` | SCC `supplemental-groups` |
+|-----------------------|-----------------------|-------------------|-----------------|---------------------------|
+| `edgelm`              | yes                   | yes               | —               | `67000/1000`              |
+| `edge-icell` (main)   | yes                   | yes               | `10000/100`     | `1000/100`                |
+| `edge-icell-ela`      | yes                   | yes               | `100000/1000`   | `100002/1000`             |
+| `edge-icell-services` | yes                   | yes               | `1000000/1000`  | `1000002/1000`            |
+| `edge-icell-secrets`  | no                    | yes               | —               | —                         |
+| `istio-gateways`      | yes                   | yes               | —               | —                         |
 
 For cell N, apply the same values to each `<role>-N` namespace. Values are taken
 from today's single-cell `ossm3-prepare-namespaces-dedicated` task.
 
-## Pipeline behavior — Topology A (to implement)
+**Note:** The secrets namespace (`edge-icell-secrets-N`) gets the `istio-discovery`
+label but **no** `istio.io/rev` injection label (KBA 7131840). This allows the
+dedicated mesh's discovery selector to include the secrets namespace in its scope
+without triggering sidecar injection.
 
-**Scope: provisioning only.** We make the three *provisioning* tasks multi-cell
-via discovery so that namespaces, RBAC, and mesh membership are set up correctly
-for every cell present. The **downstream** tasks — EIC service deploy, routing
-(`hcp-create-eic-route`), `hcp-fix-endpointslice`,
-`hcp-validate-and-create-configmap`, endpoint/rate-limit tests, and the approval
-step — **remain single-cell** (they validate the first cell). Making those
-per-cell (N routes, N gateways, N test suites) is a documented **follow-up**,
-most naturally done alongside the Topology B pipeline work; it is out of scope
-here.
+## Backing services
+
+Both topologies deploy backing services per the external-service scripts'
+existing `--instance` option:
+
+- **Redis/Valkey: always a separate instance per cell**, both topologies.
+  Instance name `eic-N` deploys to namespace `<default>-eic-N` (e.g.
+  `sap-eic-external-redis-eic-1`).
+- **Postgres: deployed once; all cells share the same database** — both topologies
+  (no `--instance`).
+
+All cells use one shared `eic-auth-secret` (same iFlow credentials).
+
+## Pipeline behavior — Topology A
 
 Reuse the existing `hcp-ossm3-dedicated-validation` pipeline (single istio
-control plane, one shared `edgelm`). Three tasks change; all become
-discovery-driven instead of hardcoding the single-cell namespace list.
+control plane, one shared `edgelm`). The pipeline provisions RBAC, mesh, and
+namespace labels via discovery, deploys backing services per cell (Redis/Valkey
+with `--instance eic-N`; shared Postgres), and validates each cell end-to-end
+(all three test rounds per cell). The pipeline supports a `cellCount` param
+(default `2`); with `cellCount: "1"`, all cell-2 tasks are skipped via `when`.
 
 1. **`ossm3-download-and-apply-rbac` (Steps 2–3).** Discover each directory that
    contains `*.zip` under the downloaded prefix (= one component); within each,
@@ -169,26 +200,47 @@ discovery-driven instead of hardcoding the single-cell namespace list.
    control plane and the `edgelm` `ServiceEntry` are unchanged (edgelm is shared
    in topology A).
 
-## Topology B (described; future, separate pipeline)
+## Topology B
 
-N independent stacks (`edgelm-N` + `edge-icell-N` + its own istio instance). Each
-cell N gets its **own** control plane with revision `sap-mesh-istio-N`, and that
-cell's namespaces get `istio.io/rev=sap-mesh-istio-N`. Implement as a dedicated
-pipeline (e.g. `hcp-ossm3-multi-stack-validation-pipeline.yaml`) reusing the
-shared `download-and-apply-rbac` task, with `prepare-namespaces` / `configure-mesh`
-variants that loop per stack and derive the revision from the `-N` index. Not
-implemented now.
+N independent stacks (`edgelm-N` + `edge-icell-N` + its own istio instance),
+implemented in the `hcp-ossm3-multi-stack-validation-pipeline`. Each stack N gets
+its **own** control plane (namespace `istio-system-sap-edge-N`, Istio resource
+`sap-mesh-istio-N`, discovery selector `istio-discovery=sap-edge-mesh-N`) and
+its **own** restricted kubeconfig Secret (`edgelm-kubeconfig-generated-<cluster>-N`).
+
+Key provisioning tasks (after the shared `ossm3-download-and-apply-rbac`):
+
+1. **`ossm3-configure-multi-stack-mesh`**: discovers stacks (SAP namespaces =
+   `edgelm.sap.com/product=edgelm`, stack N = names ending `-N`); validates that
+   every stack has an `edgelm-N` namespace; checks that no two Istio resources
+   have overlapping discovery selectors; creates IstioCNI once (cluster-scoped),
+   then per stack creates the control plane namespace + Istio with
+   `discoverySelectors: istio-discovery=sap-edge-mesh-N` (+ DNS-capture proxy
+   metadata when a proxy is configured); waits Ready; labels the control plane ns;
+   proxy ServiceEntry in `edgelm-N`.
+
+2. **`ossm3-prepare-namespaces-multi-stack`**: per stack reads the active revision
+   from the running control plane; labels all the stack's namespaces
+   `istio-discovery=sap-edge-mesh-N`; workload namespaces get
+   `istio.io/rev=<active revision of mesh N>`; removes `istio-injection`; never
+   an injection label on secrets; SCC per role; preserves ownership labels; prints
+   the KBA 7149262 verification view (`oc get ns -L
+   edgelm.sap.com/edge-node-id,istio-discovery,istio.io/rev,istio-injection`).
+
+The pipeline is fixed at two stacks (no `cellCount` param). One kubeconfig per
+stack. Backing services and validation are per cell, just as in topology A.
 
 ## Goals / non-goals / anti-goals
 
 - **Goal:** deterministic, non-destructive multi-cell deploy from a single S3
   prefix; correct mesh + SCC overlay for any operator-configured cell names
-  following the `-N` convention.
-- **Non-goal (now):** topology B implementation; per-cell SCC isolation (we apply
-  the same SCC values to every cell); per-cell downstream validation (EIC deploy,
-  routes, endpoint/rate-limit tests stay single-cell — see Scope above).
+  following the `-N` convention; per-cell backing services and validation.
+- **Non-goal:** per-cell SCC isolation (we apply the same SCC values to every cell);
+  more than one EIC instance per Edge Node in topology B, or more than two
+  cells/stacks.
 - **Anti-goal:** delete-and-reupload bundle management; hardcoding or guessing
-  namespace names in the pipeline.
+  namespace names in the pipeline; a legacy/unsuffixed special case anywhere in
+  the multi-EIC pipelines.
 
 ## Left to the builder
 

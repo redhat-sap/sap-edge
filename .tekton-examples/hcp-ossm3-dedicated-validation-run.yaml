@@ -5,16 +5,22 @@
 
 # Prerequisites:
 # 1. Ensure the ObjectBucketClaim (OBC) 'sap-eic-restricted-cluster-config-resources'
-#    is created and bound in the pipeline namespace, with restricted-resources zip files
-#    uploaded to the S3 bucket under the 'restricted-resources/' prefix.
+#    is created and bound in the pipeline namespace. The pipeline creates the
+#    folders under 'restricted-resources/pr<N>/' (one set per PR) and pauses
+#    (approval-upload-restricted-resources) until the bundles are uploaded.
 #
 # 2. Ensure the Service Mesh 3.x operator is installed on the target cluster
 #    (via OperatorHub or CLI before running this pipeline)
 #
-# Scenario: Dedicated SAP service mesh (istio-system-sap-edge) without proxy
+# Scenario: Dedicated SAP service mesh (istio-system-sap-edge) without proxy,
+#   single Edge Integration Cell (multi-EIC topology A with cellCount: "1")
 #   - Deploys an independent Istio control plane 'sap-mesh-istio'
 #   - Uses revision-based sidecar injection (istio.io/rev=sap-mesh-istio)
 #   - Isolated from any shared mesh on the same cluster
+#   - All SAP namespaces follow the -N naming scheme (edge-icell-1, istio-gateways-1, etc.)
+#   - restrictedResourcesComponents must exclude edge-icell-2 when cellCount: "1"
+#     (apply-rbac fails on an empty folder)
+#   - The upload gate pauses every run (ApprovalTasks cannot be skipped conditionally)
 
 ---
 apiVersion: tekton.dev/v1
@@ -78,7 +84,11 @@ spec:
     - name: obcName
       value: "sap-eic-restricted-cluster-config-resources"
     - name: s3Prefix
-      value: "restricted-resources/"
+      value: "restricted-resources/pr{{ pull_request_number }}/"
+    - name: restrictedResourcesComponents
+      value: "elm edge-icell-1"
+    - name: cellCount
+      value: "1"
 
     # --- EIC services parameters ---
     - name: postgresVersion
