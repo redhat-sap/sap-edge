@@ -25,6 +25,10 @@ spec:
       type: string
       description: "Name of the Secret containing kubeconfig for hub cluster (optional, uses in-cluster config if empty)"
       default: ""
+    - name: discoverNamespaces
+      type: string
+      description: "Discover EIC namespaces by label instead of using fixed list (default: false)"
+      default: "false"
   workspaces:
     - name: source
   steps:
@@ -39,6 +43,7 @@ spec:
         CLUSTER_NAME="$(params.hostedClusterName)"
         CLUSTER_NS="$(params.hostedClusterNamespace)"
         HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
+        DISCOVER_NAMESPACES="$(params.discoverNamespaces)"
 
         echo "=========================================="
         echo "HCP Verify Monitoring Task"
@@ -93,9 +98,39 @@ spec:
         oc whoami
 
         # Step 1: Check ServiceMonitors
-        NAMESPACES=("edge-icell" "edge-icell-services" "edgelm")
         echo ""
         echo "📊 Step 1: Checking ServiceMonitors..."
+
+        # Discover or use fixed list of namespaces
+        if [[ "${DISCOVER_NAMESPACES}" == "true" ]]; then
+          echo "🔍 Discovering EIC namespaces (edgelm.sap.com/product=edgelm)..."
+          NAMESPACES=()
+          while IFS= read -r NS; do
+            [[ -n "${NS}" ]] && NAMESPACES+=("${NS}")
+          done < <(oc get namespace -l edgelm.sap.com/product=edgelm -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | sort -V)
+
+          # Filter to target roles only: edgelm, edge-icell, edge-icell-services
+          FILTERED_NAMESPACES=()
+          for NS in "${NAMESPACES[@]}"; do
+            ROLE=$(sed -E 's/-[0-9]+$//' <<< "${NS}")
+            case "${ROLE}" in
+              edgelm|edge-icell|edge-icell-services)
+                FILTERED_NAMESPACES+=("${NS}")
+                ;;
+            esac
+          done
+          NAMESPACES=("${FILTERED_NAMESPACES[@]}")
+
+          if [[ ${#NAMESPACES[@]} -eq 0 ]]; then
+            echo "❌ No EIC namespaces found with target roles (edgelm, edge-icell, edge-icell-services)"
+            exit 1
+          fi
+          echo "   Found ${#NAMESPACES[@]} namespace(s):"
+          printf '     %s\n' "${NAMESPACES[@]}"
+        else
+          NAMESPACES=("edge-icell" "edge-icell-services" "edgelm")
+        fi
+
         TOTAL_SM=0
 
         for NS in "${NAMESPACES[@]}"; do
