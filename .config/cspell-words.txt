@@ -193,3 +193,11 @@ startswith
 rolebindings
 subfolders
 xbem
+istiorevisions
+multistack
+storageclass
+CAPK
+kubeconfigs
+unsuffixed
+cooldowns
+serviceentry
