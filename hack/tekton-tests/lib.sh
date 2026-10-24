@@ -11,6 +11,33 @@ TASK_OUT=""
 # shellcheck disable=SC2034
 TASK_RC=""
 
+# Temporary file tracking for cleanup
+# Create a single temp directory to hold all temp files/dirs created by helpers
+# This avoids the subshell array modification issue with VAR=$(tmp_file)
+_TEST_TMP_DIR=$(mktemp -d)
+
+# Cleanup function for EXIT trap
+_cleanup_tmp_dir() {
+  if [[ -n "${_TEST_TMP_DIR:-}" ]] && [[ -d "${_TEST_TMP_DIR}" ]]; then
+    rm -rf "${_TEST_TMP_DIR}" 2>/dev/null || true
+  fi
+}
+
+# Install EXIT trap once when lib.sh is sourced
+trap _cleanup_tmp_dir EXIT
+
+# Create a temporary file and track it for cleanup
+# Usage: tmp_file
+tmp_file() {
+  mktemp "${_TEST_TMP_DIR}/tmp.XXXXXXXXXX"
+}
+
+# Create a temporary directory and track it for cleanup
+# Usage: tmp_dir
+tmp_dir() {
+  mktemp -d "${_TEST_TMP_DIR}/tmp.XXXXXXXXXX"
+}
+
 # Run a task script extracted by extract_task_script.py
 # Usage: run_task TASK_YAML [extract args...]
 run_task() {

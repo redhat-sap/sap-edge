@@ -81,7 +81,16 @@ assert_not_called PATTERN              # Check fake oc was NOT called
 assert_file_contains FILE PATTERN      # Check file content
 assert_rc N                            # Check task exit code
 fail MSG                               # Fail test with message
+tmp_file [template]                    # Create temp file, auto-cleanup on EXIT
+tmp_dir [template]                     # Create temp dir, auto-cleanup on EXIT
 ```
+
+**Temporary file management:**
+
+- `tmp_file` and `tmp_dir` create temporary files/directories and track them for automatic cleanup
+- A single EXIT trap installed by lib.sh removes all tracked paths when the test exits
+- Use these instead of `mktemp` + per-case `trap` to avoid trap overwriting bugs
+- Safe under `set -u` (bash 3.2 compatible)
 
 ### fake-bin/oc
 
@@ -116,9 +125,8 @@ delete pod foo	1	Error: not found
 #!/usr/bin/env bash
 source hack/tekton-tests/lib.sh
 
-FAKE_OC_LOG=$(mktemp)
-FAKE_OC_RULES=$(mktemp)
-trap 'rm -f "${FAKE_OC_LOG}" "${FAKE_OC_RULES}"' EXIT
+FAKE_OC_LOG=$(tmp_file)
+FAKE_OC_RULES=$(tmp_file)
 
 cat > "${FAKE_OC_RULES}" <<'EOF'
 get secret *	0	{"data":{"key":"dmFsdWU="}}
