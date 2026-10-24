@@ -57,6 +57,10 @@ spec:
       type: string
       description: "Storage class for etcd PVCs (leave empty for default)"
       default: ""
+    - name: nfsPersistenceSize
+      type: string
+      description: "NFS server provisioner PVC pool size"
+      default: "20Gi"
     - name: postgresVersion
       type: string
       description: "PostgreSQL version (v15/v16/v17)"
@@ -157,6 +161,23 @@ spec:
         - name: source
           workspace: source
 
+    # Step 3.5: Create NFS StorageClass (nfs-rwx) on the hosted cluster
+    - name: create-nfs-storageclass
+      runAfter: [wait-cluster-ready]
+      taskRef: { name: hcp-create-nfs-storageclass }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: nfsPersistenceSize
+          value: $(params.nfsPersistenceSize)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
     # Step 4: Enable User Workload Monitoring (parallel with DB deployment)
     - name: enable-monitoring
       runAfter: [wait-cluster-ready]
@@ -174,7 +195,7 @@ spec:
 
     # Step 5: Deploy PostgreSQL on hosted cluster (parallel with Redis)
     - name: deploy-postgres
-      runAfter: [wait-cluster-ready]
+      runAfter: [create-nfs-storageclass]
       taskRef: { name: hcp-deploy-postgres }
       params:
         - name: hostedClusterName
@@ -193,7 +214,7 @@ spec:
 
     # Step 6a: Deploy Redis on hosted cluster (parallel with PostgreSQL, when datastoreType=redis)
     - name: deploy-redis
-      runAfter: [wait-cluster-ready]
+      runAfter: [create-nfs-storageclass]
       when:
         - input: "$(params.datastoreType)"
           operator: in
@@ -214,7 +235,7 @@ spec:
 
     # Step 6b: Deploy Valkey on hosted cluster (parallel with PostgreSQL, when datastoreType=valkey-*)
     - name: deploy-valkey
-      runAfter: [wait-cluster-ready]
+      runAfter: [create-nfs-storageclass]
       when:
         - input: "$(params.datastoreType)"
           operator: in
