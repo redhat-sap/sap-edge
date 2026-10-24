@@ -5,8 +5,9 @@
 
 # Prerequisites:
 # 1. Ensure the ObjectBucketClaim (OBC) 'sap-eic-restricted-cluster-config-resources'
-#    is created and bound in the pipeline namespace, with restricted-resources zip files
-#    uploaded to the S3 bucket under the 'restricted-resources/' prefix.
+#    is created and bound in the pipeline namespace. The pipeline creates the
+#    folders under 'restricted-resources/pr<N>/' (one set per PR) and pauses
+#    (approval-upload-restricted-resources) until the bundles are uploaded.
 #
 # 2. Ensure the Service Mesh 3.x operator is installed on the target cluster
 #    (via OperatorHub or CLI before running this pipeline)
@@ -21,11 +22,16 @@
 #    100.64.0.0/24). Check each cluster's CIDR with:
 #      oc get network.config cluster -o jsonpath='{.spec.clusterNetwork[*].cidr}'
 #
-# Scenario: Dedicated SAP service mesh with corporate proxy
+# Scenario: Dedicated SAP service mesh with corporate proxy,
+#   single Edge Integration Cell (multi-EIC topology A with cellCount: "1")
 #   - Deploys an independent Istio control plane 'sap-mesh-istio'
 #   - Enables DNS capture (ISTIO_META_DNS_CAPTURE / ISTIO_META_DNS_AUTO_ALLOCATE)
 #   - Creates a ServiceEntry in edgelm namespace to permit proxy connections
 #   - ELM registration should have "Enable HTTP Proxy" checked
+#   - All SAP namespaces follow the -N naming scheme (edge-icell-1, istio-gateways-1, etc.)
+#   - restrictedResourcesComponents must exclude edge-icell-2 when cellCount: "1"
+#     (apply-rbac fails on an empty folder)
+#   - The upload gate pauses every run (ApprovalTasks cannot be skipped conditionally)
 
 ---
 apiVersion: tekton.dev/v1
@@ -89,7 +95,11 @@ spec:
     - name: obcName
       value: "sap-eic-restricted-cluster-config-resources"
     - name: s3Prefix
-      value: "restricted-resources/"
+      value: "restricted-resources/pr{{ pull_request_number }}/"
+    - name: restrictedResourcesComponents
+      value: "elm edge-icell-1"
+    - name: cellCount
+      value: "1"
 
     # --- EIC services parameters ---
     - name: postgresVersion
