@@ -30,6 +30,10 @@ spec:
       type: string
       description: "Name of the LoadBalancer service in the guest cluster"
       default: "istio-ingressgateway"
+    - name: guestServiceNamespace
+      type: string
+      description: "Namespace of the LoadBalancer service in the guest cluster (optional, narrows selector when multiple cells exist)"
+      default: ""
     - name: hubKubeconfigSecretName
       type: string
       description: "Name of the Secret containing kubeconfig for hub cluster (optional, uses in-cluster config if empty)"
@@ -48,6 +52,7 @@ spec:
         CLUSTER_NAME="$(params.hostedClusterName)"
         CLUSTER_NS="$(params.hostedClusterNamespace)"
         GUEST_SVC_NAME="$(params.guestServiceName)"
+        GUEST_SVC_NS="$(params.guestServiceNamespace)"
         HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
         MGMT_NS="${CLUSTER_NS}-${CLUSTER_NAME}"
 
@@ -94,10 +99,20 @@ spec:
         fi
 
         # Find the management service matching the guest service
+        # When guestServiceNamespace is set, the selector includes both tenant-service-name
+        # and tenant-service-namespace labels. This assumes the KubeVirt cloud provider
+        # labels the mirror Service with cluster.x-k8s.io/tenant-service-namespace.
+        # This must be confirmed on the first real PR run with:
+        # oc get svc -n <clusters-ns>-<cluster> --show-labels | grep tenant-service
         echo ""
         echo "🔍 Looking for management service matching guest service '${GUEST_SVC_NAME}'..."
+        if [[ -n "${GUEST_SVC_NS}" ]]; then
+          SELECTOR="cluster.x-k8s.io/tenant-service-name=${GUEST_SVC_NAME},cluster.x-k8s.io/tenant-service-namespace=${GUEST_SVC_NS}"
+        else
+          SELECTOR="cluster.x-k8s.io/tenant-service-name=${GUEST_SVC_NAME}"
+        fi
         MGMT_SVC_NAME=$(oc get svc -n "${MGMT_NS}" \
-          -l "cluster.x-k8s.io/tenant-service-name=${GUEST_SVC_NAME}" \
+          -l "${SELECTOR}" \
           -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
 
         if [[ -z "${MGMT_SVC_NAME}" ]]; then
