@@ -104,6 +104,8 @@ spec:
         # labels the mirror Service with cluster.x-k8s.io/tenant-service-namespace.
         # This must be confirmed on the first real PR run with:
         # oc get svc -n <clusters-ns>-<cluster> --show-labels | grep tenant-service
+        # If nothing matches, the task prints the tenant-service-* labels of the
+        # candidate Services and warns that the workaround was not applied.
         echo ""
         echo "🔍 Looking for management service matching guest service '${GUEST_SVC_NAME}'..."
         if [[ -n "${GUEST_SVC_NS}" ]]; then
@@ -114,6 +116,28 @@ spec:
         MGMT_SVC_NAME=$(oc get svc -n "${MGMT_NS}" \
           -l "${SELECTOR}" \
           -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+
+        if [[ -z "${MGMT_SVC_NAME}" ]] && [[ -n "${GUEST_SVC_NS}" ]]; then
+          # Diagnose the tenant-service-namespace label assumption: show the
+          # tenant-service-* labels of every mirror Service of this service name.
+          echo "⚠️ No management service in ${MGMT_NS} matches '${SELECTOR}'."
+          echo "   tenant-service-* labels of the services with cluster.x-k8s.io/tenant-service-name=${GUEST_SVC_NAME}:"
+          CANDIDATES=$(oc get svc -n "${MGMT_NS}" \
+            -l "cluster.x-k8s.io/tenant-service-name=${GUEST_SVC_NAME}" -o json 2>/dev/null \
+            | jq -r '.items[] | "     \(.metadata.name): " + ([(.metadata.labels // {}) | to_entries[]
+                | select(.key | startswith("cluster.x-k8s.io/tenant-service-")) | "\(.key)=\(.value)"] | join(" "))' \
+            2>/dev/null || true)
+          if [[ -n "${CANDIDATES}" ]]; then
+            echo "${CANDIDATES}"
+            echo "   If none of them carries cluster.x-k8s.io/tenant-service-namespace=${GUEST_SVC_NS},"
+            echo "   the namespace label assumption of this task does not hold for this cluster."
+          else
+            echo "     (none: the guest service may not be deployed yet)"
+          fi
+          echo "⚠️ WORKAROUND NOT APPLIED for gateway ${GUEST_SVC_NS}/${GUEST_SVC_NAME}: its EndpointSlices"
+          echo "   were not checked or patched (OCPBUGS-95615); its endpoint tests may fail intermittently."
+          exit 0
+        fi
 
         if [[ -z "${MGMT_SVC_NAME}" ]]; then
           echo "⚠️ Management service not found for guest service '${GUEST_SVC_NAME}'."
