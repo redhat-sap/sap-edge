@@ -105,6 +105,7 @@ spec:
         chmod 600 "${HOSTED_KUBECONFIG}"
 
         export KUBECONFIG="${HOSTED_KUBECONFIG}"
+        # shellcheck source=/dev/null  # written by an earlier pipeline task when the hub is remote
         [[ -f "$(workspaces.source.path)/.kubeconfig-rewrite.sh" ]] && source "$(workspaces.source.path)/.kubeconfig-rewrite.sh" "${HOSTED_KUBECONFIG}"
 
         echo "🔍 Verifying access to hosted cluster..."

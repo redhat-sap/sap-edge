@@ -17,7 +17,8 @@ spec:
     CNI once, then per stack N the namespace istio-system-sap-edge-N and the
     Istio sap-mesh-istio-N selecting istio-discovery=sap-edge-mesh-N, plus the
     corporate proxy ServiceEntry in edgelm-N when a proxy is configured. Fails
-    if two Istio resources on the cluster select the same istio-discovery value.
+    before applying anything if another Istio resource on the cluster already
+    selects one of the planned istio-discovery values.
     Run before ossm3-prepare-namespaces-multi-stack (it reads the revisions).
   params:
     - name: hostedClusterName
@@ -128,6 +129,7 @@ spec:
         chmod 600 "${HOSTED_KUBECONFIG}"
 
         export KUBECONFIG="${HOSTED_KUBECONFIG}"
+        # shellcheck source=/dev/null  # written by an earlier pipeline task when the hub is remote
         [[ -f "$(workspaces.source.path)/.kubeconfig-rewrite.sh" ]] && source "$(workspaces.source.path)/.kubeconfig-rewrite.sh" "${HOSTED_KUBECONFIG}"
 
         echo "🔍 Verifying access to hosted cluster..."
@@ -181,6 +183,24 @@ spec:
           done
         done
         echo "✅ All OSSM3 CRDs are available"
+
+        # --- No other control plane may select our namespaces (KBA 7149262 "Keep Mesh Assignments Separate") ---
+        # Checked before anything is applied. Each planned sap-mesh-istio-N owns
+        # istio-discovery=sap-edge-mesh-N; any other Istio already selecting one of these values
+        # fails the task. Our own sap-mesh-istio-N from an earlier run is skipped (updated below).
+        echo ""
+        echo "🔍 Checking discovery selectors of existing Istio resources (name: istio-discovery values)..."
+        EXISTING_SELECTORS=$(oc get istios.sailoperator.io -A -o jsonpath='{range .items[*]}{.metadata.name}{":"}{range .spec.values.meshConfig.discoverySelectors[*]}{" "}{.matchLabels.istio-discovery}{end}{"\n"}{end}')
+        awk -v stacks="${STACKS}" 'BEGIN { n = split(stacks, s, " ")
+              for (i = 1; i <= n; i++) { owner["sap-edge-mesh-" s[i]] = "sap-mesh-istio-" s[i]; ours["sap-mesh-istio-" s[i]] = 1
+                print "   planned:  sap-mesh-istio-" s[i] ": sap-edge-mesh-" s[i] } }
+          NF == 0 { next }
+          { name = $1; sub(/:$/, "", name); print "   existing: " $0 }
+          (name in ours) { next }
+          NF == 1 { print "   ⚠️ " name " has no istio-discovery selector (it may discover every namespace): check that it does not select SAP namespaces" }
+          { for (i = 2; i <= NF; i++) if ($i in owner) { print "❌ Istio " name " already selects istio-discovery=" $i " (planned for " owner[$i] ")"; bad = 1 } }
+          END { exit bad }' <<< "${EXISTING_SELECTORS}" || exit 1
+        echo "✅ No other Istio selects the planned istio-discovery values"
 
         # --- Create CNI namespace and resource (cluster-wide, shared by all stacks) ---
         echo ""
@@ -236,17 +256,6 @@ spec:
           oc label namespace "${MESH_NS}" istio-discovery="${DISCOVERY_LABEL}" --overwrite
         done
         echo "✅ Istio control plane resources created"
-
-        # --- No two control planes may select the same namespaces (KBA 7149262 "Keep Mesh Assignments Separate") ---
-        echo ""
-        echo "🔍 Discovery selectors of all Istio resources (name: istio-discovery values):"
-        SELECTORS=$(oc get istios.sailoperator.io -A -o jsonpath='{range .items[*]}{.metadata.name}{":"}{range .spec.values.meshConfig.discoverySelectors[*]}{" "}{.matchLabels.istio-discovery}{end}{"\n"}{end}')
-        awk 'NF == 0 { next }
-          { name = $1; sub(/:$/, "", name); print "   " $0 }
-          NF == 1 { print "   ⚠️ " name " has no istio-discovery selector: check that it does not select SAP namespaces" }
-          { for (i = 2; i <= NF; i++) { if ($i in owner) { print "❌ Istio " owner[$i] " and " name " both select istio-discovery=" $i; bad = 1 } else owner[$i] = name } }
-          END { exit bad }' <<< "${SELECTORS}" || exit 1
-        echo "✅ No overlapping istio-discovery selectors"
 
         # --- Create ServiceEntry for corporate proxy in every stack's ELM namespace (if configured) ---
         if [[ -n "${PROXY_HOST}" ]]; then
