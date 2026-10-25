@@ -9,11 +9,13 @@ metadata:
   name: roks-registry-access
 spec:
   description: >-
-    Read IBM Cloud Container Registry (ICR) credentials from the ROKS
-    Terraform state (terraform output -raw inside the task, re-initializing
-    the backend like roks-deploy) and store them as a Secret
-    eic-registry-roks-<clusterName> on the pipeline cluster (on the hub
-    cluster when hubKubeconfigSecretName is set). When Redis is deployed
+    Read the IBM Cloud Container Registry (ICR) access that roks-deploy's
+    Terraform provisioned (namespace, push/pull service ID API key) from the
+    ROKS Terraform state (terraform output -raw inside the task,
+    re-initializing the backend like roks-deploy) and store it as the Secret
+    eic-registry-roks-<clusterName> (keys server, namespace, username,
+    password) on the pipeline cluster (on the hub cluster when
+    hubKubeconfigSecretName is set). When Redis is deployed
     (non-null terraform output redis_password), add the Redis password to the
     existing Secret eic-credentials-roks-<clusterName> with a server-side
     apply under its own field manager, so that the keys of
@@ -22,14 +24,6 @@ spec:
     - name: clusterName
       type: string
       description: "ROKS cluster name"
-    - name: ibmcloudRegion
-      type: string
-      description: "IBM Cloud region"
-      default: "eu-de"
-    - name: ibmcloudResourceGroup
-      type: string
-      description: "IBM Cloud resource group"
-      default: "redhat-sap-edge-roks-ci"
     - name: terraformStateBucket
       type: string
       description: "IBM Cloud Object Storage bucket holding the Terraform state"
@@ -54,10 +48,6 @@ spec:
       env:
         - name: CLUSTER_NAME
           value: "$(params.clusterName)"
-        - name: IBMCLOUD_REGION
-          value: "$(params.ibmcloudRegion)"
-        - name: IBMCLOUD_RESOURCE_GROUP
-          value: "$(params.ibmcloudResourceGroup)"
         - name: TERRAFORM_STATE_BUCKET
           value: "$(params.terraformStateBucket)"
         - name: TERRAFORM_STATE_ENDPOINT
@@ -210,6 +200,7 @@ spec:
           echo "type: Opaque"
           echo "data:"
           echo "  server: $(printf '%s' "${ICR_REGISTRY}" | base64 | tr -d '\n')"
+          echo "  namespace: $(printf '%s' "${ICR_NAMESPACE}" | base64 | tr -d '\n')"
           echo "  username: $(printf '%s' "${ICR_USERNAME}" | base64 | tr -d '\n')"
           echo "  password: $(printf '%s' "${ICR_API_KEY}" | base64 | tr -d '\n')"
         } | "${PIPELINE_OC[@]}" apply -f - --server-side --field-manager="${REGISTRY_FIELD_MANAGER}" --force-conflicts
@@ -218,7 +209,9 @@ spec:
         # --- Redis password (when Redis is deployed) ---
         echo ""
         echo "🔍 Checking if Redis is deployed..."
-        REDIS_PASSWORD=$(terraform output -raw redis_password || true)
+        # null when Redis is off: terraform then fails with "Unsupported value
+        # for raw output", which is expected here and not logged
+        REDIS_PASSWORD=$(terraform output -raw redis_password 2>/dev/null || true)
         if [[ -n "${REDIS_PASSWORD}" && "${REDIS_PASSWORD}" != "null" ]]; then
           echo "✅ Redis is deployed, adding redis-password to ${CREDS_SECRET_NAME}..."
           {
@@ -244,5 +237,5 @@ spec:
         echo "✅ ICR registry access ready"
         echo "  Registry:       ${ICR_REGISTRY}/${ICR_NAMESPACE}"
         echo "  Username:       ${ICR_USERNAME}"
-        echo "  Secret:         ${REGISTRY_SECRET_NAME}"
+        echo "  Secret:         ${REGISTRY_SECRET_NAME} (keys server, namespace, username, password)"
         echo "=============================================="

@@ -108,6 +108,7 @@ setup() {
   export STUB_TF_LOG STUB_TF_OUTPUTS STUB_BUCKET_DIR
 
   # Stub terraform: logs every call; init succeeds; output -raw prints values
+  # and, like terraform, fails with an error for a null value
   cat > "${STUB_BIN}/terraform" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -127,7 +128,11 @@ case "${1:-}" in
       cat "${STUB_TF_OUTPUTS}"
     elif [[ "${2:-}" == "-raw" ]]; then
       KEY="${3:-}"
-      VALUE=$(python3 -I -c "import json,sys; o=json.load(sys.stdin); v=o.get('${KEY}',{}).get('value'); print(v if v is not None else '')" < "${STUB_TF_OUTPUTS}")
+      if python3 -I -c "import json,sys; o=json.load(sys.stdin); sys.exit(0 if o.get('${KEY}',{}).get('value') is None else 1)" < "${STUB_TF_OUTPUTS}"; then
+        printf 'Error: Unsupported value for raw output\n\nThe value for output "%s" is null, so -raw mode cannot print it.\n' "${KEY}" >&2
+        exit 1
+      fi
+      VALUE=$(python3 -I -c "import json,sys; o=json.load(sys.stdin); print(o['${KEY}']['value'])" < "${STUB_TF_OUTPUTS}")
       printf '%s' "${VALUE}"
     else
       echo "unexpected terraform output call: $*" >&2
@@ -152,8 +157,6 @@ EOF
 
   # Step env
   export CLUSTER_NAME=c1
-  export IBMCLOUD_REGION=eu-de
-  export IBMCLOUD_RESOURCE_GROUP=redhat-sap-edge-roks-ci
   export TERRAFORM_STATE_BUCKET=test-state-bucket
   export TERRAFORM_STATE_ENDPOINT=https://s3.eu-de.cloud-object-storage.appdomain.cloud
   export AWS_ACCESS_KEY_ID="${FAKE_HMAC_ACCESS}"
@@ -172,8 +175,6 @@ run_registry_access() {
   write_oc_rules
   TASK_CWD="${WS}" run_task "${TASK}" \
     --param clusterName="${CLUSTER_NAME}" \
-    --param ibmcloudRegion="${IBMCLOUD_REGION}" \
-    --param ibmcloudResourceGroup="${IBMCLOUD_RESOURCE_GROUP}" \
     --param terraformStateBucket="${TERRAFORM_STATE_BUCKET}" \
     --param terraformStateEndpoint="${TERRAFORM_STATE_ENDPOINT}" \
     --param terraformStateSecretName=roks-terraform-state \
@@ -183,6 +184,43 @@ run_registry_access() {
 }
 
 INIT_PREFIX="init -input=false -no-color -reconfigure"
+
+# Test case: params_and_env
+# Only the params the script uses (no region/resource group: the task reads
+# the Terraform state, it does not call IBM Cloud).
+echo ""
+echo "Test: params_and_env"
+echo "--------------------------------------------"
+python3 -I - "${TASK}" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    task = next(d for d in yaml.safe_load_all(f) if d and d.get("kind") == "Task")
+
+errors = []
+params = {p["name"]: p.get("default") for p in task["spec"]["params"]}
+expected_defaults = {
+    "clusterName": None,
+    "terraformStateBucket": None,
+    "terraformStateEndpoint": "https://s3.eu-de.cloud-object-storage.appdomain.cloud",
+    "terraformStateSecretName": None,
+    "hubKubeconfigSecretName": "",
+}
+if params != expected_defaults:
+    errors.append(f"params/defaults differ: {params}")
+env = {e["name"] for e in task["spec"]["steps"][0]["env"]}
+expected_env = {
+    "CLUSTER_NAME", "TERRAFORM_STATE_BUCKET", "TERRAFORM_STATE_ENDPOINT",
+    "HUB_KUBECONFIG_SECRET", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+}
+if env != expected_env:
+    errors.append(f"env names differ: {sorted(env)}")
+if errors:
+    print("\n".join(errors))
+    sys.exit(1)
+PY
+echo "✅ PASS: params_and_env"
 
 # Test case: registry_secret_created
 echo ""
@@ -194,6 +232,8 @@ expect_success
 
 REG_SECRET=$(captured_manifest eic-registry-roks-c1) || { cat "${FAKE_OC_LOG}"; fail "Secret eic-registry-roks-c1 not applied"; }
 [[ "$(secret_value "${REG_SECRET}" server)" == "de.icr.io" ]] || fail "server should be de.icr.io"
+[[ "$(secret_value "${REG_SECRET}" namespace)" == "c1" ]] || fail "namespace should be the ICR namespace c1"
+[[ "$(secret_keys "${REG_SECRET}")" == "namespace password server username" ]] || fail "unexpected registry Secret keys: $(secret_keys "${REG_SECRET}")"
 [[ "$(secret_value "${REG_SECRET}" username)" == "iamapikey" ]] || fail "username should be iamapikey"
 [[ "$(secret_value "${REG_SECRET}" password)" == "${FAKE_ICR_API_KEY}" ]] || fail "password should be the ICR API key"
 grep -q "eic-registry-roks-c1" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "summary does not name the registry Secret"; }
@@ -250,6 +290,9 @@ expect_success
 ! captured_manifest eic-credentials-roks-c1 >/dev/null || fail "eic-credentials-roks-c1 should not be patched when Redis is off"
 # Registry secret should still be created
 captured_manifest eic-registry-roks-c1 >/dev/null || fail "eic-registry-roks-c1 should be created even when Redis is off"
+# The expected terraform error for the null redis_password is not logged
+! grep -q "Error" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "misleading terraform error logged when Redis is off"; }
+grep -q "Redis is not deployed" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "skipped redis-password not reported"; }
 
 echo "✅ PASS: redis_off_no_redis_patch"
 
