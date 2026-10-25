@@ -49,6 +49,10 @@ Cluster settings worth knowing:
   behind (even with a `Delete` storage class), which is why the
   `roks-teardown` task sweeps them afterwards (see [Destroy](#destroy)).
 - `wait_till = "IngressReady"` with a 3 h create timeout.
+- Storage: ELM and EIC are assumed to work with the cluster's default storage
+  class, VPC Block Storage (ReadWriteOnce; `ibmc-vpc-block-10iops-tier` on
+  ROKS VPC). No ReadWriteMany storage class (VPC File Storage, ODF) is
+  provisioned; add one if an EIC component turns out to need RWX.
 
 ## Container Registry (ICR)
 
@@ -152,6 +156,9 @@ the OpenShift default `10.128.0.0/14` used on ROSA/ARO is not possible; the
    (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`). The state holds the cluster
    admin certificate, the ingress secret, the registry API key and, when the
    optional services are on, the database passwords: keep the bucket private.
+4. The Container Registry plan in `eu-de` is not Lite (500 MB, too small
+   for the EIC images): `ibmcloud cr region-set eu-central`, `ibmcloud cr plan`,
+   and `ibmcloud cr plan-upgrade standard` if needed.
 
 ## Terraform state (COS through the s3 backend)
 

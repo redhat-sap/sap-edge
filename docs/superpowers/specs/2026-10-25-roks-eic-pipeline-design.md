@@ -47,15 +47,19 @@ down.
 - New ROKS tasks, one per ROSA counterpart:
   - `roks-deploy` — install Terraform + IBM Cloud CLI, `terraform apply` of
     `roks/terraform/`, wait for the cluster to be normal and workers ready.
-  - `roks-validate-and-get-access` — fetch an admin kubeconfig, write it to
-    the workspace (`kubeconfig`, same contract the shared tasks expect), verify
-    access, print the access summary.
+  - `roks-validate-and-get-access` — verify access with the admin kubeconfig
+    that `roks-deploy` wrote to the workspace, replace it with a ServiceAccount
+    token kubeconfig (`kubeconfig`, same contract the shared tasks expect) and
+    store that plus the database connection data in the Secret
+    `eic-credentials-roks-<cluster>` (on the hub cluster when configured).
   - `roks-validate-and-create-configmap` — find the EIC host and ingress
     address for the tests (ConfigMap with `host` and `ingressIP`, same format
     as ROSA's).
   - `roks-registry-access` — hands ELM the run's IBM Cloud Container Registry
     (ICR) access: registry server, namespace, user `iamapikey` and a push/pull
-    API key, stored as a Secret on the pipeline cluster.
+    API key, stored as the Secret `eic-registry-roks-<cluster>` on the hub
+    cluster when `hubKubeconfigSecretName` is set (the pipeline always passes
+    it), else on the pipeline cluster.
   - `roks-teardown` — `terraform destroy` plus cleanup of pipeline-side
     artifacts (ConfigMaps, Secrets on the hub), tolerant of partial state.
 - An ICR namespace for the run (container registry for ELM/EIC), created by
@@ -82,7 +86,10 @@ down.
   state even if the cluster is already half gone.
 - Touching anything outside the dedicated resource group (in particular the
   `Default` group, where the user's own ROKS cluster runs on the user's
-  infrastructure key).
+  infrastructure key). The one exception is the run's ICR service ID with its
+  access policy and API key: account-level IAM objects (IAM has no resource
+  groups), named `<cluster>-icr`, scoped to the run's namespace and deleted by
+  teardown.
 - Credentials in task results, approval descriptions or logs.
 - Changes to shared tasks that alter behavior for other pipelines.
 
@@ -138,8 +145,9 @@ down.
 
 - **Naming and tags:** every IBM resource the pipeline creates is prefixed
   `redhat-` (cluster `redhat-roks-eic-pr{{ pull_request_number }}`, VPC,
-  subnets, gateways, COS, databases) and tagged `owner:redhat`,
-  `project:sap-edge`, `pr:<N>` — extending the user's naming wish.
+  subnets, gateways, COS, databases) and, where the resource supports tags,
+  tagged `owner:redhat`, `project:sap-edge`, `pr:<N>` — extending the user's
+  naming wish.
 - **Resource group and infrastructure key:** all resources go into
   `redhat-sap-edge-roks-ci`. `roks-deploy` ensures that group's `eu-de`
   infrastructure key belongs to the pipeline's API key (safe because the
@@ -179,7 +187,8 @@ down.
   ingress hostname, ICR registry/namespace/user/API key, database endpoints.
 - **Admin kubeconfig:** Terraform data source `ibm_container_cluster_config`
   with admin credentials (no `ibmcloud` login needed for this), written to the
-  workspace by `roks-validate-and-get-access`.
+  workspace by `roks-deploy`; `roks-validate-and-get-access` replaces it with
+  a ServiceAccount token kubeconfig.
 - **Terraform state:** an existing IBM Cloud Object Storage bucket, used
   through Terraform's `s3` backend (COS is S3-compatible) with
   `use_lockfile = true` for locking (no DynamoDB equivalent needed); one state
@@ -200,8 +209,14 @@ down.
 
 - (Done) resource group `redhat-sap-edge-roks-ci`.
 - A service ID (e.g. `redhat-sap-edge-roks-ci`) with an API key and access
-  to VPC Infrastructure, Kubernetes Service, Cloud Object Storage and Databases
-  in that resource group.
+  to VPC Infrastructure, Kubernetes Service (including the Administrator
+  platform role for the infrastructure API key), Cloud Object Storage and
+  Databases in that resource group; for the per-run ICR access also Container
+  Registry in `eu-de` (Manager service role for namespaces, Administrator
+  platform role for the namespace policy) and IAM Identity Service (Operator,
+  to create the service ID and its API key).
+- The ICR plan in `eu-de` is not Lite (`ibmcloud cr region-set eu-central`,
+  `ibmcloud cr plan`; `ibmcloud cr plan-upgrade standard` if needed).
 - A COS bucket for Terraform state plus HMAC credentials, stored as the state
   Secret; the API-key Secret.
 
@@ -215,6 +230,8 @@ down.
   need (ROSA already falls back to the hostname; check what `endpoint-tests`
   accepts).
 - Storage classes for ELM on ROKS (block vs file) and whether any EIC
-  component needs RWX.
+  component needs RWX. Outcome: the ROKS VPC default storage class (VPC Block
+  Storage, RWO) is assumed for ELM/EIC; no RWX storage class is provisioned
+  (`roks/terraform/README.md`).
 - Exact params of the new tasks (follow ROSA's names where meaning matches).
 - README/docs placement, and harness tests for the new task scripts.

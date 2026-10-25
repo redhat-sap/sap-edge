@@ -60,10 +60,10 @@ CI/CD pipelines for deploying and testing SAP Edge Integration Cell on ARO, ROSA
 - `rosa-teardown-task`: Clean up resources
 
 ### ROKS Tasks
-- `roks-deploy-task`: Deploy ROKS with Terraform (PostgreSQL/Redis via IBM Cloud Databases)
-- `roks-validate-and-get-access-task`: Fetch admin kubeconfig and validate cluster access
+- `roks-deploy-task`: Deploy ROKS with Terraform (VPC, cluster, ICR namespace and service ID, PostgreSQL/Redis via IBM Cloud Databases) and fetch the admin kubeconfig into the workspace
+- `roks-validate-and-get-access-task`: Validate cluster access, switch the workspace to a ServiceAccount token kubeconfig and store it with the database connection data in the Secret `eic-credentials-roks-<cluster>` (on the hub cluster when configured)
 - `roks-validate-and-create-configmap-task`: Find EIC host and ingress address for tests
-- `roks-registry-access-task`: Provision IBM Cloud Container Registry namespace and credentials for ELM
+- `roks-registry-access-task`: Store the ICR access for ELM (server, namespace, user, API key from the Terraform state) in the Secret `eic-registry-roks-<cluster>` (on the hub cluster when configured), and the Redis password in `eic-credentials-roks-<cluster>`
 - `roks-teardown-task`: Destroy infrastructure and clean up artifacts
 
 ### HCP Tasks
@@ -505,7 +505,7 @@ ROKS pipelines deploy a VPC cluster with IBM Cloud Databases for PostgreSQL and 
 
 **One-time setup:**
 
-1. **Resource group** `redhat-sap-edge-roks-ci` (exists). Every resource the pipeline creates is named `redhat-<cluster>-*` and tagged `owner:redhat`, `project:sap-edge`, `pr:<N>`, so IBM colleagues recognize them.
+1. **Resource group** `redhat-sap-edge-roks-ci` (exists). Every resource the pipeline creates is named `redhat-<cluster>-*` and, where the resource supports tags, tagged `owner:redhat`, `project:sap-edge`, `pr:<N>`, so IBM colleagues recognize them.
 
 2. **Service ID** (e.g. `redhat-sap-edge-roks-ci`) with an API key and access:
    - **VPC Infrastructure Services** in the resource group
@@ -534,17 +534,20 @@ ROKS pipelines deploy a VPC cluster with IBM Cloud Databases for PostgreSQL and 
 
 **What the pipeline produces for ELM:**
 
-- Restricted kubeconfig Secret for cluster registration
-- IBM Cloud Container Registry Secret `eic-registry-roks-<cluster>` (server `de.icr.io`, namespace = cluster name, user `iamapikey`, password = ICR API key)
-- Service data ConfigMap/Secret `eic-credentials-roks-<cluster>` (includes `redis-password`)
-- PostgreSQL admin password in the user's Secret
+- Restricted kubeconfig Secret `edgelm-kubeconfig-generated-<cluster>` (pipeline namespace, pipeline cluster) for cluster registration
+- IBM Cloud Container Registry Secret `eic-registry-roks-<cluster>` (on the hub cluster when `hubKubeconfigSecretName` is set; the pipeline always sets it): keys `server` (`de.icr.io`), `namespace` (the cluster name), `username` (`iamapikey`) and `password` (API key of the run's ICR service ID). Terraform in `roks-deploy` creates the namespace and the service ID; `roks-registry-access` stores the Secret.
+- Secret `eic-credentials-roks-<cluster>` (on the hub cluster when configured): token kubeconfig, PostgreSQL/Redis connection data and `redis-password`
+- PostgreSQL admin password: key `POSTGRES_ADMIN_PASSWORD` of your Secret `roks-postgres-admin-password` (pipeline namespace, pipeline cluster)
 
 **Running:**
 
-Start the example PipelineRun on demand (it lives in `.tekton-examples/`, not auto-triggered):
+The example PipelineRun lives in `.tekton-examples/` and is not triggered automatically. Its `{{ pull_request_number }}`, `{{ repo_url }}` and `{{ revision }}` placeholders are filled in only by Pipelines-as-Code, so `oc create -f` on the file as it is fails. Either copy it into `.tekton/` on a pull request (Pipelines-as-Code renders and starts it), or replace the placeholders in a copy first (the Pipeline and the Tasks must then already exist in the namespace, see [Deploy Pipeline Resources](#2-deploy-pipeline-resources)):
 
 ```bash
-oc create -f .tekton-examples/roks-eic-ossm3-run.yaml
+sed -e 's/{{ pull_request_number }}/123/g' \
+    -e 's|{{ repo_url }}|https://github.com/redhat-sap/sap-edge|g' \
+    -e 's/{{ revision }}/<branch or commit>/g' \
+    .tekton-examples/roks-eic-ossm3-run.yaml | oc create -f -
 tkn pipelinerun logs -f <pipelinerun-name>
 ```
 
