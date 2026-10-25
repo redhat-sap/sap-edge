@@ -67,14 +67,13 @@ nothing is created, and every output below is `null`.
 - PostgreSQL 15, as on ROSA (RDS 15.x) and in the repository's in-cluster
   PostgresCluster (v15). The admin user
   is `admin` (output `postgres_admin_username`) with password
-  `postgres_admin_password`, which must be 15-32 characters with at least one
-  letter and one digit, and no special characters other than `-` and `_`
-  (IBM's rule; the variable is validated).
-- **`edgedb` is not created by Terraform.** IBM Cloud Databases creates only
-  the database `ibmclouddb`, and the provider cannot create others. Output
-  `postgres_database` is the name EIC is given (`edgedb`); create it before EIC
-  uses it, e.g. from a pod in the cluster (the allowlist admits the cluster):
-  `psql "host=<postgres_host> port=<postgres_port> dbname=ibmclouddb user=admin sslmode=require" -c 'CREATE DATABASE edgedb'`.
+  `postgres_admin_password`. The IBM provider accepts 15-72 characters of
+  letters, digits, `-` and `_`, with at least one lower case letter, one upper
+  case letter and one digit, and not starting with `-` or `_`; the variable
+  enforces the same rules.
+- Database: output `postgres_database` is the database IBM Cloud Databases
+  creates in the instance (`ibmclouddb`, read from the connection data). EIC's
+  database name is entered in ELM.
 - Redis: IBM's default version, admin user `admin` (output `redis_username`),
   32-character generated password (sensitive output `redis_password`). Clients
   must use TLS.
@@ -250,7 +249,7 @@ before you copy it elsewhere. It grants cluster-admin: do not share it.
 | `deploy_postgres` | `false` | Optional IBM Cloud Databases for PostgreSQL |
 | `deploy_redis` | `false` | Optional IBM Cloud Databases for Redis |
 | `deploy_quay_storage` | `false` | Optional COS bucket and HMAC key for Quay |
-| `postgres_admin_password` | `""` (sensitive) | PostgreSQL admin password; required when `deploy_postgres`, 15-32 characters of letters, digits, `-`, `_` with at least one letter and one digit |
+| `postgres_admin_password` | `""` (sensitive) | PostgreSQL admin password; required when `deploy_postgres`: 15-72 characters of letters, digits, `-`, `_`, with at least one lower case letter, one upper case letter and one digit, not starting with `-` or `_` |
 
 ## Outputs
 
@@ -263,7 +262,7 @@ before you copy it elsewhere. It grants cluster-admin: do not share it.
 | `admin_kubeconfig_path` | Path of the downloaded admin kubeconfig |
 | `vpc_id` | VPC ID |
 | `postgres_host`, `postgres_port` | PostgreSQL public hostname and port |
-| `postgres_database` | `edgedb` (created after provisioning, see above) |
+| `postgres_database` | Database IBM Cloud Databases creates (`ibmclouddb`) |
 | `postgres_admin_username` | `admin` |
 | `postgres_ca_certificate_base64` | CA certificate of the PostgreSQL TLS certificate (not a secret) |
 | `redis_host`, `redis_port` | Redis public hostname and port (TLS) |

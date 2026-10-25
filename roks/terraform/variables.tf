@@ -173,7 +173,7 @@ variable "deploy_quay_storage" {
 }
 
 variable "postgres_admin_password" {
-  description = "Admin password of the PostgreSQL instance (only used when deploy_postgres is true). IBM Cloud Databases rules: 15-32 characters, at least one letter and one digit, no special characters other than - and _."
+  description = "Admin password of the PostgreSQL instance (only used when deploy_postgres is true). IBM provider rules: 15-72 characters of letters, digits, - and _; at least one lower case letter, one upper case letter and one digit; must not start with - or _."
   type        = string
   sensitive   = true
   default     = ""
@@ -186,11 +186,12 @@ variable "postgres_admin_password" {
   validation {
     condition = (
       !var.deploy_postgres || var.postgres_admin_password == "" || (
-        can(regex("^[A-Za-z0-9_-]{15,32}$", var.postgres_admin_password)) &&
-        can(regex("[A-Za-z]", var.postgres_admin_password)) &&
+        can(regex("^[A-Za-z0-9][A-Za-z0-9_-]{14,71}$", var.postgres_admin_password)) &&
+        can(regex("[a-z]", var.postgres_admin_password)) &&
+        can(regex("[A-Z]", var.postgres_admin_password)) &&
         can(regex("[0-9]", var.postgres_admin_password))
       )
     )
-    error_message = "postgres_admin_password must be 15-32 characters with at least one letter and one digit; the only special characters IBM Cloud Databases accepts are - and _."
+    error_message = "postgres_admin_password must be 15-72 characters of letters, digits, - and _, with at least one lower case letter, one upper case letter and one digit, and must not start with - or _ (IBM provider rules)."
   }
 }

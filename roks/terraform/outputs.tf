@@ -48,8 +48,8 @@ output "postgres_port" {
 }
 
 output "postgres_database" {
-  description = "Database name for EIC, edgedb (null unless deploy_postgres). IBM Cloud Databases does not create it; see README.md"
-  value       = var.deploy_postgres ? local.postgres_database : null
+  description = "Name of the database IBM Cloud Databases creates in the instance, ibmclouddb; entered in ELM for EIC (null unless deploy_postgres)"
+  value       = var.deploy_postgres ? data.ibm_database_connection.postgres[0].postgres[0].database : null
 }
 
 output "postgres_admin_username" {

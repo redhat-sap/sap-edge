@@ -44,5 +44,6 @@ deploy_postgres     = false
 deploy_redis        = false
 deploy_quay_storage = false
 # postgres_admin_password (required when deploy_postgres = true): set it via
-# TF_VAR_postgres_admin_password, not here. 15-32 characters, at least one
-# letter and one digit, no special characters other than - and _.
+# TF_VAR_postgres_admin_password, not here. 15-72 characters of letters,
+# digits, - and _; at least one lower case letter, one upper case letter and
+# one digit; must not start with - or _.
