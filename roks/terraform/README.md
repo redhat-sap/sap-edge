@@ -321,7 +321,9 @@ not delete them when the cluster goes, and the VPC cannot be deleted while
 they exist. `terraform_data.vpe_cleanup` (in `cluster.tf`) has a destroy-time
 `local-exec` provisioner that runs `scripts/delete-vpe-gateways.sh <vpc_id> <region>`:
 it deletes only the `iks-*` endpoint gateways of this VPC, waits up to 15
-minutes until they are gone, then deletes `kube-vpegw-<vpc_id>`. The cluster
+minutes until they are gone (requesting the deletion again on every poll for
+those not yet being deleted, e.g. after a failed request), then deletes
+`kube-vpegw-<vpc_id>`. The cluster
 depends on the hook and the hook on the VPC and subnets, so on destroy it runs
 after the cluster is deleted and before the subnets and the VPC. If it fails,
 destroy stops with the hook, subnets and VPC still in the state; rerun the
