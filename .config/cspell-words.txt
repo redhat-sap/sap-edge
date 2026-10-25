@@ -208,3 +208,13 @@ walldorf
 xbem
 xklaieniej
 xlarge
+HMAC
+IBMCLOUD
+Ibmcloud
+ROKS
+appdomain
+ibmcloud
+mycluster
+oalbrigt
+roks
+apikey
