@@ -32,6 +32,8 @@ b64url() {
 
 # IAM token of the logged-in identity (a service ID)
 LOGIN_IAM_ID="iam-ServiceId-1111-pipeline"
+STUB_LOGIN_IAM_ID="${LOGIN_IAM_ID}"
+export STUB_LOGIN_IAM_ID
 STUB_IAM_TOKEN="$(b64url '{"alg":"RS256"}').$(b64url "{\"iam_id\":\"${LOGIN_IAM_ID}\",\"sub\":\"ServiceId-1111-pipeline\",\"account\":{\"bss\":\"acct\"}}").${FAKE_JWT_SIGNATURE}"
 export STUB_IAM_TOKEN
 
@@ -116,7 +118,9 @@ esac
 EOF
 chmod +x "${STUB_BIN}/terraform"
 
-# Stub ibmcloud: logs every call; serves the IAM token and the API key owner.
+# Stub ibmcloud: logs every call; serves the IAM token, the current target
+# and the API key owner (info fails when STUB_KEY_INFO_FAILS=true); reset makes
+# the logged-in identity the owner unless STUB_RESET_FIXES_OWNER=false.
 cat > "${STUB_BIN}/ibmcloud" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -124,9 +128,22 @@ printf '%s\n' "$*" >> "${STUB_IC_LOG}"
 case "$*" in
   "config --check-version=false") ;;
   "login --apikey "*) printf 'API endpoint: https://cloud.ibm.com\nAuthenticating...\nOK\n' ;;
+  "target -r "*) echo "Targeted: $*" ;;
+  "target --output json") cat "${STUB_TARGET_JSON}" ;;
   "iam oauth-tokens --output json") printf '{"iam_token":"Bearer %s","uaa_token":""}\n' "${STUB_IAM_TOKEN}" ;;
-  "ks api-key info --cluster "*) cat "${STUB_KEY_OWNER}" ;;
-  "ks api-key reset --region "*) echo "OK" ;;
+  "ks api-key info --cluster "*)
+    if [[ "${STUB_KEY_INFO_FAILS}" == "true" ]]; then
+      echo "FAILED: the API key owner could not be retrieved" >&2
+      exit 1
+    fi
+    cat "${STUB_KEY_OWNER}"
+    ;;
+  "ks api-key reset --region "*)
+    if [[ "${STUB_RESET_FIXES_OWNER}" == "true" ]]; then
+      printf '{"ID":"%s","Name":"pipeline","Email":""}\n' "${STUB_LOGIN_IAM_ID}" > "${STUB_KEY_OWNER}"
+    fi
+    echo "OK"
+    ;;
   *) echo "unexpected ibmcloud call: $*" >&2; exit 1 ;;
 esac
 EOF
@@ -159,6 +176,20 @@ export STUB_TF_OUTPUTS
 
 FLAT_KUBECONFIG='apiVersion: v1\nclusters:\n- cluster:\n    certificate-authority-data: stub-ca-data\n    server: https://c100.eu-de.containers.cloud.ibm.com:31000\n  name: stub\nusers:\n- name: admin\n  user:\n    client-certificate-data: stub-cert-data\n    client-key-data: stub-key-data'
 
+# What `ibmcloud target --output json` reports as the targeted resource group
+target_group() {
+  printf '{"api_endpoint":"https://cloud.ibm.com","region":{"name":"eu-de"},"resource_group":{"guid":"rg-guid","name":"%s"}}\n' "$1" > "${STUB_TARGET_JSON}"
+}
+
+# Line number of the first ibmcloud call matching an ERE (0 if none)
+ic_line() {
+  local N
+  N=$(grep -nE "$1" "${STUB_IC_LOG}" | head -1 | cut -d: -f1)
+  echo "${N:-0}"
+}
+
+FOREIGN_OWNER='{"id":"IBMid-0000USER","name":"Some User","email":"some.user@example.com"}'
+
 # Fresh stubs, fake bucket and workspace (a fresh git-clone with
 # roks/terraform but without the .kube directory), default params/secrets.
 # Pass "keep-bucket" to keep the fake state bucket of the previous run.
@@ -172,8 +203,13 @@ setup() {
     STUB_BUCKET_DIR=$(tmp_dir)
   fi
   STUB_TF_LOCKED=false
+  STUB_KEY_INFO_FAILS=false
+  STUB_RESET_FIXES_OWNER=true
+  STUB_TARGET_JSON=$(tmp_file)
   export STUB_TF_LOG STUB_IC_LOG STUB_TF_CREATES STUB_TF_INIT_FAILURES STUB_KEY_OWNER STUB_BUCKET_DIR STUB_TF_LOCKED
+  export STUB_KEY_INFO_FAILS STUB_RESET_FIXES_OWNER STUB_TARGET_JSON
   printf '{"ID":"%s","Name":"redhat-sap-edge-roks-ci","Email":""}\n' "${LOGIN_IAM_ID}" > "${STUB_KEY_OWNER}"
+  target_group redhat-sap-edge-roks-ci
 
   WS=$(tmp_dir)
   mkdir -p "${WS}/roks/terraform"
@@ -434,17 +470,97 @@ for OWNER in "${LOGIN_IAM_ID}" "${LOGIN_IAM_ID#iam-}"; do
   ! grep -q "api-key reset" "${STUB_IC_LOG}" || fail "api-key reset called although the owner (${OWNER}) is the logged-in identity"
 done
 
-# Owner is somebody else (lowercase JSON keys) → exactly one reset in eu-de
+# Owner is somebody else (lowercase JSON keys) → exactly one reset in eu-de,
+# after re-targeting and confirming the dedicated resource group
 setup
-printf '{"id":"IBMid-0000USER","name":"Some User","email":"some.user@example.com"}\n' > "${STUB_KEY_OWNER}"
+echo "${FOREIGN_OWNER}" > "${STUB_KEY_OWNER}"
 run_deploy
 expect_success
 [[ "$(grep -c "^ks api-key reset " "${STUB_IC_LOG}")" -eq 1 ]] || { cat "${STUB_IC_LOG}"; fail "expected exactly one api-key reset"; }
 grep -qE "^ks api-key reset --region eu-de( |$)" "${STUB_IC_LOG}" || { cat "${STUB_IC_LOG}"; fail "api-key reset not called with --region eu-de"; }
-# The reset happens after apply (the cluster id comes from the outputs)
 grep -q "IBMid-0000USER" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "previous owner not reported"; }
+RESET_LINE=$(ic_line "^ks api-key reset ")
+TARGET_LINE=$(ic_line "^target -r eu-de -g redhat-sap-edge-roks-ci$")
+TARGET_CHECK_LINE=$(ic_line "^target --output json$")
+INFO_LINE=$(ic_line "^ks api-key info ")
+[[ "${TARGET_LINE}" -gt 0 && "${TARGET_LINE}" -lt "${TARGET_CHECK_LINE}" && "${TARGET_CHECK_LINE}" -lt "${INFO_LINE}" && "${INFO_LINE}" -lt "${RESET_LINE}" ]] ||
+  { cat "${STUB_IC_LOG}"; fail "expected target -g redhat-sap-edge-roks-ci, then target --output json, then info, then reset"; }
+# Verified afterwards: info read again, success claimed only then
+[[ "$(grep -c "^ks api-key info " "${STUB_IC_LOG}")" -eq 2 ]] || { cat "${STUB_IC_LOG}"; fail "owner not re-read after the reset"; }
+grep -q "now belongs to ${LOGIN_IAM_ID}" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "verified reset not reported"; }
 
 echo "✅ PASS: infra_key_reset_only_when_owner_differs"
+
+# Test case: infra_key_reset_only_in_dedicated_group
+# The reset acts on the CLI's targeted resource group: never reset unless that
+# is exactly redhat-sap-edge-roks-ci (the Default group runs the user's cluster).
+echo ""
+echo "Test: infra_key_reset_only_in_dedicated_group"
+echo "--------------------------------------------"
+setup
+export IBMCLOUD_RESOURCE_GROUP=Default
+echo "${FOREIGN_OWNER}" > "${STUB_KEY_OWNER}"
+run_deploy
+expect_success
+! grep -q "api-key reset" "${STUB_IC_LOG}" || { cat "${STUB_IC_LOG}"; fail "api-key reset called for resource group Default"; }
+grep -q "not resetting" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "skipped reset not explained"; }
+
+# Param is right, but the CLI still targets another group → no reset
+setup
+target_group Default
+echo "${FOREIGN_OWNER}" > "${STUB_KEY_OWNER}"
+run_deploy
+expect_success
+grep -qxF "target -r eu-de -g redhat-sap-edge-roks-ci" "${STUB_IC_LOG}" || { cat "${STUB_IC_LOG}"; fail "dedicated group not re-targeted"; }
+! grep -q "api-key reset" "${STUB_IC_LOG}" || { cat "${STUB_IC_LOG}"; fail "api-key reset called while the CLI targets Default"; }
+grep -q "Default" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "targeted group not reported"; }
+
+echo "✅ PASS: infra_key_reset_only_in_dedicated_group"
+
+# Test case: infra_key_unreadable_owner_no_reset
+# Unknown owner is not "different owner": warn, show the JSON keys, no reset.
+echo ""
+echo "Test: infra_key_unreadable_owner_no_reset"
+echo "--------------------------------------------"
+setup
+STUB_KEY_INFO_FAILS=true
+export STUB_KEY_INFO_FAILS
+run_deploy
+expect_success
+! grep -q "api-key reset" "${STUB_IC_LOG}" || fail "api-key reset called although api-key info failed"
+grep -q "⚠️" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "no warning for the failed api-key info"; }
+
+setup
+echo '{"Owner":"someone","Created":"2026-10-25"}' > "${STUB_KEY_OWNER}"
+run_deploy
+expect_success
+! grep -q "api-key reset" "${STUB_IC_LOG}" || fail "api-key reset called although no owner ID/email was parsed"
+grep -qF '["Created","Owner"]' <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "top-level JSON keys not printed"; }
+
+setup
+echo 'Owner: Some User' > "${STUB_KEY_OWNER}"
+run_deploy
+expect_success
+! grep -q "api-key reset" "${STUB_IC_LOG}" || fail "api-key reset called for non-JSON api-key info output"
+
+echo "✅ PASS: infra_key_unreadable_owner_no_reset"
+
+# Test case: infra_key_reset_unverified_warns
+# The owner is still foreign after the reset → loud warning, no success claim.
+echo ""
+echo "Test: infra_key_reset_unverified_warns"
+echo "--------------------------------------------"
+setup
+STUB_RESET_FIXES_OWNER=false
+export STUB_RESET_FIXES_OWNER
+echo "${FOREIGN_OWNER}" > "${STUB_KEY_OWNER}"
+run_deploy
+expect_success
+[[ "$(grep -c "^ks api-key reset " "${STUB_IC_LOG}")" -eq 1 ]] || { cat "${STUB_IC_LOG}"; fail "expected exactly one api-key reset"; }
+! grep -q "now belongs to" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "success claimed although the owner did not change"; }
+grep -q "still" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "unverified reset not warned about"; }
+
+echo "✅ PASS: infra_key_reset_unverified_warns"
 
 # Test case: writes_workspace_kubeconfig
 echo ""
