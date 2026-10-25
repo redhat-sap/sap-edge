@@ -29,6 +29,8 @@ ALLOWLIST = [
     # Pre-existing defect: postgresAdminPassword param removed from rosa-deploy-with-eic-services task but pipeline still passes it
     ("rosa-edgelm-validation-pipeline", "param.undeclared", "deploy-rosa.postgresAdminPassword"),
     ("rosa-validation-pipeline", "param.undeclared", "deploy-rosa.postgresAdminPassword"),
+    # Pre-existing defect: .tekton-examples/rosa-edgelm-validation-run.yaml passes a param its pipeline does not declare
+    ("rosa-edgelm-validation-pr{{ pull_request_number }}-", "param", "pullRequestNumber"),
 ]
 
 
