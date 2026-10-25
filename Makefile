@@ -37,6 +37,7 @@ YEAR=$$(date +%Y)
 
 include bicep.makefile
 include rosa.makefile
+include roks.makefile
 
 .DEFAULT_GOAL := help
 .PHONY: help
@@ -55,7 +56,7 @@ yamllint: .venv/bin/activate ## Run yamllint
 	. .venv/bin/activate && $(TOX) -e yamllint
 
 .PHONY: lint
-lint: yamllint shellcheck reuse lint-bicep tflint tfsec checkov cspell  # Run linting for the repo
+lint: yamllint shellcheck reuse lint-bicep tflint tfsec checkov roks-tflint roks-tfsec roks-checkov cspell  # Run linting for the repo
 
 .PHONY: shellcheck
 shellcheck: .venv/bin/activate  ## Run shell check analysis

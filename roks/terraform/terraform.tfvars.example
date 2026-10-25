@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: 2026 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Example terraform.tfvars for a ROKS (Red Hat OpenShift on IBM Cloud, VPC)
+# cluster. Copy to terraform.tfvars (git-ignored) and adjust.
+# The IBM Cloud API key is not a variable: export IBMCLOUD_API_KEY instead.
+
+# Must start with "redhat-", 2-32 characters, lowercase letters, digits, hyphens.
+# The make targets pass it as -var cluster_name=$(CLUSTER).
+cluster_name = "redhat-roks-eic-pr123"
+
+# Adds the tag pr:<N> to every resource.
+pr_number = "123"
+
+region         = "eu-de"
+resource_group = "redhat-sap-edge-roks-ci"
+zones          = ["eu-de-1", "eu-de-2", "eu-de-3"]
+
+# `ibmcloud oc versions` lists the available versions.
+openshift_version = "4.21_openshift"
+
+# 16 vCPU / 64 GB, one worker per zone = 3 workers.
+worker_flavor    = "bx2.16x64"
+workers_per_zone = 1
+
+# Pod network; IBM accepts /13-/23 inside 172.17.0.0/16, 172.21.0.0-172.31.255.255
+# (minus the service subnet 172.21.0.0/16), 192.168.0.0-192.168.254.255 or
+# 198.18.0.0/15. Add it to the httpbinipfilter iFlow allowlist.
+pod_subnet = "172.17.0.0/18"
+
+# Existing directory for the admin kubeconfig download.
+kubeconfig_dir = "./.kube"
+
+# Optional managed services (default false).
+deploy_postgres     = false
+deploy_redis        = false
+deploy_quay_storage = false
+# postgres_admin_password: set via TF_VAR_postgres_admin_password, not here.

@@ -218,3 +218,6 @@ mycluster
 oalbrigt
 roks
 apikey
+chdir
+multizone
+tflock

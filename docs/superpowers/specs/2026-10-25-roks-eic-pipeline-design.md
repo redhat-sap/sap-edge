@@ -126,9 +126,12 @@ down.
   group is dedicated). `roks-teardown` may sweep leftover load balancers and
   block volumes tagged for the run's cluster in that group only.
 - **Entitlement:** none (regular license), matching the existing cluster.
-- **Network ranges:** VPC address prefixes inside `10.0.0.0/16` and ROKS
-  `pod_subnet` `10.128.0.0/14` (service subnet left at the ROKS default), so
-  the `httpbinipfilter` iFlow allowlist that already covers ROSA covers ROKS.
+- **Network ranges:** VPC address prefixes inside `10.0.0.0/16`; ROKS
+  `pod_subnet` defaults to `172.17.0.0/18` (service subnet left at the ROKS
+  default) because IBM only allows pod subnets inside `172.17.0.0/16`,
+  `172.21.0.0`–`172.31.255.255`, `192.168.0.0`–`192.168.254.255` and
+  `198.18.0.0/15`; the `httpbinipfilter` iFlow allowlist gets a one-time
+  addition (`172.17.0.0/18` and `10.0.0.0/16`).
 - **Failure policy:** like ROSA/ARO/HCP, a failed or rejected run leaves the
   cluster for debugging (no `finally` teardown). A supported manual path
   `make roks-destroy CLUSTER=<name>` (in `roks.makefile`) destroys from the

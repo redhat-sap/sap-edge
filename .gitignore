@@ -17,6 +17,12 @@ rosa/terraform/.terraform
 rosa/terraform/terraform.tfvars
 rosa/terraform/backend.config
 rosa/terraform/.terraform.lock.hcl
+roks/terraform/.terraform
+roks/terraform/terraform.tfvars
+roks/terraform/backend.config
+roks/terraform/.terraform.lock.hcl
+roks/terraform/.kube/*
+!roks/terraform/.kube/.gitkeep
 
 CLAUDE.md
 .claude/
