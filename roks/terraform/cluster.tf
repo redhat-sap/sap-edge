@@ -17,6 +17,36 @@ resource "ibm_resource_instance" "cos" {
 }
 
 ###########################################
+# VPE cleanup on destroy
+###########################################
+
+# The first cluster in a VPC makes ROKS create shared VPE gateways (iks-*) and
+# the security group kube-vpegw-<vpc_id>; ROKS never deletes them, and they
+# block deleting the subnets and the VPC. Destroy order is the reverse of the
+# dependencies: the cluster depends on this resource, which depends on the VPC
+# and the subnets, so on destroy the hook runs after the cluster is gone and
+# before the subnets and the VPC are deleted. Needs a logged-in ibmcloud CLI
+# with the vpc-infrastructure plugin and jq.
+resource "terraform_data" "vpe_cleanup" {
+  input = {
+    vpc_id = ibm_is_vpc.vpc.id
+    region = var.region
+  }
+
+  provisioner "local-exec" {
+    when        = destroy
+    working_dir = path.module
+    command     = "bash scripts/delete-vpe-gateways.sh \"$VPC_ID\" \"$REGION\""
+    environment = {
+      VPC_ID = self.input.vpc_id
+      REGION = self.input.region
+    }
+  }
+
+  depends_on = [ibm_is_subnet.zone]
+}
+
+###########################################
 # ROKS cluster
 ###########################################
 
@@ -61,6 +91,9 @@ resource "ibm_container_vpc_cluster" "cluster" {
     update = "2h"
     delete = "2h"
   }
+
+  # Destroyed before the VPE cleanup hook runs (see terraform_data.vpe_cleanup).
+  depends_on = [terraform_data.vpe_cleanup]
 }
 
 ###########################################

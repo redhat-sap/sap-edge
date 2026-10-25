@@ -11,6 +11,8 @@
 #   AWS_ACCESS_KEY_ID        COS HMAC access key of the state bucket
 #   AWS_SECRET_ACCESS_KEY    COS HMAC secret key of the state bucket
 #   IBMCLOUD_API_KEY         IBM Cloud API key (plan/apply/destroy)
+# roks-destroy also needs bash, jq and a logged-in ibmcloud CLI with the
+# vpc-infrastructure plugin (VPE cleanup hook, see roks/terraform/README.md).
 # Optional:
 #   TERRAFORM_STATE_ENDPOINT COS S3 endpoint (default: eu-de public endpoint)
 #   ROKS_TF_ARGS             extra arguments for plan/apply/destroy, e.g. -var pr_number=123

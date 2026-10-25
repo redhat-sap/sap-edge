@@ -26,6 +26,7 @@ All resources go into the existing resource group `redhat-sap-edge-roks-ci`
 | One worker subnet per zone, attached to the zone's public gateway | `<cluster_name>-subnet-<zone>` |
 | Cloud Object Storage instance (standard, global; ROKS on VPC needs it for the internal registry) | `<cluster_name>-cos` |
 | ROKS cluster: `bx2.16x64`, 1 worker per zone across 3 zones, no entitlement (regular OpenShift license), public service endpoint on, outbound traffic protection off | `<cluster_name>` |
+| `terraform_data.vpe_cleanup`: destroy-time hook that deletes the VPE gateways ROKS leaves in the VPC (see [Destroy](#destroy)) | - |
 
 `cluster_name` must start with `redhat-` (the pipeline uses
 `redhat-roks-eic-pr<N>`), so every resource name starts with `redhat-`. Every
@@ -133,6 +134,24 @@ cleanup path for runs that failed or were rejected (those keep the cluster for
 debugging). Without `-refresh=false`, Terraform re-reads the admin-kubeconfig
 data source first, which fails when the cluster is already (half) gone or the
 kubeconfig directory is missing.
+
+**Requirements for destroy** (`terraform destroy` and `make roks-destroy`):
+`bash`, `jq` and the `ibmcloud` CLI with the `vpc-infrastructure` plugin
+(`ibmcloud plugin install vpc-infrastructure`), logged in to the account
+(`ibmcloud login --apikey "$IBMCLOUD_API_KEY" -r eu-de`).
+
+**VPE cleanup hook:** when the first cluster is created in a VPC, ROKS creates
+shared VPC endpoint gateways named `iks-*` (Container Registry, COS, cluster
+service API, VPC API) and the security group `kube-vpegw-<vpc_id>`. ROKS does
+not delete them when the cluster goes, and the VPC cannot be deleted while
+they exist. `terraform_data.vpe_cleanup` (in `cluster.tf`) has a destroy-time
+`local-exec` provisioner that runs `scripts/delete-vpe-gateways.sh <vpc_id> <region>`:
+it deletes only the `iks-*` endpoint gateways of this VPC, waits up to 15
+minutes until they are gone, then deletes `kube-vpegw-<vpc_id>`. The cluster
+depends on the hook and the hook on the VPC and subnets, so on destroy it runs
+after the cluster is deleted and before the subnets and the VPC. If it fails,
+destroy stops with the hook, subnets and VPC still in the state; rerun the
+destroy.
 
 ### Admin kubeconfig
 
