@@ -18,6 +18,11 @@ terraform {
       source  = "IBM-Cloud/ibm"
       version = "~> 2.8.0"
     }
+    # Generates the Redis admin password (services.tf).
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.9.0"
+    }
   }
 }
 

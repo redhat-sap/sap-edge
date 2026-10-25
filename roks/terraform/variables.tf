@@ -154,31 +154,43 @@ variable "kubeconfig_dir" {
 # Optional managed services
 ###########################################
 
-# tflint-ignore: terraform_unused_declarations # consumed by the optional services (services.tf)
 variable "deploy_postgres" {
   description = "Create an IBM Cloud Databases for PostgreSQL instance."
   type        = bool
   default     = false
 }
 
-# tflint-ignore: terraform_unused_declarations # consumed by the optional services (services.tf)
 variable "deploy_redis" {
   description = "Create an IBM Cloud Databases for Redis instance."
   type        = bool
   default     = false
 }
 
-# tflint-ignore: terraform_unused_declarations # consumed by the optional services (services.tf)
 variable "deploy_quay_storage" {
   description = "Create a COS bucket and HMAC credentials for Quay registry storage."
   type        = bool
   default     = false
 }
 
-# tflint-ignore: terraform_unused_declarations # consumed by the optional services (services.tf)
 variable "postgres_admin_password" {
-  description = "Admin password of the PostgreSQL instance (only used when deploy_postgres is true)."
+  description = "Admin password of the PostgreSQL instance (only used when deploy_postgres is true). IBM Cloud Databases rules: 15-32 characters, at least one letter and one digit, no special characters other than - and _."
   type        = string
   sensitive   = true
   default     = ""
+
+  validation {
+    condition     = !var.deploy_postgres || var.postgres_admin_password != ""
+    error_message = "postgres_admin_password must be set when deploy_postgres is true (e.g. export TF_VAR_postgres_admin_password)."
+  }
+
+  validation {
+    condition = (
+      !var.deploy_postgres || var.postgres_admin_password == "" || (
+        can(regex("^[A-Za-z0-9_-]{15,32}$", var.postgres_admin_password)) &&
+        can(regex("[A-Za-z]", var.postgres_admin_password)) &&
+        can(regex("[0-9]", var.postgres_admin_password))
+      )
+    )
+    error_message = "postgres_admin_password must be 15-32 characters with at least one letter and one digit; the only special characters IBM Cloud Databases accepts are - and _."
+  }
 }
