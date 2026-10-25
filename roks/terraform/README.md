@@ -44,8 +44,10 @@ Cluster settings worth knowing:
 - `disable_outbound_traffic_protection = true`: OpenShift 4.15+ on VPC blocks
   public egress from workers by default; the cluster needs it for
   OperatorHub, `registry.redhat.io`, SAP registries and ELM.
-- `force_delete_storage = true`: volumes created by PVCs are deleted with the
-  cluster, so no billable storage stays behind.
+- `force_delete_storage = true`: asks ROKS to delete the volumes created by
+  PVCs together with the cluster. VPC Block Storage volumes can still stay
+  behind (even with a `Delete` storage class), which is why the
+  `roks-teardown` task sweeps them afterwards (see [Destroy](#destroy)).
 - `wait_till = "IngressReady"` with a 3 h create timeout.
 
 ## Container Registry (ICR)
@@ -211,16 +213,79 @@ Other variables go into `roks/terraform/terraform.tfvars` (see
 
 ### Destroy
 
-`make roks-destroy` runs `terraform destroy -refresh=false`. It is the manual
-cleanup path for runs that failed or were rejected (those keep the cluster for
-debugging). Without `-refresh=false`, Terraform re-reads the admin-kubeconfig
-data source first, which fails when the cluster is already (half) gone or the
-kubeconfig directory is missing.
+`make roks-destroy` runs `terraform destroy -refresh=false -var cluster_name=<CLUSTER>`
+against the state key `roks/<CLUSTER>/terraform.tfstate`, the same as the
+pipeline's `roks-teardown` task. It is the manual cleanup path for runs that
+failed or were rejected (those keep the cluster for debugging). Without
+`-refresh=false`, Terraform re-reads the admin-kubeconfig data source first,
+which fails when the cluster is already (half) gone or the kubeconfig
+directory is missing. Destroy works from the state: the `deploy_*` flags and
+the PostgreSQL password are not needed. For a region other than `eu-de`, add
+`ROKS_TF_ARGS="-var region=<region>"`.
 
 **Requirements for destroy** (`terraform destroy` and `make roks-destroy`):
 `bash`, `jq` and the `ibmcloud` CLI with the `vpc-infrastructure` plugin
-(`ibmcloud plugin install vpc-infrastructure`), logged in to the account
-(`ibmcloud login --apikey "$IBMCLOUD_API_KEY" -r eu-de`).
+(`ibmcloud plugin install vpc-infrastructure`), logged in to the account:
+`ibmcloud login -r eu-de -g redhat-sap-edge-roks-ci` reads the key from
+`IBMCLOUD_API_KEY`, so it is not on the command line.
+
+**What `roks-teardown` adds** (the pipeline task; `make roks-destroy` does
+none of this):
+
+- Up to 3 destroy attempts. A state lock is not retried.
+- Before the destroy, it reads the cluster ID (`terraform output -raw cluster_id`,
+  else `roks-terraform-outputs.json` of `roks-deploy` if it names the same
+  cluster). After the destroy, and between attempts once the cluster is gone
+  from the state, it deletes the VPC load balancers and block volumes the
+  cluster left behind: only in `redhat-sap-edge-roks-ci`, and only those whose
+  name or tags contain the cluster ID (ROKS names its load balancers
+  `kube-<cluster ID>-<service UID>`; the VPC Block CSI driver tags its volumes
+  with the cluster ID). Without a cluster ID, or when `ibmcloudResourceGroup`
+  is another group, it skips this sweep with a warning.
+- It deletes the ConfigMap `cluster-info-roks-<cluster>` on the pipeline
+  cluster and the Secrets `eic-credentials-roks-<cluster>` and
+  `eic-registry-roks-<cluster>` (on the hub cluster when
+  `hubKubeconfigSecretName` is set), and removes `terraform.tfvars` (it may
+  hold the PostgreSQL password) from the workspace.
+- It exits 0 only when the destroy succeeded and nothing is left. Otherwise
+  it fails with a list of what is left and the recovery steps below.
+
+After `make roks-destroy`, do the sweep by hand. Read the cluster ID before
+the destroy (`terraform -chdir=roks/terraform output -raw cluster_id`), list
+the cluster's leftovers, and delete each one with
+`ibmcloud is load-balancer-delete <id> --force` or
+`ibmcloud is volume-delete <id> --force`:
+
+```bash
+CLUSTER_ID=<cluster ID>
+ibmcloud is load-balancers --all-resource-groups --output JSON |
+  jq -r --arg cid "$CLUSTER_ID" '.[] | select(.resource_group.name == "redhat-sap-edge-roks-ci" and (.name | contains($cid))) | "\(.id) \(.name)"'
+ibmcloud is volumes --all-resource-groups --output JSON |
+  jq -r --arg cid "$CLUSTER_ID" '.[] | select(.resource_group.name == "redhat-sap-edge-roks-ci" and ((.name | contains($cid)) or any((.user_tags // [])[]; contains($cid)))) | "\(.id) \(.name)"'
+```
+
+Then delete the pipeline artifacts: `oc delete configmap cluster-info-roks-<cluster> --ignore-not-found`
+in the pipeline namespace, and
+`oc delete secret eic-credentials-roks-<cluster> eic-registry-roks-<cluster> --ignore-not-found`
+on the hub cluster (or in the pipeline namespace without a hub).
+
+**Recovery when destroy fails.** Run these from the repository root after
+`make roks-init CLUSTER=<name>`. `terraform -chdir=roks/terraform state list`
+shows what is left. Then, depending on the error:
+
+- State lock (`Error acquiring the state lock`, left by a run that was
+  stopped during apply or destroy). First make sure that no other pipeline
+  run or local command is using the state, then run
+  `terraform -chdir=roks/terraform force-unlock <lock ID from the error>`.
+- Cluster already deleted outside Terraform. The IBM provider 2.8.0 fails on
+  the 404 when it deletes the cluster:
+  `terraform -chdir=roks/terraform state rm ibm_container_vpc_cluster.cluster`.
+- ICR namespace or registry service ID deleted by hand (no 404 handling
+  either):
+  `terraform -chdir=roks/terraform state rm ibm_cr_namespace.icr` and
+  `terraform -chdir=roks/terraform state rm ibm_iam_service_api_key.icr ibm_iam_service_policy.icr ibm_iam_service_id.icr`.
+
+Then run `make roks-destroy CLUSTER=<name>` again.
 
 **VPE cleanup hook:** when the first cluster is created in a VPC, ROKS creates
 shared VPC endpoint gateways named `iks-*` (Container Registry, COS, cluster

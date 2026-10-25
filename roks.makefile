@@ -59,7 +59,13 @@ roks-apply: roks-init  ## ROKS: terraform apply for CLUSTER
 
 # -refresh=false: destroy straight from the state. A refresh would re-read the
 # admin-kubeconfig data source, which fails when the cluster is already
-# (half) gone or the kubeconfig directory is missing.
+# (half) gone or the kubeconfig directory is missing. Same state key
+# (roks/$(CLUSTER)/terraform.tfstate), -refresh=false and -var cluster_name as
+# the roks-teardown Tekton task; unlike the task it asks for confirmation,
+# does not retry, and neither sweeps leftover load balancers/volumes nor
+# deletes the pipeline ConfigMap/Secrets (roks/terraform/README.md, Destroy).
+# For a region other than eu-de, pass ROKS_TF_ARGS="-var region=<region>"
+# (the task passes -var region=<ibmcloudRegion>).
 .PHONY: roks-destroy
 roks-destroy: roks-init  ## ROKS: terraform destroy of CLUSTER from its state (manual cleanup path)
 	$(call required-environment-variables,IBMCLOUD_API_KEY)
