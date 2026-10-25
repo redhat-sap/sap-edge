@@ -20,7 +20,7 @@ SPDX-License-Identifier: Apache-2.0
 ## Global Constraints
 
 - Region `eu-de`; resource group `redhat-sap-edge-roks-ci`; nothing outside that resource group is created, modified or deleted, except the run's ICR service ID, its policy and API key (account-level IAM objects named `<cluster>-icr`, deleted by teardown).
-- Every IBM resource the pipeline creates is named with prefix `redhat-` and tagged `owner:redhat`, `project:sap-edge`, `pr:<N>`; cluster name `redhat-roks-eic-pr{{ pull_request_number }}`.
+- Every IBM resource the pipeline creates is named with prefix `redhat-` and, where the resource supports tags, tagged `owner:redhat`, `project:sap-edge`, `pr:<N>`; cluster name `redhat-roks-eic-pr{{ pull_request_number }}`.
 - No OpenShift entitlement (regular license); workers `bx2.16x64`, 1 per zone across 3 zones (`eu-de-1`, `eu-de-2`, `eu-de-3`); OpenShift version from a param (default `4.21_openshift`).
 - VPC address prefixes inside `10.0.0.0/16`; ROKS `pod_subnet` `172.17.0.0/18`; service subnet left at the ROKS default.
 - Terraform state: COS bucket via `s3` backend, key `roks/<cluster>/terraform.tfstate`, `use_lockfile = true`; Terraform ≥ 1.10 installed at runtime in tasks.
@@ -89,7 +89,7 @@ SPDX-License-Identifier: Apache-2.0
 - Consumes: Task 1 variables `deploy_postgres`, `deploy_redis`, `postgres_admin_password`, names/tags/resource group.
 - Produces (outputs; database outputs `null` when disabled): `postgres_host`, `postgres_port`, `postgres_database` (`ibmclouddb`, the database ICD creates; R6), `redis_host`, `redis_port`, `redis_password` (sensitive); always: `icr_registry` (`de.icr.io`), `icr_namespace`, `icr_username` (`iamapikey`), `icr_api_key` (sensitive).
 
-- [ ] **Step 1: Write the failing check** — add to `roks/terraform/README.md` a "Validate" section; run `terraform validate` with a scratch tfvars that sets all three flags `true` (use `terraform console`-free validation: `terraform validate` plus `grep` that `outputs.tf` declares each output name above) → Expected: FAIL (outputs missing).
+- [ ] **Step 1: Write the failing check** — add to `roks/terraform/README.md` a "Validate" section; run `terraform validate` with a scratch tfvars that sets both flags (`deploy_postgres`, `deploy_redis`) `true` (use `terraform console`-free validation: `terraform validate` plus `grep` that `outputs.tf` declares each output name above) → Expected: FAIL (outputs missing).
 - [ ] **Step 2: Implement** with `count`/`for_each` gated by the flags: `ibm_database` PostgreSQL (`databases-for-postgresql`) and Redis (`databases-for-redis`) in `eu-de`, smallest supported plan/members, admin password from `var.postgres_admin_password` (validation: the provider's password rules when `deploy_postgres`). ICR (always): `ibm_cr_namespace` named `<cluster_name>`, `ibm_iam_service_id` `<cluster_name>-icr`, `ibm_iam_service_policy` with Reader and Writer on `container-registry` / resource type `namespace` / that namespace / region `eu-de` only, `ibm_iam_service_api_key`. Same naming/tags.
 - [ ] **Step 3: Verify** — as Task 1 Step 3.
 - [ ] **Step 4: Commit** — `git commit -s -m "feat(roks): optional IBM Cloud Databases and Quay COS storage"` (Quay later replaced by ICR: `feat(roks): use IBM Cloud Container Registry instead of Quay storage`)
