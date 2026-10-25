@@ -118,7 +118,8 @@ esac
 EOF
 chmod +x "${STUB_BIN}/terraform"
 
-# Stub ibmcloud: logs every call; serves the IAM token, the current target
+# Stub ibmcloud: logs every call; login only works with the API key in the
+# environment; serves the IAM token, the current target
 # and the API key owner (info fails when STUB_KEY_INFO_FAILS=true); reset makes
 # the logged-in identity the owner unless STUB_RESET_FIXES_OWNER=false.
 cat > "${STUB_BIN}/ibmcloud" <<'EOF'
@@ -127,7 +128,13 @@ set -euo pipefail
 printf '%s\n' "$*" >> "${STUB_IC_LOG}"
 case "$*" in
   "config --check-version=false") ;;
-  "login --apikey "*) printf 'API endpoint: https://cloud.ibm.com\nAuthenticating...\nOK\n' ;;
+  "login "*)
+    if [[ -z "${IBMCLOUD_API_KEY:-}" ]]; then
+      echo "FAILED: no API key in IBMCLOUD_API_KEY" >&2
+      exit 1
+    fi
+    printf 'API endpoint: https://cloud.ibm.com\nAuthenticating...\nOK\n'
+    ;;
   "target -r "*) echo "Targeted: $*" ;;
   "target --output json") cat "${STUB_TARGET_JSON}" ;;
   "iam oauth-tokens --output json") printf '{"iam_token":"Bearer %s","uaa_token":""}\n' "${STUB_IAM_TOKEN}" ;;
@@ -329,6 +336,8 @@ for name, (secret, key, optional) in expected_secrets.items():
         errors.append(f"env {name} should come from Secret {secret} key {key} (optional={optional}), got {ref}")
 if "set -x" in step["script"]:
     errors.append("script must not use set -x")
+if "--apikey" in step["script"]:
+    errors.append("the API key must not be passed on the ibmcloud command line")
 if step.get("workingDir") != "$(workspaces.source.path)":
     errors.append("workingDir must be the source workspace")
 if [w["name"] for w in task["spec"]["workspaces"]] != ["source"]:
@@ -368,8 +377,11 @@ done
 ! grep -qF "${FAKE_HMAC_ACCESS}" "${STUB_TF_LOG}" || fail "HMAC access key passed on the command line"
 grep -qxF "apply -input=false -no-color -auto-approve" "${STUB_TF_LOG}" || { cat "${STUB_TF_LOG}"; fail "terraform apply -auto-approve not called"; }
 
-# Logged in with the API key, region and resource group
-grep -qxF "login --apikey ${FAKE_API_KEY} -r eu-de -g redhat-sap-edge-roks-ci" "${STUB_IC_LOG}" || { cat "${STUB_IC_LOG}"; fail "ibmcloud login not called as expected"; }
+# Logged in with region and resource group; the API key comes from the
+# environment and is never on the ibmcloud command line
+grep -qxF "login -r eu-de -g redhat-sap-edge-roks-ci" "${STUB_IC_LOG}" || { cat "${STUB_IC_LOG}"; fail "ibmcloud login not called as expected"; }
+! grep -q -- "--apikey" "${STUB_IC_LOG}" || fail "--apikey passed on the ibmcloud command line"
+! grep -qF -- "${FAKE_API_KEY}" "${STUB_IC_LOG}" || fail "API key passed as an ibmcloud argument"
 
 echo "✅ PASS: init_uses_cos_backend"
 
@@ -590,6 +602,8 @@ for SECRET in "${FAKE_API_KEY}" "${FAKE_HMAC_ACCESS}" "${FAKE_HMAC_SECRET}" "${F
   "${FAKE_REDIS_PASSWORD}" "${FAKE_ICR_API_KEY}" "${FAKE_JWT_SIGNATURE}"; do
   ! grep -qF -- "${SECRET}" <<< "${TASK_OUT}" || fail "secret '${SECRET}' printed in the task output"
   ! grep -qF -- "${SECRET}" "${OUTPUTS_FILE}" || fail "secret '${SECRET}' written to roks-terraform-outputs.json"
+  ! grep -qF -- "${SECRET}" "${STUB_IC_LOG}" || fail "secret '${SECRET}' passed as an ibmcloud argument"
+  ! grep -qF -- "${SECRET}" "${STUB_TF_LOG}" || fail "secret '${SECRET}' passed as a terraform argument"
 done
 jq -e 'has("redis_password") or has("icr_api_key") | not' "${OUTPUTS_FILE}" >/dev/null || fail "sensitive outputs kept in roks-terraform-outputs.json"
 jq -e '[.[] | select(.sensitive == true)] | length == 0' "${OUTPUTS_FILE}" >/dev/null || fail "an output marked sensitive was kept"
