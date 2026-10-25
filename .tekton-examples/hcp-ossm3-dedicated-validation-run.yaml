@@ -6,21 +6,18 @@
 # Prerequisites:
 # 1. Ensure the ObjectBucketClaim (OBC) 'sap-eic-restricted-cluster-config-resources'
 #    is created and bound in the pipeline namespace. The pipeline creates the
-#    folders under 'restricted-resources/pr<N>/' (one set per PR) and pauses
-#    (approval-upload-restricted-resources) until the bundles are uploaded.
+#    folders elm/, edge-icell-1/, edge-icell-2/ under 'restricted-resources/pr<N>/' (one set per PR)
+#    and pauses (approval-upload-restricted-resources) until the bundles are uploaded.
 #
 # 2. Ensure the Service Mesh 3.x operator is installed on the target cluster
 #    (via OperatorHub or CLI before running this pipeline)
 #
 # Scenario: Dedicated SAP service mesh (istio-system-sap-edge) without proxy,
-#   single Edge Integration Cell (multi-EIC topology A with cellCount: "1")
+#   two Edge Integration Cells sharing one edgelm (multi-EIC topology A, see
+#   docs/multi-eic-restricted-resources-convention.md)
 #   - Deploys an independent Istio control plane 'sap-mesh-istio'
 #   - Uses revision-based sidecar injection (istio.io/rev=sap-mesh-istio)
 #   - Isolated from any shared mesh on the same cluster
-#   - All SAP namespaces follow the -N naming scheme (edge-icell-1, istio-gateways-1, etc.)
-#   - restrictedResourcesComponents must exclude edge-icell-2 when cellCount: "1"
-#     (apply-rbac fails on an empty folder)
-#   - The upload gate pauses every run (ApprovalTasks cannot be skipped conditionally)
 
 ---
 apiVersion: tekton.dev/v1
@@ -85,10 +82,20 @@ spec:
       value: "sap-eic-restricted-cluster-config-resources"
     - name: s3Prefix
       value: "restricted-resources/pr{{ pull_request_number }}/"
+    # S3 folders under s3Prefix, one SAP bundle zip each (upload as downloaded):
+    #   elm/           ELM bundle of the (single, shared) Edge Node (creates edgelm)
+    #   edge-icell-1/  EIC bundle of cell 1 (edge-icell-1, istio-gateways-1, ...)
+    #   edge-icell-2/  EIC bundle of cell 2 (edge-icell-2, istio-gateways-2, ...)
+    # The pipeline creates these folders and pauses at the upload gate;
+    # apply-rbac then downloads only these folders and fails if one is empty.
+    # Apply order comes from the zip type (ELM first), not from this list.
+    # Required here: the pipeline default "" means a flat prefix (top-level zips only).
     - name: restrictedResourcesComponents
-      value: "elm edge-icell-1"
+      value: "elm edge-icell-1 edge-icell-2"
+    # Number of EIC cells to validate. With "1", every cell2-* task is skipped;
+    # also drop edge-icell-2 from restrictedResourcesComponents above.
     - name: cellCount
-      value: "1"
+      value: "2"
 
     # --- EIC services parameters ---
     - name: postgresVersion
