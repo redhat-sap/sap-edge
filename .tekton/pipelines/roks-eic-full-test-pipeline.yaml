@@ -1,0 +1,734 @@
+# SPDX-FileCopyrightText: 2026 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: roks-eic-full-test-pipeline
+  annotations:
+    description: "Complete SAP Edge Integration Cell validation pipeline for ROKS (Red Hat OpenShift on IBM Cloud, VPC): deploys a ROKS cluster with Terraform in the resource group redhat-sap-edge-roks-ci (IBM Cloud Container Registry namespace for ELM, IBM Cloud Databases for PostgreSQL and Redis), sets up OSSM3 restricted access, pauses for ELM registration and EIC deployment, runs two rounds of endpoint tests, and tears down the infrastructure"
+spec:
+  # Failure policy (as ROSA/ARO/HCP): no finally teardown. A failed or rejected
+  # run leaves the cluster for debugging; destroy it from the Terraform state
+  # with: make roks-destroy CLUSTER=<clusterName>
+  #
+  # ApprovalTasks ignore `when` on this cluster, so no gate carries one (and
+  # ROSA's switch for skipping the whole EIC validation, which relies on it,
+  # does not exist here). Regular tasks skipped by `when` do not block the
+  # tasks that runAfter them.
+  params:
+    # --- Git parameters ---
+    - name: repoUrl
+      type: string
+      description: "Git repository URL"
+    - name: revision
+      type: string
+      description: "Git revision (branch/tag/commit)"
+      default: "main"
+    - name: pullRequestNumber
+      type: string
+      description: "Pull request number"
+      default: ""
+
+    # --- ROKS cluster parameters (IBM Cloud) ---
+    - name: clusterName
+      type: string
+      description: "ROKS cluster name: starts with redhat-, at most 30 characters of lowercase letters, digits and hyphens (also the ICR namespace)"
+    - name: ibmcloudRegion
+      type: string
+      description: "IBM Cloud region"
+      default: "eu-de"
+    - name: ibmcloudResourceGroup
+      type: string
+      description: "Existing IBM Cloud resource group for every resource of the run"
+      default: "redhat-sap-edge-roks-ci"
+    - name: openshiftVersion
+      type: string
+      description: "OpenShift version in ROKS format (see ibmcloud oc versions)"
+      default: "4.21_openshift"
+    - name: workerFlavor
+      type: string
+      description: "VPC worker flavor"
+      default: "bx2.16x64"
+    - name: workersPerZone
+      type: string
+      description: "Workers per zone (3 zones)"
+      default: "1"
+    - name: roksIbmcloudSecretName
+      type: string
+      description: "Name of the Kubernetes Secret with the IBM Cloud API key (key IBMCLOUD_API_KEY)"
+      default: "roks-ibmcloud-api-key"
+    - name: terraformStateBucket
+      type: string
+      description: "IBM Cloud Object Storage bucket holding the Terraform state (key roks/<clusterName>/terraform.tfstate)"
+      default: "redhat-sap-edge-roks-ci-tfstate"
+    - name: terraformStateEndpoint
+      type: string
+      description: "S3 endpoint of the Terraform state bucket"
+      default: "https://s3.eu-de.cloud-object-storage.appdomain.cloud"
+    - name: terraformStateSecretName
+      type: string
+      description: "Name of the Kubernetes Secret with the COS HMAC keys of the state bucket (keys AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)"
+      default: "roks-terraform-state-hmac"
+
+    # --- IBM Cloud Databases parameters ---
+    - name: postgresAdminPasswordSecretName
+      type: string
+      description: "Name of the Kubernetes Secret with the PostgreSQL admin password (key POSTGRES_ADMIN_PASSWORD; only read when deployPostgres is true)"
+      default: "roks-postgres-admin-password"
+    - name: deployPostgres
+      type: string
+      description: "Whether to create IBM Cloud Databases for PostgreSQL (true/false)"
+      default: "true"
+    - name: deployRedis
+      type: string
+      description: "Whether to create IBM Cloud Databases for Redis (true/false)"
+      default: "true"
+
+    # --- Endpoint test parameters ---
+    - name: eicAuthSecretName
+      type: string
+      description: "EIC authentication secret name for endpoint tests"
+    - name: publicDNS
+      type: string
+      description: "Use public DNS for endpoint tests"
+      default: "false"
+    - name: skipAutomatedTests
+      type: string
+      description: "Skip automated endpoint tests for manual execution: httpbinipfilter, slvredis, ratelimit-slvredis (true/false)"
+      default: "false"
+
+    # --- Jira parameters ---
+    - name: jiraSecretName
+      type: string
+      description: "Name of the Kubernetes Secret containing Jira credentials"
+      default: ""
+    - name: jiraIssueKey
+      type: string
+      description: "Jira issue key to update with test results (empty skips the Jira update)"
+      default: ""
+
+    # --- Hub cluster ---
+    - name: hubClusterName
+      type: string
+      description: "Name of the hub cluster (used to derive kubeconfig secret name: {hubClusterName}-kubeconfig)"
+
+    # --- OSSM3 parameters ---
+    - name: ossm3Channel
+      type: string
+      description: "OLM subscription channel for the OSSM3 operator"
+      default: "stable-3.3"
+    - name: obcName
+      type: string
+      description: "Name of the ObjectBucketClaim (OBC) for downloading restricted-access RBAC resources from S3"
+      default: "sap-eic-restricted-cluster-config-resources"
+    - name: s3Prefix
+      type: string
+      description: "S3 key prefix holding the restricted-resources zip files directly (flat prefix; subfolders such as per-PR folders are ignored)"
+      default: "restricted-resources/"
+  workspaces:
+    - name: source
+  tasks:
+    - name: fetch-repository
+      taskRef: { name: git-clone }
+      params:
+        - name: url
+          value: $(params.repoUrl)
+        - name: revision
+          value: $(params.revision)
+        - name: depth
+          value: "0"  # Full clone to ensure all refs are available
+      workspaces:
+        - name: output
+          workspace: source
+
+    # =============================================
+    # ROKS infrastructure (Terraform, IBM Cloud)
+    # =============================================
+
+    # Terraform apply of roks/terraform: VPC, ROKS cluster, ICR namespace and
+    # IBM Cloud Databases; writes the admin kubeconfig to the workspace
+    - name: deploy-roks
+      runAfter: [fetch-repository]
+      taskRef: { name: roks-deploy }
+      params:
+        - name: clusterName
+          value: $(params.clusterName)
+        - name: prNumber
+          value: $(params.pullRequestNumber)
+        - name: ibmcloudRegion
+          value: $(params.ibmcloudRegion)
+        - name: ibmcloudResourceGroup
+          value: $(params.ibmcloudResourceGroup)
+        - name: openshiftVersion
+          value: $(params.openshiftVersion)
+        - name: workerFlavor
+          value: $(params.workerFlavor)
+        - name: workersPerZone
+          value: $(params.workersPerZone)
+        - name: roksIbmcloudSecretName
+          value: $(params.roksIbmcloudSecretName)
+        - name: terraformStateBucket
+          value: $(params.terraformStateBucket)
+        - name: terraformStateEndpoint
+          value: $(params.terraformStateEndpoint)
+        - name: terraformStateSecretName
+          value: $(params.terraformStateSecretName)
+        - name: postgresAdminPasswordSecretName
+          value: $(params.postgresAdminPasswordSecretName)
+        - name: deployPostgres
+          value: $(params.deployPostgres)
+        - name: deployRedis
+          value: $(params.deployRedis)
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Switch the workspace kubeconfig to a ServiceAccount token kubeconfig and
+    # store the PostgreSQL/Redis connection data in eic-credentials-roks-<cluster>
+    - name: validate-and-get-access
+      runAfter: [deploy-roks]
+      taskRef: { name: roks-validate-and-get-access }
+      params:
+        - name: clusterName
+          value: $(params.clusterName)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    # IBM Cloud Container Registry access for ELM: Secret eic-registry-roks-<cluster>
+    # (and redis-password in eic-credentials-roks-<cluster> when Redis is deployed)
+    - name: registry-access
+      runAfter: [validate-and-get-access]
+      taskRef: { name: roks-registry-access }
+      params:
+        - name: clusterName
+          value: $(params.clusterName)
+        - name: ibmcloudRegion
+          value: $(params.ibmcloudRegion)
+        - name: ibmcloudResourceGroup
+          value: $(params.ibmcloudResourceGroup)
+        - name: terraformStateBucket
+          value: $(params.terraformStateBucket)
+        - name: terraformStateEndpoint
+          value: $(params.terraformStateEndpoint)
+        - name: terraformStateSecretName
+          value: $(params.terraformStateSecretName)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    # =============================================
+    # OSSM3 Restricted-Access Setup
+    # =============================================
+
+    # Pre-flight validation (runs in parallel with fetch-repository); there is no
+    # Red Hat pull secret on ROKS, so it checks the IBM Cloud API key Secret
+    - name: preflight-check
+      taskRef: { name: ossm3-preflight-check }
+      params:
+        - name: obcName
+          value: $(params.obcName)
+        - name: pullSecretName
+          value: $(params.roksIbmcloudSecretName)
+
+    # Install Service Mesh 3.x operator on target cluster
+    - name: verify-operators
+      runAfter: [validate-and-get-access]
+      taskRef: { name: ossm3-verify-operators }
+      params:
+        - name: hostedClusterName
+          value: $(params.clusterName)
+        - name: ossm3Channel
+          value: $(params.ossm3Channel)
+        - name: useWorkspaceKubeconfig
+          value: "true"
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Download and apply RBAC permissions from S3 (restricted-access resources)
+    - name: apply-rbac
+      runAfter: [verify-operators]
+      taskRef: { name: ossm3-download-and-apply-rbac }
+      params:
+        - name: hostedClusterName
+          value: $(params.clusterName)
+        - name: obcName
+          value: $(params.obcName)
+        - name: s3Prefix
+          value: $(params.s3Prefix)
+        - name: useWorkspaceKubeconfig
+          value: "true"
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Prepare namespaces with labels and SCC annotations
+    - name: prepare-namespaces
+      runAfter: [apply-rbac]
+      taskRef: { name: ossm3-prepare-namespaces }
+      params:
+        - name: hostedClusterName
+          value: $(params.clusterName)
+        - name: useWorkspaceKubeconfig
+          value: "true"
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Configure OpenShift Service Mesh 3.x
+    - name: configure-mesh
+      runAfter: [prepare-namespaces]
+      taskRef: { name: ossm3-configure-mesh }
+      params:
+        - name: hostedClusterName
+          value: $(params.clusterName)
+        - name: useWorkspaceKubeconfig
+          value: "true"
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Generate SA-based restricted kubeconfig for ELM registration
+    - name: generate-sa-based-kubeconfig
+      runAfter: [configure-mesh]
+      taskRef: { name: ossm3-generate-sa-based-kubeconfig }
+      params:
+        - name: hostedClusterName
+          value: $(params.clusterName)
+        - name: useWorkspaceKubeconfig
+          value: "true"
+      workspaces:
+        - name: source
+          workspace: source
+
+    # =============================================
+    # Manual ELM/EIC Deployment + Tests
+    # =============================================
+
+    # Manual approval gate after OSSM3 setup and ICR registry access (no `when`)
+    - name: approval-elm-eic-iflow-deployed
+      runAfter: [generate-sa-based-kubeconfig, registry-access]
+      taskRef:
+        apiVersion: openshift-pipelines.org/v1alpha1
+        kind: ApprovalTask
+      params:
+        - name: approvers
+          value:
+            - mjiao
+            - rbhandar
+            - ksatarin
+            - kubeadmin
+            - kube:admin
+            - system:admin
+        - name: description
+          value: |
+            ROKS cluster (Red Hat OpenShift on IBM Cloud), IBM Cloud Container Registry access, IBM Cloud Databases and OSSM3 restricted-access setup are complete.
+
+            Cluster: $(params.clusterName)
+            IBM Cloud: region $(params.ibmcloudRegion), resource group $(params.ibmcloudResourceGroup)
+            OpenShift: $(params.openshiftVersion), $(params.workersPerZone) x $(params.workerFlavor) per zone (3 zones)
+
+            Restricted kubeconfig stored as Secret 'edgelm-kubeconfig-generated-$(params.clusterName)'.
+
+            Container registry for ELM (IBM Cloud Container Registry):
+            - Server: de.icr.io
+            - Namespace: $(params.clusterName)
+            - Username: iamapikey
+            - Password: key 'password' of Secret 'eic-registry-roks-$(params.clusterName)' (hub cluster '$(params.hubClusterName)')
+
+            IBM Cloud Databases (deployPostgres=$(params.deployPostgres), deployRedis=$(params.deployRedis); public endpoints, TLS only, reachable from the cluster):
+            - Connection data in Secret 'eic-credentials-roks-$(params.clusterName)' (hub cluster '$(params.hubClusterName)'); the endpoints are also printed by validate-and-get-access
+            - PostgreSQL: keys postgres-host, postgres-port, postgres-database, postgres-username, postgres-ca.crt; password: key POSTGRES_ADMIN_PASSWORD of Secret '$(params.postgresAdminPasswordSecretName)'
+            - Redis: keys redis-host, redis-port, redis-username, redis-password, redis-ca.crt
+
+            One-time (if not done yet): the httpbinipfilter iFlow's IP filter must allow 172.17.0.0/18 (ROKS pod network) and 10.0.0.0/16 (VPC), otherwise test-httpbinipfilter fails.
+
+            Please complete the following manually:
+            1. Register the cluster in ELM (use restricted kubeconfig, check "Restricted Access") and add the container registry above
+            2. Deploy Edge Integration Cell (EIC) with the PostgreSQL and Redis above
+            3. Deploy iFlows for testing
+
+            After deployment is complete and istio-ingressgateway has a LoadBalancer address (ROKS VPC load balancers expose a hostname):
+            APPROVE: Continue to create ConfigMap and run endpoint tests
+            REJECT: Stop the pipeline; the cluster and its IBM Cloud resources stay (billable) until removed with: make roks-destroy CLUSTER=$(params.clusterName)
+        - name: numberOfApprovalsRequired
+          value: '1'
+        - name: timeout
+          value: '336h'
+
+    # Create ConfigMap cluster-info-roks-<cluster> with the EIC host and the
+    # istio-ingressgateway LoadBalancer address (after ELM/EIC/iFlow deployment)
+    - name: validate-and-create-configmap
+      runAfter: [approval-elm-eic-iflow-deployed]
+      taskRef: { name: roks-validate-and-create-configmap }
+      params:
+        - name: clusterName
+          value: $(params.clusterName)
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Endpoint tests run after ConfigMap creation
+    # NOTE: httpbinipfilter has an IP filter policy. The ROKS pod network
+    # (172.17.0.0/18) and VPC (10.0.0.0/16) must be in the iFlow's allowlist.
+    - name: test-httpbinipfilter
+      runAfter: [validate-and-create-configmap]
+      when:
+        - input: $(params.skipAutomatedTests)
+          operator: in
+          values: ["false"]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /httpbinipfilter
+        - name: clusterConfigMapName
+          value: "cluster-info-roks-$(params.clusterName)"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: test-http-test1
+      runAfter: [validate-and-create-configmap]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /http/test1
+        - name: clusterConfigMapName
+          value: "cluster-info-roks-$(params.clusterName)"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: test-http-testelster
+      runAfter: [validate-and-create-configmap]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /http/testelster
+        - name: clusterConfigMapName
+          value: "cluster-info-roks-$(params.clusterName)"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: test-slvredis
+      runAfter: [validate-and-create-configmap]
+      when:
+        - input: $(params.skipAutomatedTests)
+          operator: in
+          values: ["false"]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /slvredis
+        - name: clusterConfigMapName
+          value: "cluster-info-roks-$(params.clusterName)"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: test-ratelimit-slvredis
+      runAfter: [test-slvredis]
+      when:
+        - input: $(params.skipAutomatedTests)
+          operator: in
+          values: ["false"]
+      taskRef: { name: rate-limit-test }
+      params:
+        - name: endpointPath
+          value: /slvredis
+        - name: clusterConfigMapName
+          value: "cluster-info-roks-$(params.clusterName)"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Manual approval before second round of tests (no `when`)
+    - name: approval-second-test-round
+      runAfter:
+        - test-httpbinipfilter
+        - test-http-test1
+        - test-http-testelster
+        - test-slvredis
+        - test-ratelimit-slvredis
+      taskRef:
+        apiVersion: openshift-pipelines.org/v1alpha1
+        kind: ApprovalTask
+      params:
+        - name: approvers
+          value:
+            - mjiao
+            - rbhandar
+            - ksatarin
+            - kubeadmin
+            - kube:admin
+            - system:admin
+        - name: description
+          value: |
+            First round of endpoint tests completed successfully.
+
+            Cluster: $(params.clusterName) (ROKS, IBM Cloud resource group $(params.ibmcloudResourceGroup))
+            Automated tests skipped (httpbinipfilter, slvredis, ratelimit-slvredis): $(params.skipAutomatedTests)
+
+            APPROVE: Run second round of endpoint tests
+            REJECT: Stop the pipeline; the cluster and its IBM Cloud resources stay (billable) until removed with: make roks-destroy CLUSTER=$(params.clusterName)
+        - name: numberOfApprovalsRequired
+          value: '1'
+        - name: timeout
+          value: '336h'
+
+    # Second round of endpoint tests
+    - name: test-httpbinipfilter-round2
+      runAfter: [approval-second-test-round]
+      when:
+        - input: $(params.skipAutomatedTests)
+          operator: in
+          values: ["false"]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /httpbinipfilter
+        - name: clusterConfigMapName
+          value: "cluster-info-roks-$(params.clusterName)"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: test-http-test1-round2
+      runAfter: [approval-second-test-round]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /http/test1
+        - name: clusterConfigMapName
+          value: "cluster-info-roks-$(params.clusterName)"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: test-http-testelster-round2
+      runAfter: [approval-second-test-round]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /http/testelster
+        - name: clusterConfigMapName
+          value: "cluster-info-roks-$(params.clusterName)"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: test-slvredis-round2
+      runAfter: [approval-second-test-round]
+      when:
+        - input: $(params.skipAutomatedTests)
+          operator: in
+          values: ["false"]
+      taskRef: { name: endpoint-tests }
+      params:
+        - name: endpointPath
+          value: /slvredis
+        - name: clusterConfigMapName
+          value: "cluster-info-roks-$(params.clusterName)"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: test-ratelimit-slvredis-round2
+      runAfter: [test-slvredis-round2]
+      when:
+        - input: $(params.skipAutomatedTests)
+          operator: in
+          values: ["false"]
+      taskRef: { name: rate-limit-test }
+      params:
+        - name: endpointPath
+          value: /slvredis
+        - name: clusterConfigMapName
+          value: "cluster-info-roks-$(params.clusterName)"
+        - name: eicAuthSecretName
+          value: $(params.eicAuthSecretName)
+        - name: publicDNS
+          value: $(params.publicDNS)
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: update-jira-ticket
+      runAfter:
+        - test-httpbinipfilter-round2
+        - test-http-test1-round2
+        - test-http-testelster-round2
+        - test-slvredis-round2
+        - test-ratelimit-slvredis-round2
+      when:
+        - input: $(params.jiraIssueKey)
+          operator: notin
+          values: [""]
+      taskRef:
+        name: jira-add-comment-custom
+      params:
+        - name: jiraSecretName
+          value: $(params.jiraSecretName)
+        - name: jiraIssueKey
+          value: $(params.jiraIssueKey)
+        - name: comment
+          value: |
+            h2. Complete EIC Validation Pipeline Completed (ROKS)
+
+            ROKS (Red Hat OpenShift on IBM Cloud) cluster with OSSM3 restricted access, EIC and both rounds of endpoint tests completed successfully.
+
+            *Infrastructure Configuration:*
+            * *Cluster Name:* $(params.clusterName)
+            * *IBM Cloud Region:* $(params.ibmcloudRegion)
+            * *Resource Group:* $(params.ibmcloudResourceGroup)
+            * *OpenShift Version:* $(params.openshiftVersion)
+            * *Workers:* $(params.workersPerZone) x $(params.workerFlavor) per zone (3 zones)
+            * *IBM Cloud Databases for PostgreSQL:* $(params.deployPostgres) (Terraform-managed)
+            * *IBM Cloud Databases for Redis:* $(params.deployRedis) (Terraform-managed)
+            * *Container Registry:* IBM Cloud Container Registry de.icr.io, namespace $(params.clusterName), user iamapikey (Terraform-managed)
+
+            *Pipeline Status:*
+            * Repository cloned: Completed
+            * ROKS deployment with Terraform: Completed
+            * Validation and access setup: Completed
+            * IBM Cloud Container Registry access: Completed
+            * OSSM3 operator verification: Completed
+            * RBAC permissions: Completed
+            * Namespace preparation: Completed
+            * Service Mesh 3.x configuration: Completed
+            * Restricted kubeconfig: Generated
+            * Endpoint tests (2 rounds): Completed
+            * Automated tests skipped (httpbinipfilter, slvredis, ratelimit-slvredis): $(params.skipAutomatedTests)
+
+            *Pipeline Details:*
+            * *Repository:* $(params.repoUrl)
+            * *Pull Request:* $(params.repoUrl)/pull/$(params.pullRequestNumber)
+            * *Revision:* $(params.revision)
+            * *Public DNS:* $(params.publicDNS)
+
+            *Executed Tests (Round 1):*
+            * test-httpbinipfilter
+            * test-http-test1
+            * test-http-testelster
+            * test-slvredis
+            * test-ratelimit-slvredis
+
+            *Executed Tests (Round 2):*
+            * test-httpbinipfilter-round2
+            * test-http-test1-round2
+            * test-http-testelster-round2
+            * test-slvredis-round2
+            * test-ratelimit-slvredis-round2
+
+            *Infrastructure Components:*
+            * ROKS OpenShift cluster (VPC, 3 zones)
+            * IBM Cloud Databases for PostgreSQL
+            * IBM Cloud Databases for Redis
+            * IBM Cloud Container Registry namespace
+            * All EIC endpoints validated
+
+            *Security:*
+            * IBM Cloud Databases: public endpoints, TLS only, allowlisted to the cluster's public gateway IPs (Terraform-managed)
+            * Container Registry: service ID $(params.clusterName)-icr with Reader and Writer on namespace $(params.clusterName) only (Terraform-managed)
+            * Terraform state: private IBM Cloud Object Storage bucket $(params.terraformStateBucket)
+
+            Ready for manual teardown approval. The ROKS cluster and its IBM Cloud resources will be destroyed once approved.
+
+    # Manual approval step before teardown - this will pause the pipeline
+    - name: approval-teardown
+      runAfter:
+        - update-jira-ticket
+      taskRef:
+        apiVersion: openshift-pipelines.org/v1alpha1
+        kind: ApprovalTask
+      params:
+        - name: approvers
+          value:
+            - mjiao
+            - rbhandar
+            - ksatarin
+            - kubeadmin
+            - kube:admin
+            - system:admin
+        - name: description
+          value: |
+            All endpoint tests completed. Please review results.
+
+            Cluster: $(params.clusterName) (ROKS, IBM Cloud region $(params.ibmcloudRegion), resource group $(params.ibmcloudResourceGroup))
+
+            APPROVE: Tear down the ROKS cluster and its IBM Cloud resources (Terraform destroy)
+            REJECT: Stop the pipeline and keep the cluster (billable); remove it later with: make roks-destroy CLUSTER=$(params.clusterName)
+        - name: numberOfApprovalsRequired
+          value: '1'
+        - name: timeout
+          value: '336h'
+
+    # Teardown after approval
+    - name: teardown-roks
+      runAfter: [approval-teardown]
+      taskRef: { name: roks-teardown }
+      params:
+        - name: clusterName
+          value: $(params.clusterName)
+        - name: ibmcloudRegion
+          value: $(params.ibmcloudRegion)
+        - name: ibmcloudResourceGroup
+          value: $(params.ibmcloudResourceGroup)
+        - name: roksIbmcloudSecretName
+          value: $(params.roksIbmcloudSecretName)
+        - name: terraformStateBucket
+          value: $(params.terraformStateBucket)
+        - name: terraformStateEndpoint
+          value: $(params.terraformStateEndpoint)
+        - name: terraformStateSecretName
+          value: $(params.terraformStateSecretName)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
