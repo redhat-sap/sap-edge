@@ -1,0 +1,248 @@
+# SPDX-FileCopyrightText: 2026 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: roks-registry-access
+spec:
+  description: >-
+    Read IBM Cloud Container Registry (ICR) credentials from the ROKS
+    Terraform state (terraform output -raw inside the task, re-initializing
+    the backend like roks-deploy) and store them as a Secret
+    eic-registry-roks-<clusterName> on the pipeline cluster (on the hub
+    cluster when hubKubeconfigSecretName is set). When Redis is deployed
+    (non-null terraform output redis_password), add the Redis password to the
+    existing Secret eic-credentials-roks-<clusterName> with a server-side
+    apply under its own field manager, so that the keys of
+    roks-validate-and-get-access are neither pruned nor taken over.
+  params:
+    - name: clusterName
+      type: string
+      description: "ROKS cluster name"
+    - name: ibmcloudRegion
+      type: string
+      description: "IBM Cloud region"
+      default: "eu-de"
+    - name: ibmcloudResourceGroup
+      type: string
+      description: "IBM Cloud resource group"
+      default: "redhat-sap-edge-roks-ci"
+    - name: terraformStateBucket
+      type: string
+      description: "IBM Cloud Object Storage bucket holding the Terraform state"
+    - name: terraformStateEndpoint
+      type: string
+      description: "S3 endpoint of the Terraform state bucket"
+      default: "https://s3.eu-de.cloud-object-storage.appdomain.cloud"
+    - name: terraformStateSecretName
+      type: string
+      description: "Name of the Kubernetes Secret with the COS HMAC keys of the state bucket (keys AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)"
+    - name: hubKubeconfigSecretName
+      type: string
+      description: "Name of the Secret containing kubeconfig for hub cluster (optional); the registry Secret is stored there instead of on the pipeline cluster"
+      default: ""
+  workspaces:
+    - name: source
+      description: "Repository checked out by git-clone"
+  steps:
+    - name: get-registry-access
+      image: registry.access.redhat.com/ubi9/ubi
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: CLUSTER_NAME
+          value: "$(params.clusterName)"
+        - name: IBMCLOUD_REGION
+          value: "$(params.ibmcloudRegion)"
+        - name: IBMCLOUD_RESOURCE_GROUP
+          value: "$(params.ibmcloudResourceGroup)"
+        - name: TERRAFORM_STATE_BUCKET
+          value: "$(params.terraformStateBucket)"
+        - name: TERRAFORM_STATE_ENDPOINT
+          value: "$(params.terraformStateEndpoint)"
+        - name: HUB_KUBECONFIG_SECRET
+          value: "$(params.hubKubeconfigSecretName)"
+        # COS HMAC keys, read by the s3 backend
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: $(params.terraformStateSecretName)
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: $(params.terraformStateSecretName)
+              key: AWS_SECRET_ACCESS_KEY
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        # Never print secrets: the ICR API key and Redis password stay in
+        # variables and are passed only via stdin manifests to oc.
+        WORKSPACE_DIR="$(workspaces.source.path)"
+        TF_DIR="${WORKSPACE_DIR}/roks/terraform"
+        STATE_KEY="roks/${CLUSTER_NAME}/terraform.tfstate"
+        TERRAFORM_STATE_REGION="eu-de"
+        REGISTRY_SECRET_NAME="eic-registry-roks-${CLUSTER_NAME}"
+        CREDS_SECRET_NAME="eic-credentials-roks-${CLUSTER_NAME}"
+        REGISTRY_FIELD_MANAGER="roks-registry-access"
+        TF_INIT_RETRY_DELAY="${TF_INIT_RETRY_DELAY:-30}"
+
+        # Pipeline-cluster calls use the in-cluster ServiceAccount (or the hub kubeconfig)
+        unset KUBECONFIG
+        TMP_DIR=$(mktemp -d)
+        trap 'rm -rf "${TMP_DIR}"' EXIT
+
+        fail() {
+          echo "❌ $*" >&2
+          exit 1
+        }
+
+        echo "🔐 Reading ICR registry access from Terraform state"
+        echo "=============================================="
+        echo "  Cluster name:      ${CLUSTER_NAME}"
+        echo "  Terraform state:   ${TERRAFORM_STATE_BUCKET}/${STATE_KEY}"
+        echo ""
+
+        # --- Validate inputs before installing tools ---
+        [[ "${CLUSTER_NAME}" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || fail "Invalid clusterName '${CLUSTER_NAME}': lowercase letters, digits and hyphens only"
+        [[ -n "${AWS_ACCESS_KEY_ID:-}" && -n "${AWS_SECRET_ACCESS_KEY:-}" ]] || fail "COS HMAC keys are empty (Secret from terraformStateSecretName)"
+        [[ -d "${TF_DIR}" ]] || fail "${TF_DIR} not found; is the repository checked out in the source workspace?"
+
+        # Install tools (jq, Terraform, oc)
+        echo "📦 Installing required packages..."
+        dnf install -y jq unzip tar gzip
+
+        TERRAFORM_VERSION="1.13.5"
+        echo "📦 Installing Terraform ${TERRAFORM_VERSION}..."
+        TF_ZIP="terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+        TF_URL="https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}"
+        (
+          cd "${TMP_DIR}"
+          curl -fsSLO "${TF_URL}/${TF_ZIP}"
+          curl -fsSLO "${TF_URL}/terraform_${TERRAFORM_VERSION}_SHA256SUMS"
+          sha256sum -c --ignore-missing "terraform_${TERRAFORM_VERSION}_SHA256SUMS"
+          unzip -q -o "${TF_ZIP}" terraform -d /usr/local/bin
+          rm -f "${TF_ZIP}"
+        )
+        terraform version
+
+        echo "📦 Installing OpenShift CLI..."
+        curl -fsSL -o "${TMP_DIR}/oc.tar.gz" https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz
+        tar xzf "${TMP_DIR}/oc.tar.gz" -C "${TMP_DIR}" oc
+        mv "${TMP_DIR}/oc" /usr/local/bin/oc
+        rm -f "${TMP_DIR}/oc.tar.gz"
+        oc version --client
+        echo "✅ Tools installed"
+
+        # --- Hub cluster kubeconfig (optional) ---
+        PIPELINE_OC=(oc)
+        if [[ -n "${HUB_KUBECONFIG_SECRET}" ]]; then
+          echo "🔐 Extracting hub cluster kubeconfig from secret: ${HUB_KUBECONFIG_SECRET}..."
+          HUB_KUBECONFIG="${TMP_DIR}/hub-kubeconfig"
+          HUB_KEY=""
+          for KEY in kubeconfig config value; do
+            if (umask 077; oc get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath="{.data.${KEY}}" 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null) && [[ -s "${HUB_KUBECONFIG}" ]]; then
+              HUB_KEY="${KEY}"
+              break
+            fi
+          done
+          [[ -n "${HUB_KEY}" ]] || fail "Failed to extract kubeconfig from secret '${HUB_KUBECONFIG_SECRET}' (expected key 'kubeconfig', 'config' or 'value')"
+          chmod 600 "${HUB_KUBECONFIG}"
+          echo "✅ Hub kubeconfig extracted (key: ${HUB_KEY})"
+          PIPELINE_OC=(oc --kubeconfig "${HUB_KUBECONFIG}")
+        else
+          echo "ℹ️  No hub kubeconfig secret provided, using the in-cluster service account"
+        fi
+
+        # --- Terraform init (COS state through the s3 backend) ---
+        cd "${TF_DIR}"
+
+        echo "🔧 Initializing Terraform with the COS backend (key ${STATE_KEY})..."
+        TF_INIT_OK=false
+        for TF_INIT_ATTEMPT in 1 2 3; do
+          if terraform init -input=false -no-color -reconfigure \
+            -backend-config="bucket=${TERRAFORM_STATE_BUCKET}" \
+            -backend-config="key=${STATE_KEY}" \
+            -backend-config="region=${TERRAFORM_STATE_REGION}" \
+            -backend-config="endpoints={s3=\"${TERRAFORM_STATE_ENDPOINT}\"}" \
+            -backend-config="use_lockfile=true" \
+            -backend-config="use_path_style=true" \
+            -backend-config="skip_credentials_validation=true" \
+            -backend-config="skip_region_validation=true" \
+            -backend-config="skip_requesting_account_id=true" \
+            -backend-config="skip_s3_checksum=true" 2>&1 | tee "${TMP_DIR}/init.log"; then
+            TF_INIT_OK=true
+            break
+          fi
+          echo "⚠️  terraform init attempt ${TF_INIT_ATTEMPT} failed"
+          if [[ "${TF_INIT_ATTEMPT}" -lt 3 ]]; then
+            echo "   Retrying in ${TF_INIT_RETRY_DELAY}s..."
+            sleep "${TF_INIT_RETRY_DELAY}"
+          fi
+        done
+        [[ "${TF_INIT_OK}" == "true" ]] || fail "terraform init failed 3 times"
+
+        # --- Read ICR credentials from Terraform outputs ---
+        echo "📋 Reading ICR credentials from Terraform outputs..."
+        ICR_REGISTRY=$(terraform output -raw icr_registry)
+        ICR_NAMESPACE=$(terraform output -raw icr_namespace)
+        ICR_USERNAME=$(terraform output -raw icr_username)
+        ICR_API_KEY=$(terraform output -raw icr_api_key)
+
+        [[ -n "${ICR_REGISTRY}" ]] || fail "Terraform output icr_registry is empty"
+        [[ -n "${ICR_NAMESPACE}" ]] || fail "Terraform output icr_namespace is empty"
+        [[ -n "${ICR_USERNAME}" ]] || fail "Terraform output icr_username is empty"
+        [[ -n "${ICR_API_KEY}" ]] || fail "Terraform output icr_api_key is empty"
+
+        echo "✅ ICR credentials read: ${ICR_REGISTRY}/${ICR_NAMESPACE} (user ${ICR_USERNAME})"
+
+        # --- Registry Secret ---
+        echo ""
+        echo "📦 Storing registry Secret ${REGISTRY_SECRET_NAME}..."
+        {
+          echo "apiVersion: v1"
+          echo "kind: Secret"
+          echo "metadata:"
+          echo "  name: ${REGISTRY_SECRET_NAME}"
+          echo "type: Opaque"
+          echo "data:"
+          echo "  server: $(printf '%s' "${ICR_REGISTRY}" | base64 | tr -d '\n')"
+          echo "  username: $(printf '%s' "${ICR_USERNAME}" | base64 | tr -d '\n')"
+          echo "  password: $(printf '%s' "${ICR_API_KEY}" | base64 | tr -d '\n')"
+        } | "${PIPELINE_OC[@]}" apply -f - --server-side --field-manager="${REGISTRY_FIELD_MANAGER}" --force-conflicts
+        echo "✅ Secret ${REGISTRY_SECRET_NAME} stored"
+
+        # --- Redis password (when Redis is deployed) ---
+        echo ""
+        echo "🔍 Checking if Redis is deployed..."
+        REDIS_PASSWORD=$(terraform output -raw redis_password || true)
+        if [[ -n "${REDIS_PASSWORD}" && "${REDIS_PASSWORD}" != "null" ]]; then
+          echo "✅ Redis is deployed, adding redis-password to ${CREDS_SECRET_NAME}..."
+          {
+            echo "apiVersion: v1"
+            echo "kind: Secret"
+            echo "metadata:"
+            echo "  name: ${CREDS_SECRET_NAME}"
+            echo "type: Opaque"
+            echo "data:"
+            echo "  redis-password: $(printf '%s' "${REDIS_PASSWORD}" | base64 | tr -d '\n')"
+          } | "${PIPELINE_OC[@]}" apply -f - --server-side --field-manager="${REGISTRY_FIELD_MANAGER}" --force-conflicts
+          echo "✅ Redis password added to ${CREDS_SECRET_NAME}"
+        else
+          echo "ℹ️  Redis is not deployed, skipping redis-password"
+        fi
+
+        # Clear sensitive variables
+        unset ICR_API_KEY REDIS_PASSWORD
+
+        # --- Summary (no secrets) ---
+        echo ""
+        echo "=============================================="
+        echo "✅ ICR registry access ready"
+        echo "  Registry:       ${ICR_REGISTRY}/${ICR_NAMESPACE}"
+        echo "  Username:       ${ICR_USERNAME}"
+        echo "  Secret:         ${REGISTRY_SECRET_NAME}"
+        echo "=============================================="
