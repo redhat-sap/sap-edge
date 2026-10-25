@@ -36,11 +36,33 @@ done
 
 SG_NAME="kube-vpegw-${VPC_ID}"
 
-# Prints "<id> <name>" of every iks-* endpoint gateway in the VPC.
+# Prints "<id> <name> <lifecycle state>" of every iks-* endpoint gateway in the VPC.
 list_gateways() {
   ibmcloud is endpoint-gateways --all-resource-groups --output JSON |
     jq -r --arg vpc "${VPC_ID}" \
-      '(. // [])[] | select(.vpc.id == $vpc and (.name | startswith("iks-"))) | "\(.id) \(.name)"'
+      '(. // [])[] | select(.vpc.id == $vpc and (.name | startswith("iks-"))) | "\(.id) \(.name) \(.lifecycle_state // "unknown")"'
+}
+
+# Requests the deletion of the listed gateways not already being deleted,
+# again on every poll (e.g. after a failed or refused request); only the
+# first request per gateway is logged. ibmcloud gets no stdin, so that it
+# cannot read the rest of the list.
+REQUESTED_IDS=" "
+request_gateway_deletion() {
+  local ID NAME STATE
+  while read -r ID NAME STATE; do
+    if [[ -z "${ID}" || "${STATE}" == "deleting" ]]; then
+      continue
+    fi
+    if [[ "${REQUESTED_IDS}" == *" ${ID} "* ]]; then
+      ibmcloud is endpoint-gateway-delete "${ID}" --force </dev/null >/dev/null 2>&1 || true
+      continue
+    fi
+    REQUESTED_IDS="${REQUESTED_IDS}${ID} "
+    echo "Deleting endpoint gateway ${NAME} (${ID})"
+    ibmcloud is endpoint-gateway-delete "${ID}" --force </dev/null >/dev/null ||
+      echo "Warning: delete request for ${NAME} (${ID}) failed; retrying while waiting" >&2
+  done <<< "$1"
 }
 
 # Prints the ID of the security group kube-vpegw-<vpc_id> in the VPC, if any.
@@ -62,15 +84,10 @@ if ! GATEWAYS=$(list_gateways); then
 fi
 
 if [[ -n "${GATEWAYS}" ]]; then
-  while read -r ID NAME; do
-    echo "Deleting endpoint gateway ${NAME} (${ID})"
-    # A failed request (e.g. already deleting) is caught by the wait below.
-    ibmcloud is endpoint-gateway-delete "${ID}" --force >/dev/null ||
-      echo "Warning: delete request for ${NAME} (${ID}) failed" >&2
-  done <<< "${GATEWAYS}"
-
   DEADLINE=$((SECONDS + WAIT_SECONDS))
   while :; do
+    request_gateway_deletion "${GATEWAYS}"
+    sleep "${POLL_SECONDS}"
     if ! GATEWAYS=$(list_gateways); then
       echo "Error: cannot list endpoint gateways" >&2
       exit 1
@@ -81,7 +98,6 @@ if [[ -n "${GATEWAYS}" ]]; then
       echo "${GATEWAYS}" >&2
       exit 1
     fi
-    sleep "${POLL_SECONDS}"
   done
   echo "Endpoint gateways deleted"
 else
@@ -102,7 +118,7 @@ while :; do
   fi
   while read -r ID; do
     echo "Deleting security group ${SG_NAME} (${ID})"
-    ibmcloud is security-group-delete "${ID}" --force >/dev/null ||
+    ibmcloud is security-group-delete "${ID}" --force </dev/null >/dev/null ||
       echo "Warning: delete request for security group ${ID} failed" >&2
   done <<< "${SG_IDS}"
   if ! SG_IDS=$(list_security_groups); then
