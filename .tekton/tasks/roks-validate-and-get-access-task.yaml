@@ -1,0 +1,336 @@
+# SPDX-FileCopyrightText: 2026 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: roks-validate-and-get-access
+spec:
+  description: >-
+    Validate access to the ROKS cluster deployed by roks-deploy and switch the
+    pipeline to a long-lived ServiceAccount token. Verifies cluster-admin
+    access with the admin kubeconfig in $(workspaces.source.path)/kubeconfig,
+    creates the ServiceAccount cluster-admin-sa (cluster-admin) with a token
+    Secret, verifies a token kubeconfig and writes it to
+    $(workspaces.source.path)/kubeconfig (the file the shared tasks use with
+    useWorkspaceKubeconfig=true). Stores the token kubeconfig and the
+    non-secret PostgreSQL/Redis connection data from
+    roks-terraform-outputs.json in the Secret eic-credentials-roks-<clusterName>
+    on the pipeline cluster (on the hub cluster when hubKubeconfigSecretName
+    is set, like ROSA). Secret values are never printed.
+  params:
+    - name: clusterName
+      type: string
+      description: "ROKS cluster name"
+    - name: hubKubeconfigSecretName
+      type: string
+      description: "Name of the Secret containing kubeconfig for hub cluster (optional); the credentials Secret is stored there instead of on the pipeline cluster"
+      default: ""
+  workspaces:
+    - name: source
+      description: "Workspace with kubeconfig (admin, from roks-deploy; replaced by the token kubeconfig) and roks-terraform-outputs.json"
+  steps:
+    - name: validate-and-get-access
+      image: registry.access.redhat.com/ubi9/ubi
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: CLUSTER_NAME
+          value: "$(params.clusterName)"
+        - name: HUB_KUBECONFIG_SECRET
+          value: "$(params.hubKubeconfigSecretName)"
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        # Never print secrets: the ServiceAccount token and the kubeconfig
+        # contents stay in files (mode 600) and in the credentials Secret.
+        WORKSPACE_DIR="$(workspaces.source.path)"
+        WORKSPACE_KUBECONFIG="${WORKSPACE_DIR}/kubeconfig"
+        OUTPUTS_FILE="${WORKSPACE_DIR}/roks-terraform-outputs.json"
+        SA_NAME="cluster-admin-sa"
+        SA_NAMESPACE="default"
+        TOKEN_SECRET_NAME="${SA_NAME}-token"
+        SA_IDENTITY="system:serviceaccount:${SA_NAMESPACE}:${SA_NAME}"
+        CREDS_SECRET_NAME="eic-credentials-roks-${CLUSTER_NAME}"
+        FIELD_MANAGER="roks-validate-and-get-access"
+        ACCESS_RETRY_DELAY="${ACCESS_RETRY_DELAY:-30}"
+        TOKEN_WAIT_DELAY="${TOKEN_WAIT_DELAY:-2}"
+        VERIFY_RETRY_DELAY="${VERIFY_RETRY_DELAY:-10}"
+
+        # Pipeline-cluster calls use the in-cluster ServiceAccount (or the hub kubeconfig)
+        unset KUBECONFIG
+        TMP_DIR=$(mktemp -d)
+        trap 'rm -rf "${TMP_DIR}"' EXIT
+        ADMIN_KUBECONFIG="${TMP_DIR}/admin-kubeconfig"
+        TOKEN_KUBECONFIG="${TMP_DIR}/token-kubeconfig"
+
+        fail() {
+          echo "❌ $*" >&2
+          exit 1
+        }
+
+        echo "✅ Validating ROKS cluster access for ${CLUSTER_NAME}"
+        echo "=============================================="
+
+        # --- Validate inputs before installing tools ---
+        [[ "${CLUSTER_NAME}" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || fail "Invalid clusterName '${CLUSTER_NAME}': lowercase letters, digits and hyphens only"
+        [[ -s "${WORKSPACE_KUBECONFIG}" ]] || fail "${WORKSPACE_KUBECONFIG} not found or empty; roks-deploy writes the admin kubeconfig there"
+
+        # Install tools (jq, oc)
+        echo "📦 Installing required packages..."
+        dnf install -y jq tar gzip
+        echo "📦 Installing OpenShift CLI..."
+        curl -fsSL -o "${TMP_DIR}/oc.tar.gz" https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz
+        tar xzf "${TMP_DIR}/oc.tar.gz" -C "${TMP_DIR}" oc
+        mv "${TMP_DIR}/oc" /usr/local/bin/oc
+        rm -f "${TMP_DIR}/oc.tar.gz"
+        oc version --client
+        echo "✅ Tools installed"
+
+        # --- Hub cluster kubeconfig (optional), like rosa-validate-and-get-access ---
+        PIPELINE_OC=(oc)
+        if [[ -n "${HUB_KUBECONFIG_SECRET}" ]]; then
+          echo "🔐 Extracting hub cluster kubeconfig from secret: ${HUB_KUBECONFIG_SECRET}..."
+          HUB_KUBECONFIG="${TMP_DIR}/hub-kubeconfig"
+          HUB_KEY=""
+          for KEY in kubeconfig config value; do
+            if (umask 077; oc get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath="{.data.${KEY}}" 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null) && [[ -s "${HUB_KUBECONFIG}" ]]; then
+              HUB_KEY="${KEY}"
+              break
+            fi
+          done
+          [[ -n "${HUB_KEY}" ]] || fail "Failed to extract kubeconfig from secret '${HUB_KUBECONFIG_SECRET}' (expected key 'kubeconfig', 'config' or 'value')"
+          chmod 600 "${HUB_KUBECONFIG}"
+          echo "✅ Hub kubeconfig extracted (key: ${HUB_KEY})"
+          PIPELINE_OC=(oc --kubeconfig "${HUB_KUBECONFIG}")
+        else
+          echo "ℹ️  No hub kubeconfig secret provided, using the in-cluster service account"
+        fi
+
+        # --- Admin access (a copy: the workspace file is replaced below) ---
+        (umask 077; cp "${WORKSPACE_KUBECONFIG}" "${ADMIN_KUBECONFIG}")
+        ADMIN_OC=(oc --kubeconfig "${ADMIN_KUBECONFIG}")
+
+        echo "🔍 Verifying admin access to the ROKS cluster..."
+        ADMIN_IDENTITY=""
+        for ATTEMPT in 1 2 3 4 5 6 7 8 9 10; do
+          if ADMIN_IDENTITY=$("${ADMIN_OC[@]}" whoami 2>"${TMP_DIR}/whoami.err"); then
+            break
+          fi
+          ADMIN_IDENTITY=""
+          echo "⚠️  API server not reachable with the admin kubeconfig (attempt ${ATTEMPT}/10): $(head -n 1 "${TMP_DIR}/whoami.err")"
+          if [[ "${ATTEMPT}" -lt 10 ]]; then
+            sleep "${ACCESS_RETRY_DELAY}"
+          fi
+        done
+        [[ -n "${ADMIN_IDENTITY}" ]] || fail "Cannot reach the ROKS cluster with the admin kubeconfig from roks-deploy"
+        CAN_ADMIN=$("${ADMIN_OC[@]}" auth can-i '*' '*' --all-namespaces 2>/dev/null || true)
+        [[ "${CAN_ADMIN}" == "yes" ]] || fail "The admin kubeconfig (${ADMIN_IDENTITY}) has no cluster-admin access"
+        echo "✅ Admin access verified (${ADMIN_IDENTITY})"
+
+        API_SERVER_URL=$("${ADMIN_OC[@]}" config view --minify --raw -o jsonpath='{.clusters[0].cluster.server}')
+        [[ -n "${API_SERVER_URL}" ]] || fail "Could not read the API server URL from the admin kubeconfig"
+        # Keep the TLS settings of the admin kubeconfig (CA data, or insecure)
+        CA_DATA=$("${ADMIN_OC[@]}" config view --minify --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')
+        INSECURE=$("${ADMIN_OC[@]}" config view --minify --raw -o jsonpath='{.clusters[0].cluster.insecure-skip-tls-verify}')
+        echo "   API server: ${API_SERVER_URL}"
+
+        # --- ServiceAccount with cluster-admin and a long-lived token ---
+        echo "🔑 Creating long-lived ServiceAccount token kubeconfig..."
+        echo "1. ServiceAccount ${SA_NAMESPACE}/${SA_NAME}..."
+        if "${ADMIN_OC[@]}" -n "${SA_NAMESPACE}" get sa "${SA_NAME}" >/dev/null 2>&1; then
+          echo "   ℹ️  ServiceAccount already exists, reusing it"
+        else
+          "${ADMIN_OC[@]}" -n "${SA_NAMESPACE}" create sa "${SA_NAME}"
+        fi
+
+        echo "2. Granting cluster-admin to the ServiceAccount..."
+        "${ADMIN_OC[@]}" adm policy add-cluster-role-to-user cluster-admin -z "${SA_NAME}" -n "${SA_NAMESPACE}"
+
+        echo "3. Token Secret ${SA_NAMESPACE}/${TOKEN_SECRET_NAME}..."
+        {
+          echo "apiVersion: v1"
+          echo "kind: Secret"
+          echo "metadata:"
+          echo "  name: ${TOKEN_SECRET_NAME}"
+          echo "  annotations:"
+          echo "    kubernetes.io/service-account.name: ${SA_NAME}"
+          echo "type: kubernetes.io/service-account-token"
+        } | "${ADMIN_OC[@]}" -n "${SA_NAMESPACE}" apply -f -
+
+        echo "4. Waiting for the token..."
+        TOKEN=""
+        for ATTEMPT in $(seq 1 30); do
+          TOKEN=$("${ADMIN_OC[@]}" -n "${SA_NAMESPACE}" get secret "${TOKEN_SECRET_NAME}" -o jsonpath='{.data.token}' 2>/dev/null | base64 -d 2>/dev/null || true)
+          if [[ -n "${TOKEN}" ]]; then
+            break
+          fi
+          echo "   Token not populated yet (attempt ${ATTEMPT}/30)"
+          sleep "${TOKEN_WAIT_DELAY}"
+        done
+        [[ -n "${TOKEN}" ]] || fail "The token of Secret ${SA_NAMESPACE}/${TOKEN_SECRET_NAME} was not populated"
+        [[ "${TOKEN}" =~ ^[A-Za-z0-9._-]+$ ]] || fail "The token of Secret ${SA_NAMESPACE}/${TOKEN_SECRET_NAME} has an unexpected format (not printed)"
+        echo "   ✅ Token populated"
+
+        echo "5. Building and verifying the token kubeconfig..."
+        KUBE_CLUSTER="${API_SERVER_URL#https://}"
+        KUBE_CONTEXT="${SA_NAMESPACE}/${KUBE_CLUSTER}/${SA_NAME}"
+        (
+          umask 077
+          {
+            echo "apiVersion: v1"
+            echo "kind: Config"
+            echo "clusters:"
+            echo "- name: \"${KUBE_CLUSTER}\""
+            echo "  cluster:"
+            echo "    server: \"${API_SERVER_URL}\""
+            if [[ -n "${CA_DATA}" ]]; then
+              echo "    certificate-authority-data: \"${CA_DATA}\""
+            elif [[ "${INSECURE}" == "true" ]]; then
+              echo "    insecure-skip-tls-verify: true"
+            fi
+            echo "users:"
+            echo "- name: \"${SA_NAME}\""
+            echo "  user:"
+            echo "    token: \"${TOKEN}\""
+            echo "contexts:"
+            echo "- name: \"${KUBE_CONTEXT}\""
+            echo "  context:"
+            echo "    cluster: \"${KUBE_CLUSTER}\""
+            echo "    namespace: \"${SA_NAMESPACE}\""
+            echo "    user: \"${SA_NAME}\""
+            echo "current-context: \"${KUBE_CONTEXT}\""
+          } > "${TOKEN_KUBECONFIG}"
+        )
+        unset TOKEN
+        TOKEN_OC=(oc --kubeconfig "${TOKEN_KUBECONFIG}")
+
+        # The binding may take a moment to apply; the workspace file is only
+        # replaced once the token kubeconfig works as cluster-admin.
+        VERIFIED=false
+        for ATTEMPT in 1 2 3 4 5 6; do
+          TOKEN_IDENTITY=$("${TOKEN_OC[@]}" whoami 2>/dev/null || true)
+          TOKEN_CAN_ADMIN=$("${TOKEN_OC[@]}" auth can-i '*' '*' --all-namespaces 2>/dev/null || true)
+          if [[ "${TOKEN_IDENTITY}" == "${SA_IDENTITY}" && "${TOKEN_CAN_ADMIN}" == "yes" ]]; then
+            VERIFIED=true
+            break
+          fi
+          echo "   ⚠️  Token kubeconfig not usable yet (identity '${TOKEN_IDENTITY:-none}', cluster-admin '${TOKEN_CAN_ADMIN:-no}', attempt ${ATTEMPT}/6)"
+          if [[ "${ATTEMPT}" -lt 6 ]]; then
+            sleep "${VERIFY_RETRY_DELAY}"
+          fi
+        done
+        [[ "${VERIFIED}" == "true" ]] || fail "The token kubeconfig does not work as ${SA_IDENTITY} with cluster-admin; the workspace kubeconfig was left unchanged"
+        echo "   ✅ Verified as ${SA_IDENTITY}"
+
+        chmod 600 "${TOKEN_KUBECONFIG}"
+        mv -f "${TOKEN_KUBECONFIG}" "${WORKSPACE_KUBECONFIG}"
+        echo "   ✅ ${WORKSPACE_KUBECONFIG} is now the token kubeconfig"
+
+        # --- Non-secret service connection data from roks-deploy ---
+        OUTPUTS_OK=false
+        if [[ -f "${OUTPUTS_FILE}" ]] && jq -e 'type == "object"' "${OUTPUTS_FILE}" >/dev/null 2>&1; then
+          OUTPUTS_OK=true
+        else
+          echo "⚠️  ${OUTPUTS_FILE} missing or not a JSON object: storing no service connection data"
+        fi
+
+        # Value of a Terraform output ({"<name>": {"value": ...}}), empty if null/absent
+        output_value() {
+          [[ "${OUTPUTS_OK}" == "true" ]] || return 0
+          jq -r --arg name "$1" '(.[$name] | objects | .value) // empty | tostring' "${OUTPUTS_FILE}" 2>/dev/null || true
+        }
+
+        # Secret data: one file per key in SECRET_DATA_DIR, key names in DATA_KEYS
+        SECRET_DATA_DIR="${TMP_DIR}/secret-data"
+        (umask 077; mkdir -p "${SECRET_DATA_DIR}")
+        DATA_KEYS=()
+
+        add_value() {
+          [[ -n "$2" ]] || return 0
+          printf '%s' "$2" > "${SECRET_DATA_DIR}/$1"
+          DATA_KEYS+=("$1")
+        }
+
+        add_file() {
+          cp "$2" "${SECRET_DATA_DIR}/$1"
+          DATA_KEYS+=("$1")
+        }
+
+        # CA certificates come base64-encoded from Terraform; stored as PEM
+        add_ca() {
+          [[ -n "$2" ]] || return 0
+          if printf '%s' "$2" | base64 -d > "${SECRET_DATA_DIR}/$1" 2>/dev/null && [[ -s "${SECRET_DATA_DIR}/$1" ]]; then
+            DATA_KEYS+=("$1")
+          else
+            rm -f "${SECRET_DATA_DIR}/$1"
+            echo "⚠️  Could not decode the CA certificate for $1; not stored"
+          fi
+        }
+
+        add_file kubeconfig "${WORKSPACE_KUBECONFIG}"
+        add_value cluster-name "${CLUSTER_NAME}"
+        add_value cluster-id "$(output_value cluster_id)"
+        add_value api-url "${API_SERVER_URL}"
+
+        POSTGRES_HOST=$(output_value postgres_host)
+        if [[ -n "${POSTGRES_HOST}" ]]; then
+          add_value postgres-host "${POSTGRES_HOST}"
+          add_value postgres-port "$(output_value postgres_port)"
+          add_value postgres-database "$(output_value postgres_database)"
+          add_value postgres-username "$(output_value postgres_admin_username)"
+          add_ca postgres-ca.crt "$(output_value postgres_ca_certificate_base64)"
+        fi
+
+        REDIS_HOST=$(output_value redis_host)
+        if [[ -n "${REDIS_HOST}" ]]; then
+          add_value redis-host "${REDIS_HOST}"
+          add_value redis-port "$(output_value redis_port)"
+          add_value redis-username "$(output_value redis_username)"
+          add_ca redis-ca.crt "$(output_value redis_ca_certificate_base64)"
+        fi
+
+        # --- Credentials Secret on the pipeline (or hub) cluster ---
+        # Server-side apply with this task's field manager: it only owns the
+        # keys above, so a later task can add keys (e.g. redis-password) with
+        # its own field manager, and a rerun neither drops nor fights them.
+        echo ""
+        echo "📦 Storing Secret ${CREDS_SECRET_NAME} (keys: ${DATA_KEYS[*]})..."
+        {
+          echo "apiVersion: v1"
+          echo "kind: Secret"
+          echo "metadata:"
+          echo "  name: ${CREDS_SECRET_NAME}"
+          echo "type: Opaque"
+          echo "data:"
+          for KEY in "${DATA_KEYS[@]}"; do
+            echo "  ${KEY}: $(base64 < "${SECRET_DATA_DIR}/${KEY}" | tr -d '\n')"
+          done
+        } | "${PIPELINE_OC[@]}" apply -f - --server-side --field-manager="${FIELD_MANAGER}" --force-conflicts
+        echo "✅ Secret ${CREDS_SECRET_NAME} stored"
+
+        # --- Summary (no secret values) ---
+        echo ""
+        echo "=============================================="
+        echo "✅ ROKS cluster access ready"
+        echo "  Cluster:            ${CLUSTER_NAME}"
+        echo "  API server:         ${API_SERVER_URL}"
+        echo "  Identity:           ${SA_IDENTITY} (cluster-admin, long-lived token)"
+        echo "  Kubeconfig:         ${WORKSPACE_KUBECONFIG}"
+        echo "  Credentials Secret: ${CREDS_SECRET_NAME}"
+        if [[ -n "${POSTGRES_HOST}" ]]; then
+          echo "  PostgreSQL:         ${POSTGRES_HOST}:$(output_value postgres_port) (database $(output_value postgres_database), user $(output_value postgres_admin_username); password in the PostgreSQL admin password Secret)"
+        else
+          echo "  PostgreSQL:         not deployed"
+        fi
+        if [[ -n "${REDIS_HOST}" ]]; then
+          echo "  Redis:              ${REDIS_HOST}:$(output_value redis_port) (TLS, user $(output_value redis_username))"
+        else
+          echo "  Redis:              not deployed"
+        fi
+        echo ""
+        echo "📋 To retrieve the kubeconfig:"
+        echo "   oc get secret ${CREDS_SECRET_NAME} -o jsonpath='{.data.kubeconfig}' | base64 -d > kubeconfig"
+        echo "=============================================="
