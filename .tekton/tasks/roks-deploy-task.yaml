@@ -383,32 +383,78 @@ spec:
 
         # --- Infrastructure API key of the region and resource group ---
         # The first cluster of a region/resource group stores the creator's API
-        # key; the group is dedicated to this pipeline, so make it ours.
+        # key. `ibmcloud ks api-key reset` replaces the key of the CLI's
+        # *targeted* resource group, so it only ever runs with the dedicated
+        # group targeted and confirmed (never e.g. Default, which runs the
+        # user's own cluster on the user's key), and only when an owner was
+        # actually read and differs from the pipeline identity.
+        DEDICATED_RESOURCE_GROUP="redhat-sap-edge-roks-ci"
         CLUSTER_ID=$(output_value cluster_id)
         [[ -n "${CLUSTER_ID}" ]] || fail "Terraform output cluster_id is empty"
-        echo "🔑 Checking the infrastructure API key owner (${IBMCLOUD_REGION}, ${IBMCLOUD_RESOURCE_GROUP})..."
-        OWNER_ID=""
-        OWNER_EMAIL=""
-        OWNER_NAME=""
-        if OWNER_JSON=$(ibmcloud ks api-key info --cluster "${CLUSTER_ID}" --output json -q); then
-          OWNER_ID=$(jq -r '.ID // .id // empty' <<< "${OWNER_JSON}" 2>/dev/null || true)
-          OWNER_EMAIL=$(jq -r '.Email // .email // empty' <<< "${OWNER_JSON}" 2>/dev/null || true)
-          OWNER_NAME=$(jq -r '.Name // .name // empty' <<< "${OWNER_JSON}" 2>/dev/null || true)
-        else
-          echo "⚠️  Could not read the API key owner"
-        fi
+
         lower() {
           printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
         }
+
+        # Sets OWNER_ID, OWNER_EMAIL, OWNER_NAME; fails when no owner can be read
+        read_key_owner() {
+          local OWNER_JSON
+          OWNER_ID=""
+          OWNER_EMAIL=""
+          OWNER_NAME=""
+          if ! OWNER_JSON=$(ibmcloud ks api-key info --cluster "${CLUSTER_ID}" --output json -q); then
+            echo "⚠️  ibmcloud ks api-key info --cluster ${CLUSTER_ID} failed"
+            return 1
+          fi
+          OWNER_ID=$(jq -r 'if type == "object" then (.ID // .id // empty) else empty end' <<< "${OWNER_JSON}" 2>/dev/null || true)
+          OWNER_EMAIL=$(jq -r 'if type == "object" then (.Email // .email // empty) else empty end' <<< "${OWNER_JSON}" 2>/dev/null || true)
+          OWNER_NAME=$(jq -r 'if type == "object" then (.Name // .name // empty) else empty end' <<< "${OWNER_JSON}" 2>/dev/null || true)
+          if [[ -z "${OWNER_ID}" && -z "${OWNER_EMAIL}" ]]; then
+            echo "⚠️  No owner ID or email in the api-key info output (top-level keys: $(jq -c 'keys' <<< "${OWNER_JSON}" 2>/dev/null || echo 'not a JSON object'))"
+            return 1
+          fi
+        }
+
         # IAM IDs of service IDs appear with and without the iam- prefix
-        if [[ -n "${OWNER_ID}" && "${OWNER_ID#iam-}" == "${LOGIN_IAM_ID#iam-}" ]] ||
-          [[ -n "${OWNER_EMAIL}" && -n "${LOGIN_EMAIL}" && "$(lower "${OWNER_EMAIL}")" == "$(lower "${LOGIN_EMAIL}")" ]]; then
-          echo "✅ The infrastructure API key belongs to the pipeline identity (${LOGIN_IAM_ID})"
-        else
-          echo "🔄 The infrastructure API key belongs to '${OWNER_NAME:-unknown}' (${OWNER_ID:-unknown}), not to ${LOGIN_IAM_ID}; resetting it..."
-          ibmcloud ks api-key reset --region "${IBMCLOUD_REGION}" -f -q || fail "ibmcloud ks api-key reset failed; the pipeline identity needs the Administrator role on Kubernetes Service in ${IBMCLOUD_RESOURCE_GROUP}"
-          echo "✅ The infrastructure API key of ${IBMCLOUD_REGION}/${IBMCLOUD_RESOURCE_GROUP} now belongs to ${LOGIN_IAM_ID}"
-        fi
+        owner_is_login() {
+          [[ -n "${OWNER_ID}" && "${OWNER_ID#iam-}" == "${LOGIN_IAM_ID#iam-}" ]] ||
+            [[ -n "${OWNER_EMAIL}" && -n "${LOGIN_EMAIL}" && "$(lower "${OWNER_EMAIL}")" == "$(lower "${LOGIN_EMAIL}")" ]]
+        }
+
+        ensure_infrastructure_key() {
+          local TARGETED_GROUP
+          echo "🔑 Checking the infrastructure API key owner (${IBMCLOUD_REGION}, ${IBMCLOUD_RESOURCE_GROUP})..."
+          if [[ "${IBMCLOUD_RESOURCE_GROUP}" != "${DEDICATED_RESOURCE_GROUP}" ]]; then
+            echo "⚠️  Resource group ${IBMCLOUD_RESOURCE_GROUP} is not the dedicated group ${DEDICATED_RESOURCE_GROUP}: not resetting its infrastructure API key (owner not checked)"
+            return 0
+          fi
+          if ! ibmcloud target -r "${IBMCLOUD_REGION}" -g "${DEDICATED_RESOURCE_GROUP}"; then
+            echo "⚠️  Could not target ${IBMCLOUD_REGION}/${DEDICATED_RESOURCE_GROUP}: not resetting the infrastructure API key"
+            return 0
+          fi
+          TARGETED_GROUP=$(ibmcloud target --output json | jq -r '.resource_group.name // empty' 2>/dev/null || true)
+          if [[ "${TARGETED_GROUP}" != "${DEDICATED_RESOURCE_GROUP}" ]]; then
+            echo "⚠️  The CLI targets resource group '${TARGETED_GROUP:-unknown}', not ${DEDICATED_RESOURCE_GROUP}: not resetting the infrastructure API key"
+            return 0
+          fi
+          if ! read_key_owner; then
+            echo "⚠️  Owner of the infrastructure API key unknown: not resetting it. Check with: ibmcloud ks api-key info --cluster ${CLUSTER_ID}"
+            return 0
+          fi
+          if owner_is_login; then
+            echo "✅ The infrastructure API key belongs to the pipeline identity (${LOGIN_IAM_ID})"
+            return 0
+          fi
+          echo "🔄 The infrastructure API key belongs to '${OWNER_NAME:-unknown}' (${OWNER_ID:-unknown}), not to ${LOGIN_IAM_ID}; resetting it in ${IBMCLOUD_REGION}/${DEDICATED_RESOURCE_GROUP}..."
+          ibmcloud ks api-key reset --region "${IBMCLOUD_REGION}" -f -q || fail "ibmcloud ks api-key reset failed; the pipeline identity needs the Administrator role on Kubernetes Service in ${DEDICATED_RESOURCE_GROUP}"
+          if read_key_owner && owner_is_login; then
+            echo "✅ The infrastructure API key of ${IBMCLOUD_REGION}/${DEDICATED_RESOURCE_GROUP} now belongs to ${LOGIN_IAM_ID}"
+          else
+            echo "⚠️  ⚠️  WARNING: after the reset the infrastructure API key owner is still '${OWNER_NAME:-unknown}' (${OWNER_ID:-unknown}), not ${LOGIN_IAM_ID}."
+            echo "⚠️  ⚠️  Check with: ibmcloud ks api-key info --cluster ${CLUSTER_ID}"
+          fi
+        }
+        ensure_infrastructure_key
 
         # --- Summary (no secrets) ---
         echo ""
