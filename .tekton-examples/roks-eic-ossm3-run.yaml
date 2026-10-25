@@ -1,0 +1,133 @@
+# SPDX-FileCopyrightText: 2026 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Example PipelineRun for roks-eic-full-test-pipeline: EIC with restricted
+# access on ROKS (Red Hat OpenShift on IBM Cloud, VPC). Terraform creates the
+# cluster, an IBM Cloud Container Registry namespace and IBM Cloud Databases
+# for PostgreSQL/Redis in the resource group redhat-sap-edge-roks-ci (see
+# roks/terraform/README.md), and destroys them at the end.
+#
+# One-time setup in the pipeline namespace. The Secret and bucket names below
+# marked PLACEHOLDER are examples: create them under these names or change the
+# values to the names you used.
+#
+# 1. IBM Cloud API key Secret (roksIbmcloudSecretName), key IBMCLOUD_API_KEY.
+#    Preferably the API key of a service ID (e.g. redhat-sap-edge-roks-ci)
+#    with access to VPC Infrastructure Services, Kubernetes Service, Cloud
+#    Object Storage and Databases in the resource group, Container Registry
+#    (Manager, Administrator) in eu-de and IAM Identity Service (Operator):
+#      oc create secret generic roks-ibmcloud-api-key \
+#        --from-literal=IBMCLOUD_API_KEY=<API key>
+# 2. An IBM Cloud Object Storage bucket for the Terraform state
+#    (terraformStateBucket; one state per cluster under
+#    roks/<clusterName>/terraform.tfstate) and HMAC credentials for it as a
+#    Secret (terraformStateSecretName). Keep the bucket private: the state
+#    holds the cluster admin certificate, the registry API key and the
+#    database passwords.
+#      oc create secret generic roks-terraform-state-hmac \
+#        --from-literal=AWS_ACCESS_KEY_ID=<HMAC access key ID> \
+#        --from-literal=AWS_SECRET_ACCESS_KEY=<HMAC secret access key>
+# 3. PostgreSQL admin password Secret (postgresAdminPasswordSecretName), key
+#    POSTGRES_ADMIN_PASSWORD, read only when deployPostgres is "true". The
+#    IBM provider rule: 15-72 characters of letters, digits, - and _, with at
+#    least one lower case letter, one upper case letter and one digit, not
+#    starting with - or _, and no trailing newline:
+#      oc create secret generic roks-postgres-admin-password \
+#        --from-literal=POSTGRES_ADMIN_PASSWORD=<password>
+# 4. As for the other EIC runs: the ObjectBucketClaim
+#    sap-eic-restricted-cluster-config-resources with the restricted-resources
+#    zip files under restricted-resources/, the EIC auth Secret, the Jira
+#    Secret and the hub kubeconfig Secret <hubClusterName>-kubeconfig.
+# 5. Add 172.17.0.0/18 (ROKS pod network) and 10.0.0.0/16 (VPC) to the IP
+#    filter allowlist of the httpbinipfilter iFlow (otherwise
+#    test-httpbinipfilter fails).
+#
+# A failed or rejected run leaves the cluster and its IBM Cloud resources in
+# place for debugging (they are billable): destroy them from the Terraform
+# state with  make roks-destroy CLUSTER=<clusterName>  (roks.makefile).
+
+---
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: roks-eic-full-test-pr{{ pull_request_number }}-
+  annotations:
+    pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
+    pipelinesascode.tekton.dev/on-target-branch: "[main]"
+    pipelinesascode.tekton.dev/task: "[./.tekton/tasks/git-clone.yaml, ./.tekton/tasks/roks-deploy-task.yaml, ./.tekton/tasks/roks-validate-and-get-access-task.yaml, ./.tekton/tasks/roks-registry-access-task.yaml, ./.tekton/tasks/roks-validate-and-create-configmap-task.yaml, ./.tekton/tasks/roks-teardown-task.yaml, ./.tekton/tasks/ossm3-preflight-check-task.yaml, ./.tekton/tasks/ossm3-verify-operators-task.yaml, ./.tekton/tasks/ossm3-download-and-apply-rbac-task.yaml, ./.tekton/tasks/ossm3-prepare-namespaces-task.yaml, ./.tekton/tasks/ossm3-configure-mesh-task.yaml, ./.tekton/tasks/ossm3-generate-sa-based-kubeconfig-task.yaml]"
+    pipelinesascode.tekton.dev/max-keep-runs: "1"
+    pipelinesascode.tekton.dev/cancel-in-progress: "true"
+spec:
+  pipelineRef:
+    name: roks-eic-full-test-pipeline
+  timeouts:
+    pipeline: "336h"      # Total pipeline timeout (14 days)
+    tasks: "335h"         # Individual task timeout (tasks + finally must be <= pipeline); well above Terraform's 3h create / 2h delete
+    finally: "60m"        # Finally tasks timeout
+  params:
+    - name: repoUrl
+      value: "{{ repo_url }}"
+    - name: revision
+      value: "{{ revision }}"
+    - name: pullRequestNumber
+      value: "{{ pull_request_number }}"
+    # --- ROKS cluster (IBM Cloud) ---
+    # Starts with redhat-, at most 30 characters (also the ICR namespace)
+    - name: clusterName
+      value: "redhat-roks-eic-pr{{ pull_request_number }}"
+    - name: ibmcloudRegion
+      value: "eu-de"
+    - name: ibmcloudResourceGroup
+      value: "redhat-sap-edge-roks-ci"
+    - name: openshiftVersion
+      value: "4.21_openshift"
+    - name: workerFlavor
+      value: "bx2.16x64"
+    - name: workersPerZone
+      value: "1"
+    - name: roksIbmcloudSecretName
+      value: "roks-ibmcloud-api-key"            # PLACEHOLDER: Secret from setup step 1
+    - name: terraformStateBucket
+      value: "redhat-sap-edge-roks-ci-tfstate"  # PLACEHOLDER: COS bucket from setup step 2
+    - name: terraformStateEndpoint
+      value: "https://s3.eu-de.cloud-object-storage.appdomain.cloud"  # S3 endpoint of the bucket's region
+    - name: terraformStateSecretName
+      value: "roks-terraform-state-hmac"        # PLACEHOLDER: HMAC Secret from setup step 2
+    # --- IBM Cloud Databases ---
+    - name: postgresAdminPasswordSecretName
+      value: "roks-postgres-admin-password"     # PLACEHOLDER: Secret from setup step 3
+    - name: deployPostgres
+      value: "true"
+    - name: deployRedis
+      value: "true"
+    # --- Tests and reporting ---
+    - name: eicAuthSecretName
+      value: "eic-auth-secret"
+    - name: publicDNS
+      value: "false"
+    - name: skipAutomatedTests
+      value: "false"
+    - name: jiraSecretName
+      value: "jira-secret-mj"
+    - name: jiraIssueKey
+      value: ""                                 # Jira issue to comment on; empty skips update-jira-ticket
+    - name: hubClusterName
+      value: "eic"
+    # --- OSSM3 parameters ---
+    - name: ossm3Channel
+      value: "stable-3.3"
+    - name: obcName
+      value: "sap-eic-restricted-cluster-config-resources"
+    - name: s3Prefix
+      value: "restricted-resources/"
+  workspaces:
+    - name: source
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteMany]
+          storageClassName: ocs-storagecluster-cephfs
+          resources:
+            requests:
+              storage: 2Gi
