@@ -82,8 +82,18 @@ spec:
       value: "sap-eic-restricted-cluster-config-resources"
     - name: s3Prefix
       value: "restricted-resources/pr{{ pull_request_number }}/"
+    # S3 folders under s3Prefix, one SAP bundle zip each (upload as downloaded):
+    #   elm/           ELM bundle of the (single, shared) Edge Node (creates edgelm)
+    #   edge-icell-1/  EIC bundle of cell 1 (edge-icell-1, istio-gateways-1, ...)
+    #   edge-icell-2/  EIC bundle of cell 2 (edge-icell-2, istio-gateways-2, ...)
+    # The pipeline creates these folders and pauses at the upload gate;
+    # apply-rbac then downloads only these folders and fails if one is empty.
+    # Apply order comes from the zip type (ELM first), not from this list.
+    # Required here: the pipeline default "" means a flat prefix (top-level zips only).
     - name: restrictedResourcesComponents
       value: "elm edge-icell-1 edge-icell-2"
+    # Number of EIC cells to validate. With "1", every cell2-* task is skipped;
+    # also drop edge-icell-2 from restrictedResourcesComponents above.
     - name: cellCount
       value: "2"
 
