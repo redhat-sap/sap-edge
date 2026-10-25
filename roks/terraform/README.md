@@ -16,7 +16,9 @@ for local use through `roks.makefile`. Providers:
 ## What it creates
 
 All resources go into the existing resource group `redhat-sap-edge-roks-ci`
-(looked up with a data source, never created). Nothing is created outside it.
+(looked up with a data source, never created). The only exceptions are the
+registry service ID, its access policy and its API key: IAM identities are
+account-level and have no resource group.
 
 | Resource | Name |
 |---|---|
@@ -29,7 +31,8 @@ All resources go into the existing resource group `redhat-sap-edge-roks-ci`
 | `terraform_data.vpe_cleanup`: destroy-time hook that deletes the VPE gateways ROKS leaves in the VPC (see [Destroy](#destroy)) | - |
 | Optional, `deploy_postgres`: IBM Cloud Databases for PostgreSQL 15 (see [Optional managed services](#optional-managed-services)) | `<cluster_name>-postgres` |
 | Optional, `deploy_redis`: IBM Cloud Databases for Redis | `<cluster_name>-redis` |
-| Optional, `deploy_quay_storage`: COS bucket in the cluster's COS instance, and an HMAC key for it | `<cluster_name>-quay`, `<cluster_name>-quay-hmac` |
+| IBM Cloud Container Registry namespace in the region's registry (`de.icr.io`), see [Container Registry](#container-registry-icr) | `<cluster_name>` |
+| Service ID with Reader and Writer on that namespace only, and its API key (registry login) | `<cluster_name>-icr` |
 
 `cluster_name` must start with `redhat-` (the pipeline uses
 `redhat-roks-eic-pr<N>`), so every resource name starts with `redhat-`. Every
@@ -45,12 +48,38 @@ Cluster settings worth knowing:
   cluster, so no billable storage stays behind.
 - `wait_till = "IngressReady"` with a 3 h create timeout.
 
+## Container Registry (ICR)
+
+EIC validation on ROKS uses IBM Cloud Container Registry, not Quay; ELM is
+given the registry server, user name and API key. `registry.tf` creates it on
+every run (no flag):
+
+- Namespace `<cluster_name>` in the registry of `region` (`eu-de` is
+  `de.icr.io`; the `icr_registries` map in `registry.tf` lists the other
+  regions, and a region without an entry fails the plan). Namespace names are
+  4-30 characters and unique per registry region across all IBM Cloud
+  accounts, which is why `cluster_name` is limited to 30 characters. The
+  namespace is assigned to the resource group. The provider keeps namespace
+  tags only in the Terraform state, so none are set.
+- Service ID `<cluster_name>-icr` with one access policy: roles Reader (pull)
+  and Writer (push) on service `container-registry`, resource type
+  `namespace`, resource `<cluster_name>`, region `region`. Nothing broader.
+- API key `<cluster_name>-icr` of that service ID. Log in with user
+  `iamapikey` and the key as password, e.g.
+  `terraform output -raw icr_api_key | docker login -u iamapikey --password-stdin de.icr.io`.
+  The key is only returned when it is created, so it lives in the Terraform
+  state (sensitive output `icr_api_key`).
+- `terraform destroy` deletes the API key, the policy, the service ID and the
+  namespace. Deleting the namespace deletes every image, the trash and the
+  trust data in it.
+
 ## Optional managed services
 
-`services.tf` holds the services that mirror ROSA's `deployPostgres`,
-`deployRedis` and `deployQuay`. Each resource and data source in it has
-`count = 0` unless its flag is `true`, so with the default (all `false`)
-nothing is created, and every output below is `null`.
+`services.tf` holds the databases that mirror ROSA's `deployPostgres` and
+`deployRedis`. Each resource and data source in it has `count = 0` unless its
+flag is `true`, so with the Terraform default (both `false`) nothing is
+created, and every output below is `null`. The ROKS pipeline sets both to
+`true` by default.
 
 **Databases** (`deploy_postgres`, `deploy_redis`), in `region` (`eu-de`):
 
@@ -89,22 +118,6 @@ nothing is created, and every output below is `null`.
   `ibmcloud resource reclamations` and run
   `ibmcloud resource reclamation-delete <reclamation ID>`.
 
-**Quay storage** (`deploy_quay_storage`):
-
-- A regional `standard` bucket `<cluster_name>-quay` in `region`, in the
-  cluster's COS instance (`<cluster_name>-cos`). Output `quay_cos_endpoint` is
-  the bucket's regional public S3 endpoint host without a scheme
-  (`s3.eu-de.cloud-object-storage.appdomain.cloud`), reached from the cluster
-  through the public gateways.
-- An HMAC resource key `<cluster_name>-quay-hmac` with the Writer role (the
-  least role that can read, write and delete objects). The role covers every
-  bucket of the COS instance, including the one ROKS creates for the internal
-  registry.
-- `force_delete = true`: destroy empties the bucket before deleting it. Bucket
-  names are global across IBM Cloud, and IBM may hold a deleted bucket's name
-  for a while before it can be reused.
-- COS buckets and resource keys cannot carry tags.
-
 ## Network ranges and the httpbinipfilter allowlist
 
 | Range | Use |
@@ -128,14 +141,15 @@ the OpenShift default `10.128.0.0/14` used on ROSA/ARO is not possible; the
 2. A service ID (e.g. `redhat-sap-edge-roks-ci`) with an API key and access to
    VPC Infrastructure Services, Kubernetes Service, Cloud Object Storage and
    Databases in that resource group. Export the key as `IBMCLOUD_API_KEY`.
-   For `deploy_quay_storage` it also needs at least the Writer service role on
-   Cloud Object Storage (to issue a Writer HMAC key); IBM creates a service ID
-   for the key, so if the account restricts service ID creation it also needs
-   the Service ID creator role.
+   For the registry it also needs, on Container Registry in `eu-de`, the
+   Manager service role (namespaces) and the Administrator platform role (to
+   grant the namespace policy), and on IAM Identity Service the Operator role
+   (create the service ID and its API key), plus Service ID creator if the
+   account restricts service ID creation.
 3. A COS bucket for the Terraform state and HMAC credentials for it
    (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`). The state holds the cluster
-   admin certificate, the ingress secret and, when the optional services are
-   on, the database passwords and the Quay HMAC key: keep the bucket private.
+   admin certificate, the ingress secret, the registry API key and, when the
+   optional services are on, the database passwords: keep the bucket private.
 
 ## Terraform state (COS through the s3 backend)
 
@@ -236,7 +250,7 @@ before you copy it elsewhere. It grants cluster-admin: do not share it.
 
 | Name | Default | Description |
 |---|---|---|
-| `cluster_name` | (required) | Cluster name and name prefix; `^[a-z][a-z0-9-]{0,30}[a-z0-9]$`, starts with `redhat-` |
+| `cluster_name` | (required) | Cluster name, name prefix and ICR namespace; `^[a-z][a-z0-9-]{0,28}[a-z0-9]$` (at most 30 characters), starts with `redhat-` |
 | `region` | `eu-de` | IBM Cloud region |
 | `resource_group` | `redhat-sap-edge-roks-ci` | Existing resource group |
 | `openshift_version` | `4.21_openshift` | `<major>.<minor>_openshift` |
@@ -248,7 +262,6 @@ before you copy it elsewhere. It grants cluster-admin: do not share it.
 | `kubeconfig_dir` | `./.kube` | Existing directory for the admin kubeconfig |
 | `deploy_postgres` | `false` | Optional IBM Cloud Databases for PostgreSQL |
 | `deploy_redis` | `false` | Optional IBM Cloud Databases for Redis |
-| `deploy_quay_storage` | `false` | Optional COS bucket and HMAC key for Quay |
 | `postgres_admin_password` | `""` (sensitive) | PostgreSQL admin password; required when `deploy_postgres`: 15-72 characters of letters, digits, `-`, `_`, with at least one lower case letter, one upper case letter and one digit, not starting with `-` or `_` |
 
 ## Outputs
@@ -269,11 +282,12 @@ before you copy it elsewhere. It grants cluster-admin: do not share it.
 | `redis_username` | `admin` |
 | `redis_password` | Generated Redis admin password (sensitive) |
 | `redis_ca_certificate_base64` | CA certificate of the Redis TLS certificate (not a secret) |
-| `quay_cos_bucket` | Quay bucket name |
-| `quay_cos_endpoint` | Regional public S3 endpoint host of the bucket |
-| `quay_hmac_access_key_id`, `quay_hmac_secret_access_key` | HMAC credentials for the bucket (sensitive) |
+| `icr_registry` | Registry host (`de.icr.io` for `eu-de`) |
+| `icr_namespace` | ICR namespace (`<cluster_name>`) |
+| `icr_username` | `iamapikey` |
+| `icr_api_key` | API key of the registry service ID, the registry password (sensitive) |
 
-The service outputs are `null` when their flag is `false`. Read sensitive
+The database outputs are `null` when their flag is `false`. Read sensitive
 outputs with `terraform output -raw <name>`, and do not print them in logs.
 
 ## Validate
@@ -288,15 +302,14 @@ terraform -chdir=roks/terraform init -backend=false
 terraform -chdir=roks/terraform validate
 for output in postgres_host postgres_port postgres_database \
   redis_host redis_port redis_password \
-  quay_cos_bucket quay_cos_endpoint \
-  quay_hmac_access_key_id quay_hmac_secret_access_key; do
+  icr_registry icr_namespace icr_username icr_api_key; do
   grep -q "^output \"${output}\"" roks/terraform/outputs.tf ||
     echo "missing output: ${output}"
 done
 ```
 
 A plan with the flags turned on needs credentials:
-`make roks-plan CLUSTER=<name> ROKS_TF_ARGS="-var deploy_postgres=true -var deploy_redis=true -var deploy_quay_storage=true"`
+`make roks-plan CLUSTER=<name> ROKS_TF_ARGS="-var deploy_postgres=true -var deploy_redis=true"`
 (with `TF_VAR_postgres_admin_password` exported).
 
 ## Lint

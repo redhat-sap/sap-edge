@@ -226,3 +226,4 @@ adminpassword
 adminuser
 ibmclouddb
 multitenant
+iamapikey

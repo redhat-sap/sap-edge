@@ -34,6 +34,31 @@ output "vpc_id" {
 }
 
 ###########################################
+# Container Registry (ICR)
+###########################################
+
+output "icr_registry" {
+  description = "Regional IBM Cloud Container Registry host (de.icr.io for eu-de)"
+  value       = local.icr_registry
+}
+
+output "icr_namespace" {
+  description = "ICR namespace of the run (named after the cluster)"
+  value       = ibm_cr_namespace.icr.name
+}
+
+output "icr_username" {
+  description = "Registry user name for an IBM Cloud API key login"
+  value       = "iamapikey"
+}
+
+output "icr_api_key" {
+  description = "API key of the run's service ID: push and pull in the ICR namespace only (registry password)"
+  value       = ibm_iam_service_api_key.icr.apikey
+  sensitive   = true
+}
+
+###########################################
 # Optional managed services (null when the deploy_* flag is false)
 ###########################################
 
@@ -86,26 +111,4 @@ output "redis_password" {
 output "redis_ca_certificate_base64" {
   description = "Base64-encoded CA certificate that signs the Redis TLS certificate (public, not a secret; null unless deploy_redis or if IBM returns none)"
   value       = var.deploy_redis ? try(data.ibm_database_connection.redis[0].rediss[0].certificate[0].certificate_base64, null) : null
-}
-
-output "quay_cos_bucket" {
-  description = "Name of the COS bucket for Quay (null unless deploy_quay_storage)"
-  value       = var.deploy_quay_storage ? ibm_cos_bucket.quay[0].bucket_name : null
-}
-
-output "quay_cos_endpoint" {
-  description = "Regional public S3 endpoint host of the Quay bucket, without scheme (e.g. s3.eu-de.cloud-object-storage.appdomain.cloud; null unless deploy_quay_storage)"
-  value       = var.deploy_quay_storage ? ibm_cos_bucket.quay[0].s3_endpoint_public : null
-}
-
-output "quay_hmac_access_key_id" {
-  description = "HMAC access key ID for the Quay bucket (null unless deploy_quay_storage)"
-  value       = var.deploy_quay_storage ? ibm_resource_key.quay_hmac[0].credentials["cos_hmac_keys.access_key_id"] : null
-  sensitive   = true
-}
-
-output "quay_hmac_secret_access_key" {
-  description = "HMAC secret access key for the Quay bucket (null unless deploy_quay_storage)"
-  value       = var.deploy_quay_storage ? ibm_resource_key.quay_hmac[0].credentials["cos_hmac_keys.secret_access_key"] : null
-  sensitive   = true
 }

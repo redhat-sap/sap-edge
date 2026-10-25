@@ -8,12 +8,12 @@
 ###########################################
 
 variable "cluster_name" {
-  description = "Name of the ROKS cluster, also the prefix of every other resource name (e.g. redhat-roks-eic-pr123). Must start with redhat-, max 32 characters."
+  description = "Name of the ROKS cluster, also the prefix of every other resource name and the Container Registry namespace (e.g. redhat-roks-eic-pr123). Must start with redhat-, max 30 characters."
   type        = string
 
   validation {
-    condition     = can(regex("^[a-z][a-z0-9-]{0,30}[a-z0-9]$", var.cluster_name))
-    error_message = "cluster_name must be 2-32 characters of lowercase letters, digits and hyphens, start with a letter and end with a letter or digit."
+    condition     = can(regex("^[a-z][a-z0-9-]{0,28}[a-z0-9]$", var.cluster_name))
+    error_message = "cluster_name must be 2-30 characters of lowercase letters, digits and hyphens, start with a letter and end with a letter or digit (30 is the Container Registry namespace limit; the namespace is named after the cluster)."
   }
 
   validation {
@@ -162,12 +162,6 @@ variable "deploy_postgres" {
 
 variable "deploy_redis" {
   description = "Create an IBM Cloud Databases for Redis instance."
-  type        = bool
-  default     = false
-}
-
-variable "deploy_quay_storage" {
-  description = "Create a COS bucket and HMAC credentials for Quay registry storage."
   type        = bool
   default     = false
 }
