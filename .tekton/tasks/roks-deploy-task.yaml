@@ -1,0 +1,429 @@
+# SPDX-FileCopyrightText: 2026 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: roks-deploy
+spec:
+  description: >-
+    Deploy a ROKS (Red Hat OpenShift on IBM Cloud, VPC) cluster with the
+    Terraform in roks/terraform (VPC, cluster, ICR namespace and, optionally,
+    IBM Cloud Databases for PostgreSQL and Redis). The Terraform state lives in
+    an IBM Cloud Object Storage bucket (s3 backend, key
+    roks/<clusterName>/terraform.tfstate), so a rerun for the same cluster
+    applies against the existing state. Writes the admin kubeconfig to
+    $(workspaces.source.path)/kubeconfig and the non-sensitive Terraform
+    outputs (terraform output -json format) to
+    $(workspaces.source.path)/roks-terraform-outputs.json, then makes sure
+    the infrastructure API key of the region and resource group belongs to
+    the pipeline's IBM Cloud identity.
+  params:
+    - name: clusterName
+      type: string
+      description: "ROKS cluster name: starts with redhat-, at most 30 characters of lowercase letters, digits and hyphens (also the ICR namespace)"
+    - name: prNumber
+      type: string
+      description: "Pull request number (adds the tag pr:<N>); empty for none"
+      default: ""
+    - name: ibmcloudRegion
+      type: string
+      description: "IBM Cloud region (the Terraform zones default to eu-de-1..3)"
+      default: "eu-de"
+    - name: ibmcloudResourceGroup
+      type: string
+      description: "Existing resource group for every resource of the run"
+      default: "redhat-sap-edge-roks-ci"
+    - name: openshiftVersion
+      type: string
+      description: "OpenShift version in ROKS format (see ibmcloud oc versions)"
+      default: "4.21_openshift"
+    - name: workerFlavor
+      type: string
+      description: "VPC worker flavor"
+      default: "bx2.16x64"
+    - name: workersPerZone
+      type: string
+      description: "Workers per zone (3 zones)"
+      default: "1"
+    - name: roksIbmcloudSecretName
+      type: string
+      description: "Name of the Kubernetes Secret with the IBM Cloud API key (key IBMCLOUD_API_KEY)"
+    - name: terraformStateBucket
+      type: string
+      description: "IBM Cloud Object Storage bucket holding the Terraform state"
+    - name: terraformStateEndpoint
+      type: string
+      description: "S3 endpoint of the Terraform state bucket"
+      default: "https://s3.eu-de.cloud-object-storage.appdomain.cloud"
+    - name: terraformStateSecretName
+      type: string
+      description: "Name of the Kubernetes Secret with the COS HMAC keys of the state bucket (keys AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)"
+    - name: postgresAdminPasswordSecretName
+      type: string
+      description: "Name of the Kubernetes Secret with the PostgreSQL admin password (key POSTGRES_ADMIN_PASSWORD; only read when deployPostgres is true)"
+      default: "roks-postgres-admin-password"
+    - name: deployPostgres
+      type: string
+      description: "Whether to create IBM Cloud Databases for PostgreSQL (true/false)"
+      default: "true"
+    - name: deployRedis
+      type: string
+      description: "Whether to create IBM Cloud Databases for Redis (true/false)"
+      default: "true"
+  workspaces:
+    - name: source
+      description: "Repository checked out by git-clone; receives kubeconfig and roks-terraform-outputs.json"
+  steps:
+    - name: deploy-roks-with-terraform
+      image: registry.access.redhat.com/ubi9/ubi
+      # Well above the Terraform timeouts (cluster create 3h, databases 2h,
+      # created in parallel), like the other cluster deploy tasks.
+      timeout: "336h"
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: CLUSTER_NAME
+          value: "$(params.clusterName)"
+        - name: PR_NUMBER
+          value: "$(params.prNumber)"
+        - name: IBMCLOUD_REGION
+          value: "$(params.ibmcloudRegion)"
+        - name: IBMCLOUD_RESOURCE_GROUP
+          value: "$(params.ibmcloudResourceGroup)"
+        - name: OPENSHIFT_VERSION
+          value: "$(params.openshiftVersion)"
+        - name: WORKER_FLAVOR
+          value: "$(params.workerFlavor)"
+        - name: WORKERS_PER_ZONE
+          value: "$(params.workersPerZone)"
+        - name: TERRAFORM_STATE_BUCKET
+          value: "$(params.terraformStateBucket)"
+        - name: TERRAFORM_STATE_ENDPOINT
+          value: "$(params.terraformStateEndpoint)"
+        - name: DEPLOY_POSTGRES
+          value: "$(params.deployPostgres)"
+        - name: DEPLOY_REDIS
+          value: "$(params.deployRedis)"
+        - name: POSTGRES_ADMIN_PASSWORD_SECRET_NAME
+          value: "$(params.postgresAdminPasswordSecretName)"
+        # Read by the ibm Terraform provider and used for ibmcloud login
+        - name: IBMCLOUD_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: $(params.roksIbmcloudSecretName)
+              key: IBMCLOUD_API_KEY
+        # COS HMAC keys, read by the s3 backend
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: $(params.terraformStateSecretName)
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: $(params.terraformStateSecretName)
+              key: AWS_SECRET_ACCESS_KEY
+        # Optional: only needed (and checked) when deployPostgres is true
+        - name: POSTGRES_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: $(params.postgresAdminPasswordSecretName)
+              key: POSTGRES_ADMIN_PASSWORD
+              optional: true
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        # Never print secrets: the API key, the HMAC keys and the PostgreSQL
+        # password stay in the environment / terraform.tfvars (mode 600).
+        WORKSPACE_DIR="$(workspaces.source.path)"
+        TF_DIR="${WORKSPACE_DIR}/roks/terraform"
+        KUBECONFIG_OUT="${WORKSPACE_DIR}/kubeconfig"
+        OUTPUTS_OUT="${WORKSPACE_DIR}/roks-terraform-outputs.json"
+        STATE_KEY="roks/${CLUSTER_NAME}/terraform.tfstate"
+        # Same signing region as roks.makefile (the default state bucket is in eu-de)
+        TERRAFORM_STATE_REGION="eu-de"
+        # Relative to TF_DIR; the IBM provider fails if the directory is missing
+        KUBECONFIG_DIR="./.kube"
+        TF_INIT_RETRY_DELAY="${TF_INIT_RETRY_DELAY:-30}"
+
+        TMP_DIR=$(mktemp -d)
+        trap 'rm -rf "${TMP_DIR}"' EXIT
+
+        fail() {
+          echo "❌ $*" >&2
+          exit 1
+        }
+
+        echo "🚀 Deploying ROKS cluster with Terraform"
+        echo "=============================================="
+        echo "  Cluster name:      ${CLUSTER_NAME}"
+        echo "  PR number:         ${PR_NUMBER:-<none>}"
+        echo "  Region:            ${IBMCLOUD_REGION}"
+        echo "  Resource group:    ${IBMCLOUD_RESOURCE_GROUP}"
+        echo "  OpenShift version: ${OPENSHIFT_VERSION}"
+        echo "  Workers:           ${WORKERS_PER_ZONE} x ${WORKER_FLAVOR} per zone"
+        echo "  Deploy PostgreSQL: ${DEPLOY_POSTGRES}"
+        echo "  Deploy Redis:      ${DEPLOY_REDIS}"
+        echo "  Terraform state:   ${TERRAFORM_STATE_BUCKET}/${STATE_KEY} (${TERRAFORM_STATE_ENDPOINT})"
+        echo ""
+
+        # --- Validate inputs before installing tools or calling terraform ---
+        valid_cluster_name() {
+          local LC_ALL=C RE='^[a-z][a-z0-9-]{0,28}[a-z0-9]$'
+          [[ "$1" =~ ${RE} && "$1" == redhat-* ]]
+        }
+
+        # IBM provider rules, same as variables.tf. Checked here because a
+        # tfvars syntax error would print the offending line.
+        valid_postgres_password() {
+          local LC_ALL=C RE='^[A-Za-z0-9][A-Za-z0-9_-]{14,71}$'
+          [[ "$1" =~ ${RE} && "$1" =~ [a-z] && "$1" =~ [A-Z] && "$1" =~ [0-9] ]]
+        }
+
+        # Plain values only, so that they can be written into terraform.tfvars verbatim
+        plain_value() {
+          local LC_ALL=C RE='^[A-Za-z0-9][A-Za-z0-9_. -]*$'
+          [[ "$2" =~ ${RE} ]] || fail "$1 '$2' contains unsupported characters"
+        }
+
+        lower_bool() {
+          local VALUE
+          VALUE=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')
+          [[ "${VALUE}" == "true" || "${VALUE}" == "false" ]] || fail "$1 must be true or false, got '$2'"
+          printf '%s' "${VALUE}"
+        }
+
+        valid_cluster_name "${CLUSTER_NAME}" || fail "Invalid clusterName '${CLUSTER_NAME}': it must start with redhat- and be at most 30 characters of lowercase letters, digits and hyphens, ending with a letter or digit (e.g. redhat-roks-eic-pr123)"
+        [[ "${PR_NUMBER}" =~ ^[0-9]*$ ]] || fail "prNumber must be empty or digits only, got '${PR_NUMBER}'"
+        [[ "${WORKERS_PER_ZONE}" =~ ^[1-9][0-9]*$ ]] || fail "workersPerZone must be a whole number >= 1, got '${WORKERS_PER_ZONE}'"
+        plain_value ibmcloudRegion "${IBMCLOUD_REGION}"
+        plain_value ibmcloudResourceGroup "${IBMCLOUD_RESOURCE_GROUP}"
+        plain_value openshiftVersion "${OPENSHIFT_VERSION}"
+        plain_value workerFlavor "${WORKER_FLAVOR}"
+        DEPLOY_POSTGRES_TF=$(lower_bool deployPostgres "${DEPLOY_POSTGRES}")
+        DEPLOY_REDIS_TF=$(lower_bool deployRedis "${DEPLOY_REDIS}")
+        [[ -n "${IBMCLOUD_API_KEY:-}" ]] || fail "IBMCLOUD_API_KEY is empty (Secret from roksIbmcloudSecretName, key IBMCLOUD_API_KEY)"
+        [[ -n "${AWS_ACCESS_KEY_ID:-}" && -n "${AWS_SECRET_ACCESS_KEY:-}" ]] || fail "COS HMAC keys are empty (Secret from terraformStateSecretName, keys AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY)"
+        if [[ "${DEPLOY_POSTGRES_TF}" == "true" ]]; then
+          valid_postgres_password "${POSTGRES_ADMIN_PASSWORD:-}" || fail "deployPostgres is true but POSTGRES_ADMIN_PASSWORD from Secret '${POSTGRES_ADMIN_PASSWORD_SECRET_NAME}' is missing or invalid: it must be 15-72 characters of letters, digits, - and _ (no trailing newline), with at least one lower case letter, one upper case letter and one digit, not starting with - or _"
+        fi
+        [[ -d "${TF_DIR}" ]] || fail "${TF_DIR} not found; is the repository checked out in the source workspace?"
+        echo "✅ Inputs validated"
+
+        # Install tools (jq, Terraform, IBM Cloud CLI with plugins, oc)
+        echo "📦 Installing required packages..."
+        dnf install -y jq unzip tar gzip
+
+        TERRAFORM_VERSION="1.13.5"
+        echo "📦 Installing Terraform ${TERRAFORM_VERSION}..."
+        TF_ZIP="terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+        TF_URL="https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}"
+        (
+          cd "${TMP_DIR}"
+          curl -fsSLO "${TF_URL}/${TF_ZIP}"
+          curl -fsSLO "${TF_URL}/terraform_${TERRAFORM_VERSION}_SHA256SUMS"
+          sha256sum -c --ignore-missing "terraform_${TERRAFORM_VERSION}_SHA256SUMS"
+          unzip -q -o "${TF_ZIP}" terraform -d /usr/local/bin
+          rm -f "${TF_ZIP}"
+        )
+        terraform version
+
+        echo "📦 Installing IBM Cloud CLI..."
+        curl -fsSL https://clis.cloud.ibm.com/install/linux | sh
+        ibmcloud config --check-version=false
+        # container-service: api-key info/reset; vpc-infrastructure: the VPE
+        # cleanup destroy hook (runs if an apply replaces the VPC)
+        ibmcloud plugin install container-service -f
+        ibmcloud plugin install vpc-infrastructure -f
+        ibmcloud version
+
+        echo "📦 Installing OpenShift CLI..."
+        curl -fsSL -o "${TMP_DIR}/oc.tar.gz" https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz
+        tar xzf "${TMP_DIR}/oc.tar.gz" -C "${TMP_DIR}" oc
+        mv "${TMP_DIR}/oc" /usr/local/bin/oc
+        rm -f "${TMP_DIR}/oc.tar.gz"
+        oc version --client
+        echo "✅ Tools installed"
+
+        # --- IBM Cloud login and the identity that must own the infrastructure key ---
+        echo "🔐 Logging in to IBM Cloud (region ${IBMCLOUD_REGION}, resource group ${IBMCLOUD_RESOURCE_GROUP})..."
+        ibmcloud login --apikey "${IBMCLOUD_API_KEY}" -r "${IBMCLOUD_REGION}" -g "${IBMCLOUD_RESOURCE_GROUP}"
+
+        # Claims (not the token) of the session's IAM token
+        jwt_claims() {
+          local PAYLOAD
+          PAYLOAD=$(printf '%s' "$1" | cut -d. -f2 | tr '_-' '/+')
+          case $(( ${#PAYLOAD} % 4 )) in
+            2) PAYLOAD="${PAYLOAD}==" ;;
+            3) PAYLOAD="${PAYLOAD}=" ;;
+          esac
+          printf '%s' "${PAYLOAD}" | base64 -d 2>/dev/null
+        }
+        IAM_TOKEN=$(ibmcloud iam oauth-tokens --output json | jq -r '.iam_token // empty')
+        IAM_CLAIMS=$(jwt_claims "${IAM_TOKEN#Bearer }" || true)
+        unset IAM_TOKEN
+        LOGIN_IAM_ID=$(jq -r '.iam_id // empty' <<< "${IAM_CLAIMS}" 2>/dev/null || true)
+        LOGIN_EMAIL=$(jq -r '.email // empty' <<< "${IAM_CLAIMS}" 2>/dev/null || true)
+        [[ -n "${LOGIN_IAM_ID}" ]] || fail "Could not determine the IAM ID of the logged-in identity"
+        echo "✅ Logged in as ${LOGIN_IAM_ID}"
+
+        # --- Terraform init (COS state through the s3 backend) ---
+        cd "${TF_DIR}"
+
+        # A run killed during apply leaves the lock object <key>.tflock in the
+        # bucket. Explain how to remove it; never force-unlock automatically.
+        check_state_lock() {
+          local LOCK_ID
+          grep -q "Error acquiring the state lock" "$1" || return 0
+          LOCK_ID=$(awk '/Lock Info:/ {found = 1; next} found && /ID:/ {sub(/.*ID:[[:space:]]*/, ""); sub(/[[:space:]]+$/, ""); print; exit}' "$1")
+          LOCK_ID="${LOCK_ID:-<lock ID from the error above>}"
+          echo ""
+          echo "❌ The Terraform state of ${CLUSTER_NAME} is locked (lock ID: ${LOCK_ID})."
+          echo "   Usually a previous run was stopped during apply and left the lock object"
+          echo "   ${STATE_KEY}.tflock in bucket ${TERRAFORM_STATE_BUCKET}. The task does not remove it."
+          echo "   1. Make sure that no other pipeline run or local terraform command works on ${CLUSTER_NAME}."
+          echo "   2. From the repository root, with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY"
+          echo "      (COS HMAC keys of the state bucket) exported:"
+          echo "        export TERRAFORM_STATE_BUCKET=${TERRAFORM_STATE_BUCKET} TERRAFORM_STATE_ENDPOINT=${TERRAFORM_STATE_ENDPOINT}"
+          echo "        make roks-init CLUSTER=${CLUSTER_NAME}"
+          echo "        terraform -chdir=roks/terraform force-unlock ${LOCK_ID}"
+          echo "   3. Run the pipeline again."
+          exit 1
+        }
+
+        echo "🔧 Initializing Terraform with the COS backend (key ${STATE_KEY})..."
+        TF_INIT_OK=false
+        for TF_INIT_ATTEMPT in 1 2 3; do
+          if terraform init -input=false -no-color -reconfigure \
+            -backend-config="bucket=${TERRAFORM_STATE_BUCKET}" \
+            -backend-config="key=${STATE_KEY}" \
+            -backend-config="region=${TERRAFORM_STATE_REGION}" \
+            -backend-config="endpoints={s3=\"${TERRAFORM_STATE_ENDPOINT}\"}" \
+            -backend-config="use_lockfile=true" \
+            -backend-config="use_path_style=true" \
+            -backend-config="skip_credentials_validation=true" \
+            -backend-config="skip_region_validation=true" \
+            -backend-config="skip_requesting_account_id=true" \
+            -backend-config="skip_s3_checksum=true" 2>&1 | tee "${TMP_DIR}/init.log"; then
+            TF_INIT_OK=true
+            break
+          fi
+          check_state_lock "${TMP_DIR}/init.log"
+          echo "⚠️  terraform init attempt ${TF_INIT_ATTEMPT} failed"
+          if [[ "${TF_INIT_ATTEMPT}" -lt 3 ]]; then
+            echo "   Retrying in ${TF_INIT_RETRY_DELAY}s..."
+            sleep "${TF_INIT_RETRY_DELAY}"
+          fi
+        done
+        [[ "${TF_INIT_OK}" == "true" ]] || fail "terraform init failed 3 times"
+
+        # --- terraform.tfvars (mode 600; the password line is never printed) ---
+        echo "📝 Writing terraform.tfvars..."
+        mkdir -p "${KUBECONFIG_DIR}"
+        rm -f terraform.tfvars
+        (
+          umask 077
+          {
+            echo "cluster_name      = \"${CLUSTER_NAME}\""
+            echo "region            = \"${IBMCLOUD_REGION}\""
+            echo "resource_group    = \"${IBMCLOUD_RESOURCE_GROUP}\""
+            echo "openshift_version = \"${OPENSHIFT_VERSION}\""
+            echo "worker_flavor     = \"${WORKER_FLAVOR}\""
+            echo "workers_per_zone  = ${WORKERS_PER_ZONE}"
+            echo "pr_number         = \"${PR_NUMBER}\""
+            echo "kubeconfig_dir    = \"${KUBECONFIG_DIR}\""
+            echo "deploy_postgres   = ${DEPLOY_POSTGRES_TF}"
+            echo "deploy_redis      = ${DEPLOY_REDIS_TF}"
+            if [[ "${DEPLOY_POSTGRES_TF}" == "true" ]]; then
+              echo "postgres_admin_password = \"${POSTGRES_ADMIN_PASSWORD}\""
+            fi
+          } > terraform.tfvars
+        )
+        chmod 600 terraform.tfvars
+        sed 's/^\(postgres_admin_password *=\).*/\1 (redacted)/' terraform.tfvars
+
+        # --- terraform apply (creates the cluster, or reconciles an existing state) ---
+        echo "🚀 Applying Terraform (cluster creation takes 60-90 minutes)..."
+        if ! terraform apply -input=false -no-color -auto-approve 2>&1 | tee "${TMP_DIR}/apply.log"; then
+          check_state_lock "${TMP_DIR}/apply.log"
+          fail "terraform apply failed; the cluster and the state are kept for debugging (make roks-destroy CLUSTER=${CLUSTER_NAME} cleans up)"
+        fi
+        echo "✅ Terraform apply completed"
+
+        # --- Non-sensitive outputs for the following tasks ---
+        echo "📋 Writing roks-terraform-outputs.json (sensitive outputs removed)..."
+        terraform output -json | jq 'with_entries(select(.value.sensitive != true))' > "${TMP_DIR}/outputs.json"
+        mv "${TMP_DIR}/outputs.json" "${OUTPUTS_OUT}"
+
+        output_value() {
+          jq -r --arg name "$1" '.[$name].value // empty' "${OUTPUTS_OUT}"
+        }
+
+        # --- Admin kubeconfig, flattened so it no longer references files in the download directory ---
+        ADMIN_KUBECONFIG=$(output_value admin_kubeconfig_path)
+        [[ -n "${ADMIN_KUBECONFIG}" ]] || fail "Terraform output admin_kubeconfig_path is empty"
+        case "${ADMIN_KUBECONFIG}" in
+          /*) ;;
+          *) ADMIN_KUBECONFIG="${TF_DIR}/${ADMIN_KUBECONFIG#./}" ;;
+        esac
+        [[ -f "${ADMIN_KUBECONFIG}" ]] || fail "Admin kubeconfig ${ADMIN_KUBECONFIG} not found"
+        echo "🔑 Writing the admin kubeconfig to ${KUBECONFIG_OUT}..."
+        (
+          umask 077
+          oc config view --flatten --raw --kubeconfig "${ADMIN_KUBECONFIG}" > "${TMP_DIR}/kubeconfig"
+        )
+        [[ -s "${TMP_DIR}/kubeconfig" ]] || fail "Flattened admin kubeconfig is empty"
+        chmod 600 "${TMP_DIR}/kubeconfig"
+        mv -f "${TMP_DIR}/kubeconfig" "${KUBECONFIG_OUT}"
+        API_SERVER=$(oc config view --kubeconfig "${KUBECONFIG_OUT}" -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || true)
+        echo "✅ Admin kubeconfig written (API server: ${API_SERVER:-unknown})"
+
+        # --- Infrastructure API key of the region and resource group ---
+        # The first cluster of a region/resource group stores the creator's API
+        # key; the group is dedicated to this pipeline, so make it ours.
+        CLUSTER_ID=$(output_value cluster_id)
+        [[ -n "${CLUSTER_ID}" ]] || fail "Terraform output cluster_id is empty"
+        echo "🔑 Checking the infrastructure API key owner (${IBMCLOUD_REGION}, ${IBMCLOUD_RESOURCE_GROUP})..."
+        OWNER_ID=""
+        OWNER_EMAIL=""
+        OWNER_NAME=""
+        if OWNER_JSON=$(ibmcloud ks api-key info --cluster "${CLUSTER_ID}" --output json -q); then
+          OWNER_ID=$(jq -r '.ID // .id // empty' <<< "${OWNER_JSON}" 2>/dev/null || true)
+          OWNER_EMAIL=$(jq -r '.Email // .email // empty' <<< "${OWNER_JSON}" 2>/dev/null || true)
+          OWNER_NAME=$(jq -r '.Name // .name // empty' <<< "${OWNER_JSON}" 2>/dev/null || true)
+        else
+          echo "⚠️  Could not read the API key owner"
+        fi
+        lower() {
+          printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+        }
+        # IAM IDs of service IDs appear with and without the iam- prefix
+        if [[ -n "${OWNER_ID}" && "${OWNER_ID#iam-}" == "${LOGIN_IAM_ID#iam-}" ]] ||
+          [[ -n "${OWNER_EMAIL}" && -n "${LOGIN_EMAIL}" && "$(lower "${OWNER_EMAIL}")" == "$(lower "${LOGIN_EMAIL}")" ]]; then
+          echo "✅ The infrastructure API key belongs to the pipeline identity (${LOGIN_IAM_ID})"
+        else
+          echo "🔄 The infrastructure API key belongs to '${OWNER_NAME:-unknown}' (${OWNER_ID:-unknown}), not to ${LOGIN_IAM_ID}; resetting it..."
+          ibmcloud ks api-key reset --region "${IBMCLOUD_REGION}" -f -q || fail "ibmcloud ks api-key reset failed; the pipeline identity needs the Administrator role on Kubernetes Service in ${IBMCLOUD_RESOURCE_GROUP}"
+          echo "✅ The infrastructure API key of ${IBMCLOUD_REGION}/${IBMCLOUD_RESOURCE_GROUP} now belongs to ${LOGIN_IAM_ID}"
+        fi
+
+        # --- Summary (no secrets) ---
+        echo ""
+        echo "=============================================="
+        echo "✅ ROKS cluster ${CLUSTER_NAME} deployed"
+        echo "  Cluster ID:       ${CLUSTER_ID}"
+        echo "  Ingress hostname: $(output_value ingress_hostname)"
+        echo "  VPC ID:           $(output_value vpc_id)"
+        echo "  ICR:              $(output_value icr_registry)/$(output_value icr_namespace) (user $(output_value icr_username))"
+        if [[ "${DEPLOY_POSTGRES_TF}" == "true" ]]; then
+          echo "  PostgreSQL:       $(output_value postgres_host):$(output_value postgres_port) (database $(output_value postgres_database))"
+        fi
+        if [[ "${DEPLOY_REDIS_TF}" == "true" ]]; then
+          echo "  Redis:            $(output_value redis_host):$(output_value redis_port) (TLS)"
+        fi
+        echo "  Kubeconfig:       ${KUBECONFIG_OUT}"
+        echo "  Outputs:          ${OUTPUTS_OUT}"
+        echo "=============================================="
