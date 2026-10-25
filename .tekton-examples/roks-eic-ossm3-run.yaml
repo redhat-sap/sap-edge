@@ -47,6 +47,11 @@
 # A failed or rejected run leaves the cluster and its IBM Cloud resources in
 # place for debugging (they are billable): destroy them from the Terraform
 # state with  make roks-destroy CLUSTER=<clusterName>  (roks.makefile).
+#
+# Pipelines-as-Code fills in {{ pull_request_number }}, {{ repo_url }} and
+# {{ revision }}: to run it, copy this file into .tekton/ on a pull request
+# (or replace the placeholders before oc create -f). Do not push to the pull
+# request while deploy-roks or teardown-roks runs (see cancel-in-progress).
 
 ---
 apiVersion: tekton.dev/v1
@@ -58,7 +63,13 @@ metadata:
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
     pipelinesascode.tekton.dev/task: "[./.tekton/tasks/git-clone.yaml, ./.tekton/tasks/roks-deploy-task.yaml, ./.tekton/tasks/roks-validate-and-get-access-task.yaml, ./.tekton/tasks/roks-registry-access-task.yaml, ./.tekton/tasks/roks-validate-and-create-configmap-task.yaml, ./.tekton/tasks/roks-teardown-task.yaml, ./.tekton/tasks/ossm3-preflight-check-task.yaml, ./.tekton/tasks/ossm3-verify-operators-task.yaml, ./.tekton/tasks/ossm3-download-and-apply-rbac-task.yaml, ./.tekton/tasks/ossm3-prepare-namespaces-task.yaml, ./.tekton/tasks/ossm3-configure-mesh-task.yaml, ./.tekton/tasks/ossm3-generate-sa-based-kubeconfig-task.yaml]"
     pipelinesascode.tekton.dev/max-keep-runs: "1"
-    pipelinesascode.tekton.dev/cancel-in-progress: "true"
+    # "false": a push must never cancel this run. Cancelling kills the pod in
+    # the middle of terraform apply (deploy-roks, 60-90 minutes) or destroy
+    # (teardown-roks, up to 2 hours): IBM Cloud may have created a billable
+    # cluster that the state does not record, and the state lock stays. A
+    # second run for the same PR fails on the state lock instead. Do not push
+    # while deploy-roks or teardown-roks runs (roks/terraform/README.md).
+    pipelinesascode.tekton.dev/cancel-in-progress: "false"
 spec:
   pipelineRef:
     name: roks-eic-full-test-pipeline

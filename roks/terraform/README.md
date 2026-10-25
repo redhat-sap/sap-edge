@@ -191,7 +191,11 @@ terraform init -input=false \
 
 `use_lockfile` writes a `.tflock` object next to the state. If COS does not
 enforce conditional writes the lock is best effort; each cluster has its own
-key and the pipeline serializes runs per PR.
+key. The example PipelineRun sets `cancel-in-progress: "false"`, so a push
+to the PR never kills a running apply or destroy: it starts a second run,
+whose `terraform apply` stops on the lock. Do not push to the PR while
+`deploy-roks` or `teardown-roks` runs (see [Destroy](#destroy) for the
+recovery when a run was stopped anyway).
 
 ## Usage (from the repository root)
 
@@ -270,14 +274,36 @@ in the pipeline namespace, and
 `oc delete secret eic-credentials-roks-<cluster> eic-registry-roks-<cluster> --ignore-not-found`
 on the hub cluster (or in the pipeline namespace without a hub).
 
-**Recovery when destroy fails.** Run these from the repository root after
-`make roks-init CLUSTER=<name>`. `terraform -chdir=roks/terraform state list`
-shows what is left. Then, depending on the error:
+**Do not push to the PR while `deploy-roks` or `teardown-roks` runs.** The
+example PipelineRun sets `cancel-in-progress: "false"`, so a push does not
+cancel the running pipeline; it starts a second run that fails on the state
+lock without changing anything (a push while the first run waits at an
+approval starts a second run against the same cluster: cancel one of them by
+hand with `tkn pipelinerun cancel <name>`, never while it is in
+`deploy-roks` or `teardown-roks`). A run stopped during apply or destroy
+anyway (cancelled by hand, pod evicted, task timeout) can leave a stale lock
+and a cluster that IBM Cloud created but the state does not record.
+
+**Recovery when destroy fails or a run was stopped.** Run these from the
+repository root after `make roks-init CLUSTER=<name>`.
+`terraform -chdir=roks/terraform state list` shows what is left. Then,
+depending on the error:
 
 - State lock (`Error acquiring the state lock`, left by a run that was
   stopped during apply or destroy). First make sure that no other pipeline
   run or local command is using the state, then run
   `terraform -chdir=roks/terraform force-unlock <lock ID from the error>`.
+- Cluster created by IBM Cloud but missing from the state (`state list` has
+  no `ibm_container_vpc_cluster.cluster`, but
+  `ibmcloud ks cluster get --cluster <name>` finds it). Import it with its
+  ID and the same `-var cluster_name` as `make roks-destroy` (add
+  `-var region=<region>` outside `eu-de`), then destroy:
+  `terraform -chdir=roks/terraform import -var cluster_name=<name> ibm_container_vpc_cluster.cluster <cluster ID>`
+  and `make roks-destroy CLUSTER=<name>`. Or delete the cluster directly with
+  `ibmcloud ks cluster rm --cluster <name> --force-delete-storage`, wait until
+  `ibmcloud ks cluster get --cluster <name>` no longer finds it, and run
+  `make roks-destroy CLUSTER=<name>` for what the state still holds. Either
+  way, do the leftover sweep above afterwards.
 - Cluster already deleted outside Terraform. The IBM provider 2.8.0 fails on
   the 404 when it deletes the cluster:
   `terraform -chdir=roks/terraform state rm ibm_container_vpc_cluster.cluster`.

@@ -273,8 +273,9 @@ spec:
         # --- Terraform init (COS state through the s3 backend) ---
         cd "${TF_DIR}"
 
-        # A run killed during apply leaves the lock object <key>.tflock in the
-        # bucket. Explain how to remove it; never force-unlock automatically.
+        # Another run still applying holds the lock; a run killed during apply
+        # leaves the lock object <key>.tflock in the bucket. Explain how to
+        # remove it; never force-unlock automatically.
         check_state_lock() {
           local LOCK_ID
           grep -q "Error acquiring the state lock" "$1" || return 0
@@ -282,14 +283,18 @@ spec:
           LOCK_ID="${LOCK_ID:-<lock ID from the error above>}"
           echo ""
           echo "❌ The Terraform state of ${CLUSTER_NAME} is locked (lock ID: ${LOCK_ID})."
-          echo "   Usually a previous run was stopped during apply and left the lock object"
-          echo "   ${STATE_KEY}.tflock in bucket ${TERRAFORM_STATE_BUCKET}. The task does not remove it."
+          echo "   Either another run for ${CLUSTER_NAME} is still applying or destroying (a push to the"
+          echo "   pull request starts a new run; running ones are not cancelled), or a previous run was"
+          echo "   stopped during apply and left the lock object ${STATE_KEY}.tflock in bucket"
+          echo "   ${TERRAFORM_STATE_BUCKET}. Nothing was changed. The task does not remove the lock."
           echo "   1. Make sure that no other pipeline run or local terraform command works on ${CLUSTER_NAME}."
           echo "   2. From the repository root, with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY"
           echo "      (COS HMAC keys of the state bucket) exported:"
           echo "        export TERRAFORM_STATE_BUCKET=${TERRAFORM_STATE_BUCKET} TERRAFORM_STATE_ENDPOINT=${TERRAFORM_STATE_ENDPOINT}"
           echo "        make roks-init CLUSTER=${CLUSTER_NAME}"
           echo "        terraform -chdir=roks/terraform force-unlock ${LOCK_ID}"
+          echo "      If ibmcloud ks cluster get --cluster ${CLUSTER_NAME} finds a cluster that"
+          echo "      terraform -chdir=roks/terraform state list lacks, import it first (roks/terraform/README.md, Destroy)."
           echo "   3. Run the pipeline again."
           exit 1
         }

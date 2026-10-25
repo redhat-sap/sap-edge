@@ -558,6 +558,8 @@ make roks-destroy CLUSTER=redhat-roks-eic-pr123
 
 Requires `ibmcloud` CLI (logged in), `container-service` and `vpc-infrastructure` plugins, `jq`, and the same Secrets/env vars as the pipeline.
 
+**Do not push to the PR while `deploy-roks` or `teardown-roks` runs.** The example run sets `cancel-in-progress: "false"` because cancelling kills `terraform apply` (60–90 minutes) or `terraform destroy` (up to 2 hours) mid-way, which can leave a billable cluster that the state does not record and a stale state lock. A push starts a second run instead, which fails on the state lock without changing anything.
+
 **Recovery hints:**
 
 - **Stale state lock**: `Error acquiring the state lock`. Ensure no other run is using the state, then:
@@ -565,6 +567,15 @@ Requires `ibmcloud` CLI (logged in), `container-service` and `vpc-infrastructure
   make roks-init CLUSTER=redhat-roks-eic-pr123
   terraform -chdir=roks/terraform force-unlock <lock ID from error>
   ```
+
+- **Cluster created by IBM Cloud but missing from the state** (a run stopped during apply; `ibmcloud ks cluster get --cluster <name>` finds it, `terraform -chdir=roks/terraform state list` has no `ibm_container_vpc_cluster.cluster`): import it, then destroy:
+  ```bash
+  ibmcloud ks cluster get --cluster redhat-roks-eic-pr123   # note the cluster ID
+  make roks-init CLUSTER=redhat-roks-eic-pr123
+  terraform -chdir=roks/terraform import -var cluster_name=redhat-roks-eic-pr123 ibm_container_vpc_cluster.cluster <cluster ID>
+  make roks-destroy CLUSTER=redhat-roks-eic-pr123
+  ```
+  Or delete it with `ibmcloud ks cluster rm --cluster redhat-roks-eic-pr123 --force-delete-storage`, wait until `ibmcloud ks cluster get` no longer finds it, then run `make roks-destroy CLUSTER=redhat-roks-eic-pr123` for the rest of the state.
 
 - **Cluster deleted outside Terraform** (provider 2.8.0 fails on 404):
   ```bash
