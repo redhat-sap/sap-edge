@@ -68,8 +68,9 @@ resource "ibm_container_vpc_cluster" "cluster" {
   # registry.redhat.io, SAP registries, ELM); 4.15+ blocks it by default.
   disable_outbound_traffic_protection = true
 
-  # Ephemeral CI cluster: delete the block/file volumes created by PVCs together
-  # with the cluster so that no billable storage is left behind.
+  # Ephemeral CI cluster: ask ROKS to delete the volumes created by PVCs together
+  # with the cluster. VPC Block Storage volumes can still remain (even with a
+  # Delete storage class); the roks-teardown task sweeps leftover volumes.
   force_delete_storage = true
 
   wait_till = "IngressReady"

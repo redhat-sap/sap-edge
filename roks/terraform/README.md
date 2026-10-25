@@ -258,6 +258,7 @@ the cluster's leftovers, and delete each one with
 
 ```bash
 CLUSTER_ID=<cluster ID>
+[[ "$CLUSTER_ID" =~ ^[a-z0-9]{16,40}$ ]] || { echo "need the cluster ID"; exit 1; }
 ibmcloud is load-balancers --all-resource-groups --output JSON |
   jq -r --arg cid "$CLUSTER_ID" '.[] | select(.resource_group.name == "redhat-sap-edge-roks-ci" and (.name | contains($cid))) | "\(.id) \(.name)"'
 ibmcloud is volumes --all-resource-groups --output JSON |
