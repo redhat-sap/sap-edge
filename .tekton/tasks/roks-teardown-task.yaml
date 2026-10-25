@@ -16,12 +16,16 @@ spec:
     block volumes the cluster left behind in the resource group
     redhat-sap-edge-roks-ci (only those whose name or tags contain the
     cluster ID, read from the state before the destroy), the ConfigMap
-    cluster-info-roks-<clusterName> on the pipeline cluster and the Secrets
-    eic-credentials-roks-<clusterName> and eic-registry-roks-<clusterName>
-    (on the hub cluster when hubKubeconfigSecretName is set, else on the
-    pipeline cluster). Removes terraform.tfvars from the workspace. Exits 0
-    only when everything is gone; otherwise it fails with a list of what
-    remains and the recovery steps.
+    cluster-info-roks-<clusterName> and the Secret
+    edgelm-kubeconfig-generated-<clusterName> on the pipeline cluster, and
+    the Secrets eic-credentials-roks-<clusterName> and
+    eic-registry-roks-<clusterName> (on the hub cluster when
+    hubKubeconfigSecretName is set, else on the pipeline cluster). Removes
+    terraform.tfvars from the workspace. Exits 0 when the destroy succeeded,
+    the sweep left nothing and every pipeline artifact was deleted; a sweep
+    skipped for lack of a usable cluster ID or because ibmcloudResourceGroup
+    is not redhat-sap-edge-roks-ci only prints a warning and still exits 0.
+    Otherwise it fails with a list of what remains and the recovery steps.
   params:
     - name: clusterName
       type: string
@@ -109,6 +113,8 @@ spec:
         # The only resource group the leftover sweep may touch
         DEDICATED_RESOURCE_GROUP="redhat-sap-edge-roks-ci"
         CONFIGMAP_NAME="cluster-info-roks-${CLUSTER_NAME}"
+        # Default name used by ossm3-generate-sa-based-kubeconfig
+        GENERATED_KUBECONFIG_SECRET_NAME="edgelm-kubeconfig-generated-${CLUSTER_NAME}"
         CREDS_SECRET_NAME="eic-credentials-roks-${CLUSTER_NAME}"
         REGISTRY_SECRET_NAME="eic-registry-roks-${CLUSTER_NAME}"
         TF_INIT_RETRY_DELAY="${TF_INIT_RETRY_DELAY:-30}"
@@ -372,7 +378,8 @@ spec:
 
         # Requests the deletion of the listed leftovers not already being
         # deleted (again on every poll, e.g. after a busy load balancer refused
-        # it); only the first request per object is logged.
+        # it); only the first request per object is logged. ibmcloud gets no
+        # stdin, so that it cannot read the rest of the list.
         REQUESTED_IDS=" "
         request_deletion() {
           local KIND ID NAME STATUS
@@ -384,12 +391,12 @@ spec:
               delete_pending | pending_deletion | deleting) continue ;;
             esac
             if [[ "${REQUESTED_IDS}" == *" ${ID} "* ]]; then
-              ibmcloud is "${KIND}-delete" "${ID}" --force >/dev/null 2>&1 || true
+              ibmcloud is "${KIND}-delete" "${ID}" --force </dev/null >/dev/null 2>&1 || true
               continue
             fi
             REQUESTED_IDS="${REQUESTED_IDS}${ID} "
             echo "   Deleting ${KIND} ${NAME} (${ID})"
-            ibmcloud is "${KIND}-delete" "${ID}" --force >/dev/null ||
+            ibmcloud is "${KIND}-delete" "${ID}" --force </dev/null >/dev/null ||
               echo "   ⚠️  Delete request for ${KIND} ${NAME} (${ID}) failed; retrying while waiting"
           done <<< "$1"
         }
@@ -532,6 +539,13 @@ spec:
         else
           add_remaining "ConfigMap ${CONFIGMAP_NAME} on the pipeline cluster (oc delete failed)"
         fi
+        # ossm3-generate-sa-based-kubeconfig stores the restricted kubeconfig
+        # on the pipeline cluster (in-cluster credentials), even with a hub
+        if oc delete secret "${GENERATED_KUBECONFIG_SECRET_NAME}" --ignore-not-found=true; then
+          echo "✅ Secret ${GENERATED_KUBECONFIG_SECRET_NAME} deleted (pipeline cluster)"
+        else
+          add_remaining "Secret ${GENERATED_KUBECONFIG_SECRET_NAME} on the pipeline cluster (oc delete failed)"
+        fi
         # roks-validate-and-get-access / roks-registry-access write them on the hub if set
         if [[ "${HUB_UNREADABLE}" == "true" ]]; then
           add_remaining "Secrets ${CREDS_SECRET_NAME} and ${REGISTRY_SECRET_NAME} on the hub cluster (kubeconfig Secret ${HUB_KUBECONFIG_SECRET} unreadable)"
@@ -556,7 +570,7 @@ spec:
           else
             echo "  Leftover sweep:    nothing left of cluster ${CLUSTER_ID} in ${DEDICATED_RESOURCE_GROUP}"
           fi
-          echo "  Pipeline artifacts: ${CONFIGMAP_NAME} (pipeline cluster), ${CREDS_SECRET_NAME} and ${REGISTRY_SECRET_NAME} (${SECRETS_WHERE}) deleted"
+          echo "  Pipeline artifacts: ${CONFIGMAP_NAME} and ${GENERATED_KUBECONFIG_SECRET_NAME} (pipeline cluster), ${CREDS_SECRET_NAME} and ${REGISTRY_SECRET_NAME} (${SECRETS_WHERE}) deleted"
           echo "=============================================="
         else
           echo "❌ Teardown of ${CLUSTER_NAME} incomplete; still present:"

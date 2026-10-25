@@ -246,12 +246,17 @@ none of this):
   `kube-<cluster ID>-<service UID>`; the VPC Block CSI driver tags its volumes
   with the cluster ID). Without a cluster ID, or when `ibmcloudResourceGroup`
   is another group, it skips this sweep with a warning.
-- It deletes the ConfigMap `cluster-info-roks-<cluster>` on the pipeline
-  cluster and the Secrets `eic-credentials-roks-<cluster>` and
-  `eic-registry-roks-<cluster>` (on the hub cluster when
-  `hubKubeconfigSecretName` is set), and removes `terraform.tfvars` (it may
-  hold the PostgreSQL password) from the workspace.
-- It exits 0 only when the destroy succeeded and nothing is left. Otherwise
+- It deletes the ConfigMap `cluster-info-roks-<cluster>` and the Secret
+  `edgelm-kubeconfig-generated-<cluster>` (restricted kubeconfig of
+  `ossm3-generate-sa-based-kubeconfig`) on the pipeline cluster, and the
+  Secrets `eic-credentials-roks-<cluster>` and `eic-registry-roks-<cluster>`
+  (on the hub cluster when `hubKubeconfigSecretName` is set), and removes
+  `terraform.tfvars` (it may hold the PostgreSQL password) from the
+  workspace.
+- It exits 0 when the destroy succeeded, the sweep left nothing and every
+  pipeline artifact was deleted. A skipped sweep (no usable cluster ID, or
+  `ibmcloudResourceGroup` is not `redhat-sap-edge-roks-ci`) is only a
+  warning: the task still exits 0, so check its log for leftovers. Otherwise
   it fails with a list of what is left and the recovery steps below.
 
 After `make roks-destroy`, do the sweep by hand. Read the cluster ID before
@@ -270,6 +275,7 @@ ibmcloud is volumes --all-resource-groups --output JSON |
 ```
 
 Then delete the pipeline artifacts: `oc delete configmap cluster-info-roks-<cluster> --ignore-not-found`
+and `oc delete secret edgelm-kubeconfig-generated-<cluster> --ignore-not-found`
 in the pipeline namespace, and
 `oc delete secret eic-credentials-roks-<cluster> eic-registry-roks-<cluster> --ignore-not-found`
 on the hub cluster (or in the pipeline namespace without a hub).

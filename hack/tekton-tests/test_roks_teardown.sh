@@ -128,6 +128,8 @@ chmod +x "${STUB_BIN}/terraform"
 # Stub ibmcloud: logs every call (also to the sequence log); login only works
 # with the API key in the environment; load balancers and volumes come from
 # JSON files; a delete removes the object unless its ID is listed in STUB_STUCK.
+# A delete call that gets data on stdin (it could read the rest of the
+# caller's list) is logged as "stdin-consumed".
 cat > "${STUB_BIN}/ibmcloud" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -146,6 +148,7 @@ case "$*" in
   "is load-balancers "*) cat "${STUB_LBS}" ;;
   "is volumes "*) cat "${STUB_VOLS}" ;;
   "is load-balancer-delete "* | "is volume-delete "*)
+    if [[ -n "$(cat)" ]]; then printf 'stdin-consumed %s\n' "$*" >> "${STUB_IC_LOG}"; fi
     FILE="${STUB_LBS}"
     if [[ "$2" == "volume-delete" ]]; then
       FILE="${STUB_VOLS}"
@@ -540,6 +543,7 @@ DELETED_IDS=$(sed -n 's/^is [a-z-]*-delete \([^ ]*\).*/\1/p' "${STUB_IC_LOG}" | 
 [[ "$(jq -r '[.[].id] | join(",")' "${STUB_VOLS}")" == "r010-vol-other-cluster,r010-vol-other-group,r010-vol-untagged" ]] || fail "unexpected remaining volumes"
 # The sweep runs after the destroy
 [[ "$(seq_first "^ic is ")" -gt "$(seq_last "^tf destroy ")" ]] || { cat "${STUB_SEQ_LOG}"; fail "swept before terraform destroy"; }
+! grep -q "^stdin-consumed" "${STUB_IC_LOG}" || { cat "${STUB_IC_LOG}"; fail "an ibmcloud delete call read the caller's stdin"; }
 
 # A leftover that does not go away fails the task and is listed
 setup
@@ -662,7 +666,7 @@ grep -qE "^get secret eic-kubeconfig -o jsonpath=" "${FAKE_OC_LOG}" || { cat "${
 for SECRET_NAME in "eic-credentials-roks-${CLUSTER}" "eic-registry-roks-${CLUSTER}"; do
   assert_called "^--kubeconfig .*/hub-kubeconfig delete secret ${SECRET_NAME} --ignore-not-found=true$"
 done
-assert_not_called "^delete secret"
+assert_not_called "^delete secret eic-"
 
 # Unreadable hub kubeconfig: the cluster is still destroyed, the Secrets are
 # reported as remaining
@@ -674,8 +678,9 @@ expect_failure
 REMAINING_SECTION=$(sed -n '/still present/,$p' <<< "${TASK_OUT}")
 grep -q "eic-credentials-roks-${CLUSTER}" <<< "${REMAINING_SECTION}" || { echo "${TASK_OUT}"; fail "credentials Secret not reported"; }
 grep -q "eic-registry-roks-${CLUSTER}" <<< "${REMAINING_SECTION}" || { echo "${TASK_OUT}"; fail "registry Secret not reported"; }
-assert_not_called "delete secret"
+assert_not_called "delete secret eic-"
 assert_called "^delete configmap cluster-info-roks-${CLUSTER} --ignore-not-found=true$"
+assert_called "^delete secret edgelm-kubeconfig-generated-${CLUSTER} --ignore-not-found=true$"
 
 echo "✅ PASS: hub_artifacts_deleted"
 
@@ -702,6 +707,36 @@ assert_called "^delete secret eic-registry-roks-${CLUSTER} --ignore-not-found=tr
 assert_not_called "^--kubeconfig"
 
 echo "✅ PASS: configmap_deleted_in_cluster_when_hub_set"
+
+# Test case: generated_kubeconfig_secret_deleted
+# ossm3-generate-sa-based-kubeconfig stores the restricted kubeconfig as
+# Secret edgelm-kubeconfig-generated-<cluster> on the pipeline cluster, also
+# when a hub is set.
+echo ""
+echo "Test: generated_kubeconfig_secret_deleted"
+echo "--------------------------------------------"
+setup
+export HUB_KUBECONFIG_SECRET=eic-kubeconfig
+run_teardown
+expect_success
+assert_called "^delete secret edgelm-kubeconfig-generated-${CLUSTER} --ignore-not-found=true$"
+assert_not_called "^--kubeconfig .* delete secret edgelm-kubeconfig-generated"
+grep -q "edgelm-kubeconfig-generated-${CLUSTER} (pipeline cluster)" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "deleted Secret not reported"; }
+
+setup
+run_teardown
+expect_success
+assert_called "^delete secret edgelm-kubeconfig-generated-${CLUSTER} --ignore-not-found=true$"
+
+# A failed delete is reported as remaining
+setup
+printf 'delete secret edgelm-kubeconfig-generated-*\t1\tError from server (Forbidden)\n' >> "${FAKE_OC_RULES}"
+run_teardown
+expect_failure
+REMAINING_SECTION=$(sed -n '/still present/,$p' <<< "${TASK_OUT}")
+grep -q "Secret edgelm-kubeconfig-generated-${CLUSTER} on the pipeline cluster" <<< "${REMAINING_SECTION}" || { echo "${TASK_OUT}"; fail "undeleted generated kubeconfig Secret not reported"; }
+
+echo "✅ PASS: generated_kubeconfig_secret_deleted"
 
 # Test case: tfvars_removed
 # terraform.tfvars from roks-deploy may hold the PostgreSQL password.
