@@ -85,6 +85,15 @@ spec:
       value: "sap-eic-restricted-cluster-config-resources"
     - name: s3Prefix
       value: "restricted-resources/pr{{ pull_request_number }}-multi-stack/"
+    # S3 folders under s3Prefix, one SAP bundle zip each (upload as downloaded):
+    #   elm-1/         ELM bundle of Edge Node 1 (creates edgelm-1)
+    #   edge-icell-1/  EIC bundle of Edge Node 1 (edge-icell-1, istio-gateways-1, ...)
+    #   elm-2/         ELM bundle of Edge Node 2 (creates edgelm-2)
+    #   edge-icell-2/  EIC bundle of Edge Node 2
+    # The pipeline creates these folders and pauses at the upload gate;
+    # apply-rbac then downloads only these folders and fails if one is empty.
+    # Apply order comes from the zip type (ELM first), not from this list.
+    # Same as the pipeline default (fixed at two Edge Nodes); kept for visibility.
     - name: restrictedResourcesComponents
       value: "elm-1 edge-icell-1 elm-2 edge-icell-2"
 
