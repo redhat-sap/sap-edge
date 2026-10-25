@@ -9,9 +9,9 @@ SPDX-License-Identifier: Apache-2.0
 
 Terraform for a Red Hat OpenShift on IBM Cloud (ROKS) cluster on VPC Gen2,
 used by the ROKS EIC validation pipeline (one cluster per pull request) and
-for local use through `roks.makefile`. Provider:
+for local use through `roks.makefile`. Providers:
 [`IBM-Cloud/ibm`](https://registry.terraform.io/providers/IBM-Cloud/ibm/latest/docs)
-`~> 2.8.0`, Terraform `>= 1.10`.
+`~> 2.8.0` and `hashicorp/random` `~> 3.9.0` (Redis password), Terraform `>= 1.10`.
 
 ## What it creates
 
@@ -27,6 +27,9 @@ All resources go into the existing resource group `redhat-sap-edge-roks-ci`
 | Cloud Object Storage instance (standard, global; ROKS on VPC needs it for the internal registry) | `<cluster_name>-cos` |
 | ROKS cluster: `bx2.16x64`, 1 worker per zone across 3 zones, no entitlement (regular OpenShift license), public service endpoint on, outbound traffic protection off | `<cluster_name>` |
 | `terraform_data.vpe_cleanup`: destroy-time hook that deletes the VPE gateways ROKS leaves in the VPC (see [Destroy](#destroy)) | - |
+| Optional, `deploy_postgres`: IBM Cloud Databases for PostgreSQL 15 (see [Optional managed services](#optional-managed-services)) | `<cluster_name>-postgres` |
+| Optional, `deploy_redis`: IBM Cloud Databases for Redis | `<cluster_name>-redis` |
+| Optional, `deploy_quay_storage`: COS bucket in the cluster's COS instance, and an HMAC key for it | `<cluster_name>-quay`, `<cluster_name>-quay-hmac` |
 
 `cluster_name` must start with `redhat-` (the pipeline uses
 `redhat-roks-eic-pr<N>`), so every resource name starts with `redhat-`. Every
@@ -41,6 +44,67 @@ Cluster settings worth knowing:
 - `force_delete_storage = true`: volumes created by PVCs are deleted with the
   cluster, so no billable storage stays behind.
 - `wait_till = "IngressReady"` with a 3 h create timeout.
+
+## Optional managed services
+
+`services.tf` holds the services that mirror ROSA's `deployPostgres`,
+`deployRedis` and `deployQuay`. Each resource and data source in it has
+`count = 0` unless its flag is `true`, so with the default (all `false`)
+nothing is created, and every output below is `null`.
+
+**Databases** (`deploy_postgres`, `deploy_redis`), in `region` (`eu-de`):
+
+- Smallest configuration: the Classic `standard` plan on a shared host
+  (`host_flavor` `multitenant`), with IBM's default (minimum) members, memory,
+  disk and CPU. The Gen2 plans (`standard-gen2`) are not used: they have no
+  admin password, need a dedicated host flavor, and only offer private
+  endpoints, which a VPC reaches only through a VPE gateway.
+- Public endpoints, TLS only. Each database's allowlist holds the floating IPs
+  of the cluster's public gateways (the workers' egress), so only the cluster
+  can connect. To connect from elsewhere (e.g. a laptop for debugging), add
+  your IP (the next `terraform apply` removes it again):
+  `ibmcloud cdb deployment-allowlist-add <cluster_name>-postgres <ip>/32 debug`.
+- PostgreSQL 15, as on ROSA (RDS 15.x) and in the repository's in-cluster
+  PostgresCluster (v15). The admin user
+  is `admin` (output `postgres_admin_username`) with password
+  `postgres_admin_password`, which must be 15-32 characters with at least one
+  letter and one digit, and no special characters other than `-` and `_`
+  (IBM's rule; the variable is validated).
+- **`edgedb` is not created by Terraform.** IBM Cloud Databases creates only
+  the database `ibmclouddb`, and the provider cannot create others. Output
+  `postgres_database` is the name EIC is given (`edgedb`); create it before EIC
+  uses it, e.g. from a pod in the cluster (the allowlist admits the cluster):
+  `psql "host=<postgres_host> port=<postgres_port> dbname=ibmclouddb user=admin sslmode=require" -c 'CREATE DATABASE edgedb'`.
+- Redis: IBM's default version, admin user `admin` (output `redis_username`),
+  32-character generated password (sensitive output `redis_password`). Clients
+  must use TLS.
+- IBM signs the database certificates with its own CA. Outputs
+  `postgres_ca_certificate_base64` and `redis_ca_certificate_base64` hold it
+  for clients that verify the certificate (`sslmode=verify-full`, Redis TLS).
+- Provisioning takes 30-45 minutes (create timeout 2 h). The databases do not
+  depend on the cluster, so Terraform creates them in parallel with it.
+- Destroy: `deletion_protection = false`, so `terraform destroy` deletes them
+  without manual steps. IBM then keeps a deleted instance in pending
+  reclamation for a service-specific period (typically a few days), during
+  which it can be restored. To purge it at once, find the reclamation ID with
+  `ibmcloud resource reclamations` and run
+  `ibmcloud resource reclamation-delete <reclamation ID>`.
+
+**Quay storage** (`deploy_quay_storage`):
+
+- A regional `standard` bucket `<cluster_name>-quay` in `region`, in the
+  cluster's COS instance (`<cluster_name>-cos`). Output `quay_cos_endpoint` is
+  the bucket's regional public S3 endpoint host without a scheme
+  (`s3.eu-de.cloud-object-storage.appdomain.cloud`), reached from the cluster
+  through the public gateways.
+- An HMAC resource key `<cluster_name>-quay-hmac` with the Writer role (the
+  least role that can read, write and delete objects). The role covers every
+  bucket of the COS instance, including the one ROKS creates for the internal
+  registry.
+- `force_delete = true`: destroy empties the bucket before deleting it. Bucket
+  names are global across IBM Cloud, and IBM may hold a deleted bucket's name
+  for a while before it can be reused.
+- COS buckets and resource keys cannot carry tags.
 
 ## Network ranges and the httpbinipfilter allowlist
 
@@ -65,9 +129,14 @@ the OpenShift default `10.128.0.0/14` used on ROSA/ARO is not possible; the
 2. A service ID (e.g. `redhat-sap-edge-roks-ci`) with an API key and access to
    VPC Infrastructure Services, Kubernetes Service, Cloud Object Storage and
    Databases in that resource group. Export the key as `IBMCLOUD_API_KEY`.
+   For `deploy_quay_storage` it also needs at least the Writer service role on
+   Cloud Object Storage (to issue a Writer HMAC key); IBM creates a service ID
+   for the key, so if the account restricts service ID creation it also needs
+   the Service ID creator role.
 3. A COS bucket for the Terraform state and HMAC credentials for it
    (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`). The state holds the cluster
-   admin certificate and the ingress secret: keep the bucket private.
+   admin certificate, the ingress secret and, when the optional services are
+   on, the database passwords and the Quay HMAC key: keep the bucket private.
 
 ## Terraform state (COS through the s3 backend)
 
@@ -181,7 +250,7 @@ before you copy it elsewhere. It grants cluster-admin: do not share it.
 | `deploy_postgres` | `false` | Optional IBM Cloud Databases for PostgreSQL |
 | `deploy_redis` | `false` | Optional IBM Cloud Databases for Redis |
 | `deploy_quay_storage` | `false` | Optional COS bucket and HMAC key for Quay |
-| `postgres_admin_password` | `""` (sensitive) | PostgreSQL admin password |
+| `postgres_admin_password` | `""` (sensitive) | PostgreSQL admin password; required when `deploy_postgres`, 15-32 characters of letters, digits, `-`, `_` with at least one letter and one digit |
 
 ## Outputs
 
@@ -193,6 +262,43 @@ before you copy it elsewhere. It grants cluster-admin: do not share it.
 | `resource_group_id` | Resource group ID |
 | `admin_kubeconfig_path` | Path of the downloaded admin kubeconfig |
 | `vpc_id` | VPC ID |
+| `postgres_host`, `postgres_port` | PostgreSQL public hostname and port |
+| `postgres_database` | `edgedb` (created after provisioning, see above) |
+| `postgres_admin_username` | `admin` |
+| `postgres_ca_certificate_base64` | CA certificate of the PostgreSQL TLS certificate (not a secret) |
+| `redis_host`, `redis_port` | Redis public hostname and port (TLS) |
+| `redis_username` | `admin` |
+| `redis_password` | Generated Redis admin password (sensitive) |
+| `redis_ca_certificate_base64` | CA certificate of the Redis TLS certificate (not a secret) |
+| `quay_cos_bucket` | Quay bucket name |
+| `quay_cos_endpoint` | Regional public S3 endpoint host of the bucket |
+| `quay_hmac_access_key_id`, `quay_hmac_secret_access_key` | HMAC credentials for the bucket (sensitive) |
+
+The service outputs are `null` when their flag is `false`. Read sensitive
+outputs with `terraform output -raw <name>`, and do not print them in logs.
+
+## Validate
+
+Offline checks, without cloud access or credentials. `terraform validate`
+checks every resource, including the ones that the `deploy_*` flags switch off,
+but it does not read variable values. The loop checks that every output the
+pipeline tasks read is declared:
+
+```bash
+terraform -chdir=roks/terraform init -backend=false
+terraform -chdir=roks/terraform validate
+for output in postgres_host postgres_port postgres_database \
+  redis_host redis_port redis_password \
+  quay_cos_bucket quay_cos_endpoint \
+  quay_hmac_access_key_id quay_hmac_secret_access_key; do
+  grep -q "^output \"${output}\"" roks/terraform/outputs.tf ||
+    echo "missing output: ${output}"
+done
+```
+
+A plan with the flags turned on needs credentials:
+`make roks-plan CLUSTER=<name> ROKS_TF_ARGS="-var deploy_postgres=true -var deploy_redis=true -var deploy_quay_storage=true"`
+(with `TF_VAR_postgres_admin_password` exported).
 
 ## Lint
 

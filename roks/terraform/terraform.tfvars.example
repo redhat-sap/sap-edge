@@ -33,8 +33,16 @@ pod_subnet = "172.17.0.0/18"
 # Existing directory for the admin kubeconfig download.
 kubeconfig_dir = "./.kube"
 
-# Optional managed services (default false).
+# Optional managed services (default false), see README.md. Each one adds
+# billable resources; the databases take 30-45 minutes to provision.
+#   deploy_postgres:     IBM Cloud Databases for PostgreSQL 15 (<cluster_name>-postgres)
+#   deploy_redis:        IBM Cloud Databases for Redis (<cluster_name>-redis),
+#                        admin password generated (output redis_password)
+#   deploy_quay_storage: COS bucket <cluster_name>-quay in the cluster's COS
+#                        instance and an HMAC key for Quay
 deploy_postgres     = false
 deploy_redis        = false
 deploy_quay_storage = false
-# postgres_admin_password: set via TF_VAR_postgres_admin_password, not here.
+# postgres_admin_password (required when deploy_postgres = true): set it via
+# TF_VAR_postgres_admin_password, not here. 15-32 characters, at least one
+# letter and one digit, no special characters other than - and _.

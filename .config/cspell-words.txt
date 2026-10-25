@@ -222,3 +222,7 @@ chdir
 multizone
 tflock
 vpegw
+adminpassword
+adminuser
+ibmclouddb
+multitenant
