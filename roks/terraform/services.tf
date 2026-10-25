@@ -12,11 +12,6 @@ locals {
   # PostgresCluster (v15).
   postgres_version = "15"
 
-  # Database name the pipeline hands to EIC. IBM Cloud Databases only creates
-  # the database ibmclouddb; edgedb has to be created after provisioning
-  # (see README.md).
-  postgres_database = "edgedb"
-
   # The workers reach the internet, and the public endpoints of the
   # databases, through the zones' public gateways; their floating IPs are
   # the only sources the databases accept (allowlist).
@@ -87,8 +82,9 @@ data "ibm_database_connection" "postgres" {
 # IBM Cloud Databases for Redis
 ###########################################
 
-# IBM Cloud Databases rules for the admin password: 15-32 characters, letters
-# and digits, no special characters other than - and _.
+# Provider rules for the admin password: 15-72 characters, at least one lower
+# case letter, one upper case letter and one digit, no special characters
+# other than - and _ (and not as the first character).
 resource "random_password" "redis_admin" {
   count = var.deploy_redis ? 1 : 0
 
