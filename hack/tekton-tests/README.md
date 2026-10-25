@@ -58,6 +58,8 @@ python3 -I check_pipeline.py \
   FILES...
 ```
 
+`run.sh` checks all pipelines in `.tekton/pipelines/` and all PipelineRuns in both `.tekton/` and `.tekton-examples/`.
+
 Checks:
 
 - `runAfter` targets exist

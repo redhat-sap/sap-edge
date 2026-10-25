@@ -25,10 +25,18 @@ echo "=========================================="
 
 # Check all pipelines and run files
 # Controller ruling R1: use hcp-ossm3-dedicated-validation-pipeline (not hcp-ossm3-dedicated-validation)
+#
+# Build file list with nullglob to drop unmatched globs (bash 3.2-safe under set -u)
+shopt -s nullglob
+FILES=()
+for f in ../../.tekton/pipelines/*.yaml ../../.tekton/*-run.yaml ../../.tekton-examples/*-run.yaml; do
+  FILES+=("$f")
+done
+shopt -u nullglob
+
 python3 -I check_pipeline.py \
   --cell-gate hcp-ossm3-dedicated-validation-pipeline:cellCount:2 \
-  ../../.tekton/pipelines/*.yaml \
-  ../../.tekton/*-run.yaml
+  "${FILES[@]}"
 
 echo ""
 echo "=========================================="
