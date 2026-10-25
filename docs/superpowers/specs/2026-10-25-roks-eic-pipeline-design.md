@@ -159,8 +159,12 @@ down.
   relies on `when` on gates) is dropped; `skipAutomatedTests` is kept.
 - **State locking:** `use_lockfile = true` on the COS-backed `s3` backend; if
   COS does not enforce conditional writes the lock is best-effort, acceptable
-  because each PR has its own state key and `cancel-in-progress` serializes
-  runs.
+  because each PR has its own state key. The run file sets
+  `cancel-in-progress: "false"` (a cancel would kill a running apply or
+  destroy and leave an untracked cluster and a stale lock); a second run for
+  the same PR fails on the lock, and the docs say not to push while
+  `deploy-roks` or `teardown-roks` runs and how to recover (import or
+  `ibmcloud ks cluster rm`, `force-unlock`).
 
 - **Layout:** `roks/terraform/` + `roks.makefile` (mirrors `rosa/terraform/` +
   `rosa.makefile`) for local use.
