@@ -1,0 +1,566 @@
+# SPDX-FileCopyrightText: 2026 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: roks-teardown
+spec:
+  description: >-
+    Tear down a ROKS cluster deployed by roks-deploy: terraform destroy of
+    roks/terraform straight from its COS state (s3 backend, key
+    roks/<clusterName>/terraform.tfstate, -refresh=false, up to 3 attempts),
+    the same as make roks-destroy. Then deletes the VPC load balancers and
+    block volumes the cluster left behind in the resource group
+    redhat-sap-edge-roks-ci (only those whose name or tags contain the
+    cluster ID, read from the state before the destroy), the ConfigMap
+    cluster-info-roks-<clusterName> on the pipeline cluster and the Secrets
+    eic-credentials-roks-<clusterName> and eic-registry-roks-<clusterName>
+    (on the hub cluster when hubKubeconfigSecretName is set, else on the
+    pipeline cluster). Removes terraform.tfvars from the workspace. Exits 0
+    only when everything is gone; otherwise it fails with a list of what
+    remains and the recovery steps.
+  params:
+    - name: clusterName
+      type: string
+      description: "ROKS cluster name (starts with redhat-, at most 30 characters)"
+    - name: ibmcloudRegion
+      type: string
+      description: "IBM Cloud region of the cluster"
+      default: "eu-de"
+    - name: ibmcloudResourceGroup
+      type: string
+      description: "Resource group of the run; leftovers are only swept in redhat-sap-edge-roks-ci"
+      default: "redhat-sap-edge-roks-ci"
+    - name: roksIbmcloudSecretName
+      type: string
+      description: "Name of the Kubernetes Secret with the IBM Cloud API key (key IBMCLOUD_API_KEY)"
+    - name: terraformStateBucket
+      type: string
+      description: "IBM Cloud Object Storage bucket holding the Terraform state"
+    - name: terraformStateEndpoint
+      type: string
+      description: "S3 endpoint of the Terraform state bucket"
+      default: "https://s3.eu-de.cloud-object-storage.appdomain.cloud"
+    - name: terraformStateSecretName
+      type: string
+      description: "Name of the Kubernetes Secret with the COS HMAC keys of the state bucket (keys AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)"
+    - name: hubKubeconfigSecretName
+      type: string
+      description: "Name of the Secret containing kubeconfig for hub cluster (optional); the credentials and registry Secrets are deleted there instead of on the pipeline cluster"
+      default: ""
+  workspaces:
+    - name: source
+      description: "Repository checked out by git-clone (roks/terraform); may hold roks-terraform-outputs.json and terraform.tfvars from roks-deploy"
+  steps:
+    - name: teardown-roks-with-terraform
+      image: registry.access.redhat.com/ubi9/ubi
+      # Well above the Terraform delete timeouts (cluster 2h, then the VPE
+      # cleanup, the databases and the network), like roks-deploy.
+      timeout: "336h"
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: CLUSTER_NAME
+          value: "$(params.clusterName)"
+        - name: IBMCLOUD_REGION
+          value: "$(params.ibmcloudRegion)"
+        - name: IBMCLOUD_RESOURCE_GROUP
+          value: "$(params.ibmcloudResourceGroup)"
+        - name: TERRAFORM_STATE_BUCKET
+          value: "$(params.terraformStateBucket)"
+        - name: TERRAFORM_STATE_ENDPOINT
+          value: "$(params.terraformStateEndpoint)"
+        - name: HUB_KUBECONFIG_SECRET
+          value: "$(params.hubKubeconfigSecretName)"
+        # Read by the ibm Terraform provider and by ibmcloud login
+        - name: IBMCLOUD_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: $(params.roksIbmcloudSecretName)
+              key: IBMCLOUD_API_KEY
+        # COS HMAC keys, read by the s3 backend
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: $(params.terraformStateSecretName)
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: $(params.terraformStateSecretName)
+              key: AWS_SECRET_ACCESS_KEY
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        # Never print secrets: the API key and the HMAC keys stay in the
+        # environment (the IBM provider and ibmcloud login read
+        # IBMCLOUD_API_KEY, the s3 backend the HMAC keys), never in argv.
+        WORKSPACE_DIR="$(workspaces.source.path)"
+        TF_DIR="${WORKSPACE_DIR}/roks/terraform"
+        OUTPUTS_FILE="${WORKSPACE_DIR}/roks-terraform-outputs.json"
+        STATE_KEY="roks/${CLUSTER_NAME}/terraform.tfstate"
+        # Same signing region as roks.makefile and roks-deploy
+        TERRAFORM_STATE_REGION="eu-de"
+        # Relative to TF_DIR (the kubeconfig_dir default)
+        KUBECONFIG_DIR="./.kube"
+        # The only resource group the leftover sweep may touch
+        DEDICATED_RESOURCE_GROUP="redhat-sap-edge-roks-ci"
+        CONFIGMAP_NAME="cluster-info-roks-${CLUSTER_NAME}"
+        CREDS_SECRET_NAME="eic-credentials-roks-${CLUSTER_NAME}"
+        REGISTRY_SECRET_NAME="eic-registry-roks-${CLUSTER_NAME}"
+        TF_INIT_RETRY_DELAY="${TF_INIT_RETRY_DELAY:-30}"
+        TF_DESTROY_RETRY_DELAY="${TF_DESTROY_RETRY_DELAY:-60}"
+        SWEEP_WAIT_SECONDS="${SWEEP_WAIT_SECONDS:-900}"
+        SWEEP_POLL_SECONDS="${SWEEP_POLL_SECONDS:-15}"
+
+        # Pipeline-cluster calls use the in-cluster ServiceAccount (or the hub kubeconfig)
+        unset KUBECONFIG
+        TMP_DIR=$(mktemp -d)
+        # terraform.tfvars of roks-deploy may hold the PostgreSQL password.
+        # Terraform destroys from the state and does not need it, so it goes
+        # however the task ends.
+        cleanup() {
+          rm -rf "${TMP_DIR}"
+          if [[ -f "${TF_DIR}/terraform.tfvars" ]]; then
+            rm -f "${TF_DIR}/terraform.tfvars"
+            echo "🧹 Removed ${TF_DIR}/terraform.tfvars"
+          fi
+        }
+        trap cleanup EXIT
+
+        fail() {
+          echo "❌ $*" >&2
+          exit 1
+        }
+
+        # What is still there at the end, one line per item
+        REMAINING=""
+        add_remaining() {
+          REMAINING="${REMAINING}  - $1"$'\n'
+        }
+
+        echo "🗑️  Tearing down ROKS cluster with Terraform"
+        echo "=============================================="
+        echo "  Cluster name:      ${CLUSTER_NAME}"
+        echo "  Region:            ${IBMCLOUD_REGION}"
+        echo "  Resource group:    ${IBMCLOUD_RESOURCE_GROUP}"
+        echo "  Terraform state:   ${TERRAFORM_STATE_BUCKET}/${STATE_KEY} (${TERRAFORM_STATE_ENDPOINT})"
+        echo "  Hub kubeconfig:    ${HUB_KUBECONFIG_SECRET:-<none, pipeline cluster>}"
+        echo ""
+
+        # --- Validate inputs before installing tools or calling terraform ---
+        valid_cluster_name() {
+          local LC_ALL=C RE='^[a-z][a-z0-9-]{0,28}[a-z0-9]$'
+          [[ "$1" =~ ${RE} && "$1" == redhat-* ]]
+        }
+
+        plain_value() {
+          local LC_ALL=C RE='^[A-Za-z0-9][A-Za-z0-9_. -]*$'
+          [[ "$2" =~ ${RE} ]] || fail "$1 '$2' contains unsupported characters"
+        }
+
+        valid_cluster_name "${CLUSTER_NAME}" || fail "Invalid clusterName '${CLUSTER_NAME}': it must start with redhat- and be at most 30 characters of lowercase letters, digits and hyphens, ending with a letter or digit (e.g. redhat-roks-eic-pr123)"
+        plain_value ibmcloudRegion "${IBMCLOUD_REGION}"
+        plain_value ibmcloudResourceGroup "${IBMCLOUD_RESOURCE_GROUP}"
+        [[ -n "${IBMCLOUD_API_KEY:-}" ]] || fail "IBMCLOUD_API_KEY is empty (Secret from roksIbmcloudSecretName, key IBMCLOUD_API_KEY)"
+        [[ -n "${AWS_ACCESS_KEY_ID:-}" && -n "${AWS_SECRET_ACCESS_KEY:-}" ]] || fail "COS HMAC keys are empty (Secret from terraformStateSecretName, keys AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY)"
+        [[ -d "${TF_DIR}" ]] || fail "${TF_DIR} not found; is the repository checked out in the source workspace?"
+        echo "✅ Inputs validated"
+
+        # Install tools (jq, Terraform, IBM Cloud CLI with plugins, oc)
+        echo "📦 Installing required packages..."
+        dnf install -y jq unzip tar gzip
+
+        TERRAFORM_VERSION="1.13.5"
+        echo "📦 Installing Terraform ${TERRAFORM_VERSION}..."
+        TF_ZIP="terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+        TF_URL="https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}"
+        (
+          cd "${TMP_DIR}"
+          curl -fsSLO "${TF_URL}/${TF_ZIP}"
+          curl -fsSLO "${TF_URL}/terraform_${TERRAFORM_VERSION}_SHA256SUMS"
+          sha256sum -c --ignore-missing "terraform_${TERRAFORM_VERSION}_SHA256SUMS"
+          unzip -q -o "${TF_ZIP}" terraform -d /usr/local/bin
+          rm -f "${TF_ZIP}"
+        )
+        terraform version
+
+        echo "📦 Installing IBM Cloud CLI..."
+        curl -fsSL https://clis.cloud.ibm.com/install/linux | sh
+        ibmcloud config --check-version=false
+        # vpc-infrastructure: the VPE cleanup destroy hook and the leftover
+        # sweep; container-service: same plugin set as roks-deploy
+        ibmcloud plugin install container-service -f
+        ibmcloud plugin install vpc-infrastructure -f
+        ibmcloud version
+
+        echo "📦 Installing OpenShift CLI..."
+        curl -fsSL -o "${TMP_DIR}/oc.tar.gz" https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz
+        tar xzf "${TMP_DIR}/oc.tar.gz" -C "${TMP_DIR}" oc
+        mv "${TMP_DIR}/oc" /usr/local/bin/oc
+        rm -f "${TMP_DIR}/oc.tar.gz"
+        oc version --client
+        echo "✅ Tools installed"
+
+        # --- Hub cluster kubeconfig (optional), like roks-registry-access ---
+        # Unreadable: the cluster is still destroyed and the Secrets on the hub
+        # are reported as remaining.
+        PIPELINE_OC=(oc)
+        SECRETS_WHERE="pipeline cluster"
+        HUB_UNREADABLE=false
+        if [[ -n "${HUB_KUBECONFIG_SECRET}" ]]; then
+          echo "🔐 Extracting hub cluster kubeconfig from secret: ${HUB_KUBECONFIG_SECRET}..."
+          HUB_KUBECONFIG="${TMP_DIR}/hub-kubeconfig"
+          HUB_KEY=""
+          for KEY in kubeconfig config value; do
+            if (umask 077; oc get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath="{.data.${KEY}}" 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null) && [[ -s "${HUB_KUBECONFIG}" ]]; then
+              HUB_KEY="${KEY}"
+              break
+            fi
+          done
+          SECRETS_WHERE="hub cluster"
+          if [[ -n "${HUB_KEY}" ]]; then
+            chmod 600 "${HUB_KUBECONFIG}"
+            echo "✅ Hub kubeconfig extracted (key: ${HUB_KEY})"
+            PIPELINE_OC=(oc --kubeconfig "${HUB_KUBECONFIG}")
+          else
+            echo "⚠️  Failed to extract kubeconfig from secret '${HUB_KUBECONFIG_SECRET}' (expected key 'kubeconfig', 'config' or 'value'): the Secrets on the hub cannot be deleted"
+            HUB_UNREADABLE=true
+          fi
+        else
+          echo "ℹ️  No hub kubeconfig secret provided, using the in-cluster service account"
+        fi
+
+        # --- IBM Cloud login: the VPE cleanup destroy hook and the sweep use the CLI ---
+        echo "🔐 Logging in to IBM Cloud (region ${IBMCLOUD_REGION}, resource group ${IBMCLOUD_RESOURCE_GROUP})..."
+        # The CLI reads the API key from IBMCLOUD_API_KEY; no stdin, so that it
+        # fails instead of prompting.
+        ibmcloud login -r "${IBMCLOUD_REGION}" -g "${IBMCLOUD_RESOURCE_GROUP}" < /dev/null ||
+          fail "ibmcloud login failed; terraform destroy needs the logged-in CLI for the VPE cleanup hook"
+        echo "✅ Logged in to IBM Cloud"
+
+        # --- Terraform init (COS state through the s3 backend, same key as roks-deploy) ---
+        cd "${TF_DIR}"
+
+        # Sets LOCK_ID when the log shows a state lock error
+        LOCK_ID=""
+        state_locked() {
+          grep -q "Error acquiring the state lock" "$1" || return 1
+          LOCK_ID=$(awk '/Lock Info:/ {found = 1; next} found && /ID:/ {sub(/.*ID:[[:space:]]*/, ""); sub(/[[:space:]]+$/, ""); print; exit}' "$1")
+          LOCK_ID="${LOCK_ID:-<lock ID from the error above>}"
+        }
+
+        print_recovery_hints() {
+          echo ""
+          echo "🔧 Recovery, from the repository root (see roks/terraform/README.md, Destroy):"
+          echo "   with IBMCLOUD_API_KEY, AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY exported and"
+          echo "   ibmcloud logged in (ibmcloud login -r ${IBMCLOUD_REGION} -g ${IBMCLOUD_RESOURCE_GROUP}, plugin vpc-infrastructure):"
+          echo "     export TERRAFORM_STATE_BUCKET=${TERRAFORM_STATE_BUCKET} TERRAFORM_STATE_ENDPOINT=${TERRAFORM_STATE_ENDPOINT}"
+          echo "     make roks-init CLUSTER=${CLUSTER_NAME}"
+          echo "   then, depending on the error above:"
+          echo "   - State lock left by a stopped run: make sure that no other pipeline run or local"
+          echo "     terraform command works on ${CLUSTER_NAME}, then"
+          echo "       terraform -chdir=roks/terraform force-unlock ${LOCK_ID:-<lock ID>}"
+          echo "   - Cluster deleted outside Terraform (the IBM provider 2.8.0 fails on the 404 when deleting it):"
+          echo "       terraform -chdir=roks/terraform state rm ibm_container_vpc_cluster.cluster"
+          echo "   - ICR namespace or registry service ID deleted by hand:"
+          echo "       terraform -chdir=roks/terraform state rm ibm_cr_namespace.icr"
+          echo "       terraform -chdir=roks/terraform state rm ibm_iam_service_api_key.icr ibm_iam_service_policy.icr ibm_iam_service_id.icr"
+          echo "   and destroy again:"
+          echo "     make roks-destroy CLUSTER=${CLUSTER_NAME}"
+          echo "   make roks-destroy does not sweep load balancers and volumes or delete the pipeline"
+          echo "   ConfigMap/Secrets; the README lists the commands."
+        }
+
+        echo "🔧 Initializing Terraform with the COS backend (key ${STATE_KEY})..."
+        TF_INIT_OK=false
+        for TF_INIT_ATTEMPT in 1 2 3; do
+          if terraform init -input=false -no-color -reconfigure \
+            -backend-config="bucket=${TERRAFORM_STATE_BUCKET}" \
+            -backend-config="key=${STATE_KEY}" \
+            -backend-config="region=${TERRAFORM_STATE_REGION}" \
+            -backend-config="endpoints={s3=\"${TERRAFORM_STATE_ENDPOINT}\"}" \
+            -backend-config="use_lockfile=true" \
+            -backend-config="use_path_style=true" \
+            -backend-config="skip_credentials_validation=true" \
+            -backend-config="skip_region_validation=true" \
+            -backend-config="skip_requesting_account_id=true" \
+            -backend-config="skip_s3_checksum=true" 2>&1 | tee "${TMP_DIR}/init.log"; then
+            TF_INIT_OK=true
+            break
+          fi
+          if state_locked "${TMP_DIR}/init.log"; then
+            print_recovery_hints
+            fail "The Terraform state of ${CLUSTER_NAME} is locked (lock ID: ${LOCK_ID}); nothing was destroyed"
+          fi
+          echo "⚠️  terraform init attempt ${TF_INIT_ATTEMPT} failed"
+          if [[ "${TF_INIT_ATTEMPT}" -lt 3 ]]; then
+            echo "   Retrying in ${TF_INIT_RETRY_DELAY}s..."
+            sleep "${TF_INIT_RETRY_DELAY}"
+          fi
+        done
+        [[ "${TF_INIT_OK}" == "true" ]] || fail "terraform init failed 3 times; nothing was destroyed"
+        # The IBM provider fails if kubeconfig_dir is missing
+        mkdir -p "${KUBECONFIG_DIR}"
+
+        # --- Cluster ID for the leftover sweep, read before the destroy empties the state ---
+        valid_cluster_id() {
+          local LC_ALL=C RE='^[a-z0-9]{16,40}$'
+          [[ "$1" =~ ${RE} ]]
+        }
+
+        CLUSTER_ID=""
+        CLUSTER_ID_SOURCE=""
+        if STATE_CLUSTER_ID=$(terraform output -raw cluster_id 2>/dev/null) && [[ -n "${STATE_CLUSTER_ID}" ]]; then
+          CLUSTER_ID="${STATE_CLUSTER_ID}"
+          CLUSTER_ID_SOURCE="the Terraform state"
+        elif [[ -s "${OUTPUTS_FILE}" ]]; then
+          # Only when the file of roks-deploy belongs to this cluster
+          FILE_CLUSTER_NAME=$(jq -r '.cluster_name.value // empty' "${OUTPUTS_FILE}" 2>/dev/null || true)
+          if [[ "${FILE_CLUSTER_NAME}" == "${CLUSTER_NAME}" ]]; then
+            CLUSTER_ID=$(jq -r '.cluster_id.value // empty' "${OUTPUTS_FILE}" 2>/dev/null || true)
+            CLUSTER_ID_SOURCE="${OUTPUTS_FILE}"
+          else
+            echo "⚠️  ${OUTPUTS_FILE} belongs to cluster '${FILE_CLUSTER_NAME:-unknown}', not ${CLUSTER_NAME}: not used"
+          fi
+        fi
+
+        # Never sweep without a precise cluster ID, nor outside the dedicated group
+        SWEEP_SKIP_REASON=""
+        if [[ -n "${CLUSTER_ID}" ]] && ! valid_cluster_id "${CLUSTER_ID}"; then
+          echo "⚠️  Cluster ID '${CLUSTER_ID}' from ${CLUSTER_ID_SOURCE} is not 16-40 lowercase letters and digits: not used"
+          CLUSTER_ID=""
+        fi
+        if [[ "${IBMCLOUD_RESOURCE_GROUP}" != "${DEDICATED_RESOURCE_GROUP}" ]]; then
+          SWEEP_SKIP_REASON="resource group ${IBMCLOUD_RESOURCE_GROUP} is not the dedicated group ${DEDICATED_RESOURCE_GROUP}; leftovers are only swept there"
+        elif [[ -z "${CLUSTER_ID}" ]]; then
+          SWEEP_SKIP_REASON="no usable cluster ID in the Terraform state or in ${OUTPUTS_FILE} (the cluster was probably never created)"
+        fi
+        if [[ -n "${CLUSTER_ID}" ]]; then
+          echo "✅ Cluster ID ${CLUSTER_ID} (from ${CLUSTER_ID_SOURCE})"
+        fi
+        if [[ -n "${SWEEP_SKIP_REASON}" ]]; then
+          echo "⚠️  No leftover sweep after the destroy: ${SWEEP_SKIP_REASON}"
+        fi
+
+        # --- Leftover sweep: load balancers and block volumes of the cluster ---
+        # ROKS names the VPC load balancers of LoadBalancer services
+        # kube-<cluster ID>-<service UID>; the VPC Block CSI driver tags the
+        # volumes it creates with the cluster ID, and those volumes are not
+        # always deleted with the cluster. Every list result is filtered here
+        # by resource group and cluster ID, never by CLI flags alone.
+        # Prints "<kind> <id> <name> <status>" per leftover of one kind; fails
+        # when the list fails or is not a JSON array.
+        list_kind() {
+          local JSON
+          JSON=$(ibmcloud is "$2" --all-resource-groups --output JSON) || return 1
+          jq -e 'type == "array" or type == "null"' >/dev/null 2>&1 <<< "${JSON}" || return 1
+          jq -r --arg rg "${DEDICATED_RESOURCE_GROUP}" --arg cid "${CLUSTER_ID}" --arg kind "$1" '
+            (. // [])[] | select(type == "object")
+            | select(.resource_group.name == $rg)
+            | select(((.name // "") | contains($cid))
+                or any((.user_tags // .tags // [])[]; type == "string" and contains($cid)))
+            | "\($kind) \(.id) \(.name) \(.provisioning_status // .status // "unknown")"' <<< "${JSON}"
+        }
+
+        list_leftovers() {
+          list_kind load-balancer load-balancers && list_kind volume volumes
+        }
+
+        # Requests the deletion of the listed leftovers not already being
+        # deleted (again on every poll, e.g. after a busy load balancer refused
+        # it); only the first request per object is logged.
+        REQUESTED_IDS=" "
+        request_deletion() {
+          local KIND ID NAME STATUS
+          while read -r KIND ID NAME STATUS; do
+            if [[ -z "${ID}" ]]; then
+              continue
+            fi
+            case "${STATUS}" in
+              delete_pending | pending_deletion | deleting) continue ;;
+            esac
+            if [[ "${REQUESTED_IDS}" == *" ${ID} "* ]]; then
+              ibmcloud is "${KIND}-delete" "${ID}" --force >/dev/null 2>&1 || true
+              continue
+            fi
+            REQUESTED_IDS="${REQUESTED_IDS}${ID} "
+            echo "   Deleting ${KIND} ${NAME} (${ID})"
+            ibmcloud is "${KIND}-delete" "${ID}" --force >/dev/null ||
+              echo "   ⚠️  Delete request for ${KIND} ${NAME} (${ID}) failed; retrying while waiting"
+          done <<< "$1"
+        }
+
+        # "IBM Cloud <kind> <name> (<id>, <status>)" per listed leftover
+        describe_leftovers() {
+          local KIND ID NAME STATUS
+          while read -r KIND ID NAME STATUS; do
+            if [[ -n "${ID}" ]]; then
+              echo "IBM Cloud ${KIND} ${NAME} (${ID}, ${STATUS})"
+            fi
+          done <<< "$1"
+        }
+
+        # Deletes the leftovers and waits until they are gone; sets SWEEP_OK and,
+        # when something is left, SWEEP_REMAINING (one line per item).
+        sweep_leftovers() {
+          local LEFTOVERS DEADLINE
+          local LIST_FAILED="Load balancers/block volumes of cluster ${CLUSTER_ID}: listing failed (ibmcloud is load-balancers / ibmcloud is volumes --all-resource-groups)"
+          SWEEP_OK=false
+          SWEEP_REMAINING=""
+          echo "🧹 Looking for load balancers and block volumes of cluster ${CLUSTER_ID} in ${DEDICATED_RESOURCE_GROUP}..."
+          if ! LEFTOVERS=$(list_leftovers); then
+            SWEEP_REMAINING="${LIST_FAILED}"
+            echo "❌ ${LIST_FAILED}"
+            return 0
+          fi
+          if [[ -z "${LEFTOVERS}" ]]; then
+            echo "✅ No load balancers or block volumes of the cluster left"
+            SWEEP_OK=true
+            return 0
+          fi
+          DEADLINE=$((SECONDS + SWEEP_WAIT_SECONDS))
+          while :; do
+            request_deletion "${LEFTOVERS}"
+            sleep "${SWEEP_POLL_SECONDS}"
+            if ! LEFTOVERS=$(list_leftovers); then
+              SWEEP_REMAINING="${LIST_FAILED}"
+              echo "❌ ${LIST_FAILED}"
+              return 0
+            fi
+            if [[ -z "${LEFTOVERS}" ]]; then
+              echo "✅ Load balancers and block volumes of the cluster deleted"
+              SWEEP_OK=true
+              return 0
+            fi
+            if ((SECONDS >= DEADLINE)); then
+              SWEEP_REMAINING=$(describe_leftovers "${LEFTOVERS}")
+              echo "❌ Still present after ${SWEEP_WAIT_SECONDS}s:"
+              printf '%s\n' "${SWEEP_REMAINING}" | sed 's/^/   /'
+              return 0
+            fi
+          done
+        }
+
+        # True only when the state can be read and no longer holds the cluster
+        cluster_gone_from_state() {
+          local STATE
+          STATE=$(terraform state list 2>/dev/null) || return 1
+          ! grep -qx 'ibm_container_vpc_cluster.cluster' <<< "${STATE}"
+        }
+
+        # --- terraform destroy, straight from the state ---
+        # -refresh=false: a refresh would re-read the admin-kubeconfig data
+        # source, which fails once the cluster is (half) gone. Only the
+        # variables Terraform needs (cluster_name, and region for the
+        # provider): destroy removes whatever the state holds, so no deploy
+        # flags and no password are passed (a terraform.tfvars left by
+        # roks-deploy is loaded if present, but not needed).
+        DESTROY_OK=false
+        for DESTROY_ATTEMPT in 1 2 3; do
+          echo ""
+          echo "🗑️  terraform destroy, attempt ${DESTROY_ATTEMPT}/3 (deleting the cluster takes up to 2 hours)..."
+          if terraform destroy -input=false -no-color -auto-approve -refresh=false \
+            -var "cluster_name=${CLUSTER_NAME}" \
+            -var "region=${IBMCLOUD_REGION}" 2>&1 | tee "${TMP_DIR}/destroy.log"; then
+            DESTROY_OK=true
+            break
+          fi
+          if state_locked "${TMP_DIR}/destroy.log"; then
+            echo "❌ The Terraform state of ${CLUSTER_NAME} is locked (lock ID: ${LOCK_ID}); not retrying"
+            break
+          fi
+          echo "⚠️  terraform destroy attempt ${DESTROY_ATTEMPT} failed"
+          if [[ "${DESTROY_ATTEMPT}" -lt 3 ]]; then
+            # Once the cluster is deleted, load balancers or volumes it left in
+            # the subnets can block deleting them: sweep before the next attempt.
+            if [[ -z "${SWEEP_SKIP_REASON}" ]] && cluster_gone_from_state; then
+              sweep_leftovers
+            fi
+            echo "   Retrying in ${TF_DESTROY_RETRY_DELAY}s..."
+            sleep "${TF_DESTROY_RETRY_DELAY}"
+          fi
+        done
+
+        if [[ "${DESTROY_OK}" == "true" ]]; then
+          echo "✅ terraform destroy completed"
+        else
+          echo ""
+          echo "❌ terraform destroy failed"
+          add_remaining "terraform destroy failed (see the log above)"
+          if STATE_LIST=$(terraform state list 2>/dev/null); then
+            echo "📋 Still in the Terraform state ${STATE_KEY}:"
+            printf '%s\n' "${STATE_LIST}" | sed 's/^/   /'
+            # Resources only (data sources are not objects in the account)
+            while read -r ADDRESS; do
+              if [[ -n "${ADDRESS}" && "${ADDRESS}" != data.* ]]; then
+                add_remaining "Terraform state: ${ADDRESS}"
+              fi
+            done <<< "${STATE_LIST}"
+          else
+            add_remaining "Terraform state ${STATE_KEY}: terraform state list failed"
+          fi
+          print_recovery_hints
+        fi
+
+        # --- Leftover sweep after the destroy (also after a failed destroy that got past the cluster) ---
+        echo ""
+        if [[ -n "${SWEEP_SKIP_REASON}" ]]; then
+          echo "⚠️  Leftover sweep skipped: ${SWEEP_SKIP_REASON}"
+        elif [[ "${DESTROY_OK}" == "true" ]] || cluster_gone_from_state; then
+          sweep_leftovers
+          if [[ "${SWEEP_OK}" != "true" ]]; then
+            while read -r LEFTOVER; do
+              if [[ -n "${LEFTOVER}" ]]; then
+                add_remaining "${LEFTOVER}"
+              fi
+            done <<< "${SWEEP_REMAINING}"
+          fi
+        else
+          echo "ℹ️  Leftover sweep skipped: the cluster is still in the Terraform state (it may still exist)"
+        fi
+
+        # --- Pipeline artifacts (always: the run is over) ---
+        echo ""
+        echo "🧹 Deleting pipeline artifacts..."
+        # roks-validate-and-create-configmap writes it on the pipeline cluster, even with a hub
+        if oc delete configmap "${CONFIGMAP_NAME}" --ignore-not-found=true; then
+          echo "✅ ConfigMap ${CONFIGMAP_NAME} deleted (pipeline cluster)"
+        else
+          add_remaining "ConfigMap ${CONFIGMAP_NAME} on the pipeline cluster (oc delete failed)"
+        fi
+        # roks-validate-and-get-access / roks-registry-access write them on the hub if set
+        if [[ "${HUB_UNREADABLE}" == "true" ]]; then
+          add_remaining "Secrets ${CREDS_SECRET_NAME} and ${REGISTRY_SECRET_NAME} on the hub cluster (kubeconfig Secret ${HUB_KUBECONFIG_SECRET} unreadable)"
+        else
+          for SECRET_NAME in "${CREDS_SECRET_NAME}" "${REGISTRY_SECRET_NAME}"; do
+            if "${PIPELINE_OC[@]}" delete secret "${SECRET_NAME}" --ignore-not-found=true; then
+              echo "✅ Secret ${SECRET_NAME} deleted (${SECRETS_WHERE})"
+            else
+              add_remaining "Secret ${SECRET_NAME} on the ${SECRETS_WHERE} (oc delete failed)"
+            fi
+          done
+        fi
+
+        # --- Summary (no secrets) ---
+        echo ""
+        echo "=============================================="
+        if [[ "${DESTROY_OK}" == "true" && -z "${REMAINING}" ]]; then
+          echo "✅ ROKS cluster ${CLUSTER_NAME} torn down"
+          echo "  Terraform state:   ${TERRAFORM_STATE_BUCKET}/${STATE_KEY} (empty)"
+          if [[ -n "${SWEEP_SKIP_REASON}" ]]; then
+            echo "  Leftover sweep:    skipped (${SWEEP_SKIP_REASON})"
+          else
+            echo "  Leftover sweep:    nothing left of cluster ${CLUSTER_ID} in ${DEDICATED_RESOURCE_GROUP}"
+          fi
+          echo "  Pipeline artifacts: ${CONFIGMAP_NAME} (pipeline cluster), ${CREDS_SECRET_NAME} and ${REGISTRY_SECRET_NAME} (${SECRETS_WHERE}) deleted"
+          echo "=============================================="
+        else
+          echo "❌ Teardown of ${CLUSTER_NAME} incomplete; still present:"
+          printf '%s' "${REMAINING}"
+          echo "=============================================="
+          exit 1
+        fi
