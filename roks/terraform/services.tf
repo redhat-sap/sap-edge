@@ -144,32 +144,3 @@ data "ibm_database_connection" "redis" {
   user_id       = ibm_database.redis[0].adminuser
   endpoint_type = "public"
 }
-
-###########################################
-# Quay registry storage (COS)
-###########################################
-
-# Regional bucket in the cluster's COS instance (cluster.tf). Bucket names are
-# global across IBM Cloud; COS buckets cannot carry tags.
-resource "ibm_cos_bucket" "quay" {
-  count = var.deploy_quay_storage ? 1 : 0
-
-  bucket_name          = "${var.cluster_name}-quay"
-  resource_instance_id = ibm_resource_instance.cos.id
-  region_location      = var.region
-  storage_class        = "standard"
-
-  # Quay leaves image layers behind: empty the bucket on destroy.
-  force_delete = true
-}
-
-# HMAC (S3-style) credentials for Quay. Writer is the least role that can read,
-# write and delete objects; it applies to every bucket of the COS instance.
-resource "ibm_resource_key" "quay_hmac" {
-  count = var.deploy_quay_storage ? 1 : 0
-
-  name                 = "${var.cluster_name}-quay-hmac"
-  resource_instance_id = ibm_resource_instance.cos.id
-  role                 = "Writer"
-  parameters           = { HMAC = true }
-}

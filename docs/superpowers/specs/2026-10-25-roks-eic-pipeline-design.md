@@ -53,12 +53,18 @@ down.
   - `roks-validate-and-create-configmap` — find the EIC host and ingress
     address for the tests (ConfigMap with `host` and `ingressIP`, same format
     as ROSA's).
-  - `roks-quay-deploy` — optional Quay backed by IBM Cloud Object Storage.
+  - `roks-registry-access` — hands ELM the run's IBM Cloud Container Registry
+    (ICR) access: registry server, namespace, user `iamapikey` and a push/pull
+    API key, stored as a Secret on the pipeline cluster.
   - `roks-teardown` — `terraform destroy` plus cleanup of pipeline-side
     artifacts (ConfigMaps, Secrets on the hub), tolerant of partial state.
-- Optional managed backing services, mirroring ROSA's `deployPostgres` /
+- An ICR namespace for the run (container registry for ELM/EIC), created by
+  the same Terraform on every run, with a service ID that can push and pull in
+  that namespace only.
+- Managed backing services, mirroring ROSA's `deployPostgres` /
   `deployRedis`: IBM Cloud Databases for PostgreSQL and for Redis, created by
-  the same Terraform when the flags are `true` (default `false`).
+  the same Terraform when the flags are `true` (pipeline default `true`,
+  Terraform default `false`).
 
 ## Non-goals
 
@@ -114,6 +120,20 @@ down.
 - **Dedicated resource group `redhat-sap-edge-roks-ci`**, with "redhat" in
   the name so IBM colleagues can see whose resources these are.
 
+## Changed by the user (2026-10-25)
+
+- **No Quay on ROKS:** EIC validation uses IBM Cloud Container Registry. Each
+  run gets the ICR namespace `<cluster>` (`de.icr.io`) and a service ID
+  `<cluster>-icr` with Reader and Writer on that namespace only; its API key
+  is the registry password ELM is given (`roks-registry-access`). The service
+  ID, its policy and its API key are account-level IAM objects (IAM has no
+  resource groups); they are named `redhat-…`, scoped to the one namespace,
+  and deleted by teardown. `cluster_name` is limited to 30 characters (the
+  namespace limit).
+- **Postgres and Redis stay IBM Cloud Databases** and are on by default in
+  the pipeline (`deployPostgres`/`deployRedis` `"true"`); there is no
+  `deployQuay`.
+
 ## My calls (the user delegated these)
 
 - **Naming and tags:** every IBM resource the pipeline creates is prefixed
@@ -150,8 +170,9 @@ down.
   region, public gateways (worker egress), a COS instance (required by ROKS on
   VPC for the internal registry), `ibm_container_vpc_cluster` (OpenShift
   `kube_version` from a param, worker flavor `bx2.16x64`, 1 worker per zone =
-  3 workers), and optional `ibm_database` PostgreSQL / Redis. Outputs: cluster
-  id/name, ingress hostname, COS bucket/endpoint for Quay, database endpoints.
+  3 workers), an ICR namespace with a push/pull service ID and API key, and
+  optional `ibm_database` PostgreSQL / Redis. Outputs: cluster id/name,
+  ingress hostname, ICR registry/namespace/user/API key, database endpoints.
 - **Admin kubeconfig:** Terraform data source `ibm_container_cluster_config`
   with admin credentials (no `ibmcloud` login needed for this), written to the
   workspace by `roks-validate-and-get-access`.
@@ -163,7 +184,7 @@ down.
   `redhat-sap-edge-roks-ci`, OpenShift version param in the run file (start
   with the 4.21 line the account already runs), cluster name
   `redhat-roks-eic-pr{{ pull_request_number }}`, OSSM channel as in the ROSA
-  run, hub `eic`, `deployPostgres`/`deployRedis`/`deployQuay` `false`.
+  run, hub `eic`, `deployPostgres`/`deployRedis` `"true"` (no `deployQuay`).
 - **Credentials (Secrets in the pipeline namespace):** IBM Cloud API key
   (`roksIbmcloudSecretName`, key `IBMCLOUD_API_KEY`) — preferably a service
   ID's key with access scoped to `redhat-sap-edge-roks-ci`, so it is not tied
@@ -189,7 +210,7 @@ down.
   `roks-validate-and-create-configmap` turns it into the `ingressIP` the tests
   need (ROSA already falls back to the hostname; check what `endpoint-tests`
   accepts).
-- Storage classes for Quay/ELM on ROKS (block vs file) and whether any EIC
+- Storage classes for ELM on ROKS (block vs file) and whether any EIC
   component needs RWX.
 - Exact params of the new tasks (follow ROSA's names where meaning matches).
 - README/docs placement, and harness tests for the new task scripts.

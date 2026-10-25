@@ -7,7 +7,8 @@
 # cluster. Copy to terraform.tfvars (git-ignored) and adjust.
 # The IBM Cloud API key is not a variable: export IBMCLOUD_API_KEY instead.
 
-# Must start with "redhat-", 2-32 characters, lowercase letters, digits, hyphens.
+# Must start with "redhat-", at most 30 characters (it is also the Container
+# Registry namespace), lowercase letters, digits, hyphens.
 # The make targets pass it as -var cluster_name=$(CLUSTER).
 cluster_name = "redhat-roks-eic-pr123"
 
@@ -33,16 +34,16 @@ pod_subnet = "172.17.0.0/18"
 # Existing directory for the admin kubeconfig download.
 kubeconfig_dir = "./.kube"
 
-# Optional managed services (default false), see README.md. Each one adds
-# billable resources; the databases take 30-45 minutes to provision.
-#   deploy_postgres:     IBM Cloud Databases for PostgreSQL 15 (<cluster_name>-postgres)
-#   deploy_redis:        IBM Cloud Databases for Redis (<cluster_name>-redis),
-#                        admin password generated (output redis_password)
-#   deploy_quay_storage: COS bucket <cluster_name>-quay in the cluster's COS
-#                        instance and an HMAC key for Quay
-deploy_postgres     = false
-deploy_redis        = false
-deploy_quay_storage = false
+# Optional managed services (Terraform default false; the ROKS pipeline sets
+# both to true), see README.md. Each one adds billable resources; the
+# databases take 30-45 minutes to provision.
+#   deploy_postgres: IBM Cloud Databases for PostgreSQL 15 (<cluster_name>-postgres)
+#   deploy_redis:    IBM Cloud Databases for Redis (<cluster_name>-redis),
+#                    admin password generated (output redis_password)
+# The Container Registry namespace and its push/pull API key are always
+# created (no variable).
+deploy_postgres = false
+deploy_redis    = false
 # postgres_admin_password (required when deploy_postgres = true): set it via
 # TF_VAR_postgres_admin_password, not here. 15-72 characters of letters,
 # digits, - and _; at least one lower case letter, one upper case letter and
