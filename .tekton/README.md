@@ -23,6 +23,12 @@ CI/CD pipelines for deploying and testing SAP Edge Integration Cell on ARO, ROSA
 | `rosa-eic-full-test-pipeline.yaml` | Full ROSA deployment with EIC services → endpoint testing → cleanup |
 | `rosa-edgelm-validation-pipeline.yaml` | ROSA + Quay deployment → edgelm validation → status reporting |
 
+### ROKS (Red Hat OpenShift on IBM Cloud)
+
+| Pipeline | Purpose |
+|----------|---------|
+| `roks-eic-full-test-pipeline.yaml` | Full ROKS deployment with EIC services → endpoint testing → cleanup |
+
 ### HCP (Hosted Control Plane)
 
 | Pipeline | Purpose |
@@ -52,6 +58,13 @@ CI/CD pipelines for deploying and testing SAP Edge Integration Cell on ARO, ROSA
 - `rosa-quay-deploy-task`: Deploy Quay registry
 - `rosa-deployment-status-report-task`: Generate deployment reports
 - `rosa-teardown-task`: Clean up resources
+
+### ROKS Tasks
+- `roks-deploy-task`: Deploy ROKS with Terraform (PostgreSQL/Redis via IBM Cloud Databases)
+- `roks-validate-and-get-access-task`: Fetch admin kubeconfig and validate cluster access
+- `roks-validate-and-create-configmap-task`: Find EIC host and ingress address for tests
+- `roks-registry-access-task`: Provision IBM Cloud Container Registry namespace and credentials for ELM
+- `roks-teardown-task`: Destroy infrastructure and clean up artifacts
 
 ### HCP Tasks
 - `hcp-create-hosted-cluster-task`: Create HCP cluster
@@ -120,6 +133,24 @@ oc create secret generic redhat-token-secret \
 # Note: AWS RDS PostgreSQL does NOT allow: / @ " (space)
 oc create secret generic rosa-postgres-admin-password \
   --from-literal=POSTGRES_ADMIN_PASSWORD="YourSecure-Password123!"
+```
+
+**ROKS-specific secrets:**
+```bash
+# IBM Cloud API key (preferably a service ID's key scoped to the resource group)
+oc create secret generic roks-ibmcloud-api-key \
+  --from-literal=IBMCLOUD_API_KEY="your-ibmcloud-api-key"
+
+# COS HMAC credentials for Terraform state bucket
+oc create secret generic roks-terraform-state-hmac \
+  --from-literal=AWS_ACCESS_KEY_ID="your-hmac-access-key-id" \
+  --from-literal=AWS_SECRET_ACCESS_KEY="your-hmac-secret-access-key"
+
+# PostgreSQL admin password for IBM Cloud Databases
+# IBM provider rule: 15-72 characters of letters, digits, - and _,
+# with ≥1 lowercase, ≥1 uppercase, ≥1 digit, not starting with - or _
+oc create secret generic roks-postgres-admin-password \
+  --from-literal=POSTGRES_ADMIN_PASSWORD="YourSecure-Password123"
 ```
 
 **HCP-specific secrets:**
@@ -467,3 +498,79 @@ ROSA pipelines deploy AWS RDS PostgreSQL and ElastiCache Redis.
 make rosa-destroy             # Complete destroy
 make rosa-delete-cluster      # Delete cluster only
 ```
+
+### ROKS (IBM Cloud - Terraform)
+
+ROKS pipelines deploy a VPC cluster with IBM Cloud Databases for PostgreSQL and Redis, plus an IBM Cloud Container Registry namespace.
+
+**One-time setup:**
+
+1. **Resource group** `redhat-sap-edge-roks-ci` (exists). Every resource the pipeline creates is named `redhat-<cluster>-*` and tagged `owner:redhat`, `project:sap-edge`, `pr:<N>`, so IBM colleagues recognize them.
+
+2. **Service ID** (e.g. `redhat-sap-edge-roks-ci`) with an API key and access:
+   - **VPC Infrastructure Services** in the resource group
+   - **Kubernetes Service** in the resource group, including **Administrator** platform role (to manage the region/resource-group infrastructure API key)
+   - **Cloud Object Storage** in the resource group
+   - **Databases for PostgreSQL** and **Databases for Redis** in the resource group
+   - **Container Registry** in `eu-de`: **Manager** service role (create namespaces) and **Administrator** platform role (create namespace access policies)
+   - **IAM Identity Service**: **Operator** role (create service IDs and API keys for the per-run ICR access)
+
+   Store the API key in the Secret `roks-ibmcloud-api-key` (key `IBMCLOUD_API_KEY`).
+
+3. **COS bucket** for Terraform state (one state per cluster under `roks/<clusterName>/terraform.tfstate`) and HMAC credentials stored in the Secret `roks-terraform-state-hmac` (keys `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`). Keep the bucket private: the state holds the cluster admin certificate, registry API keys and database passwords.
+
+4. **PostgreSQL admin password Secret** `roks-postgres-admin-password` (key `POSTGRES_ADMIN_PASSWORD`), meeting the IBM provider rule: 15–72 characters of letters, digits, `-`, `_`, with at least one lowercase letter, one uppercase letter and one digit, not starting with `-` or `_`.
+
+5. **Verify IBM Cloud Container Registry plan** in `eu-de` is not Lite (Lite = 500 MB storage, too small for EIC image mirroring):
+   ```bash
+   ibmcloud cr region-set eu-central
+   ibmcloud cr plan
+   # Upgrade to standard if needed: ibmcloud cr plan-upgrade standard
+   ```
+
+6. **SAP `httpbinipfilter` iFlow allowlist** (one-time addition): add `172.17.0.0/18` (ROKS pod network) and `10.0.0.0/16` (VPC) so endpoint tests can reach the iFlow.
+
+7. The existing `eic-auth-secret` and hub kubeconfig Secrets (shared with other pipelines).
+
+**What the pipeline produces for ELM:**
+
+- Restricted kubeconfig Secret for cluster registration
+- IBM Cloud Container Registry Secret `eic-registry-roks-<cluster>` (server `de.icr.io`, namespace = cluster name, user `iamapikey`, password = ICR API key)
+- Service data ConfigMap/Secret `eic-credentials-roks-<cluster>` (includes `redis-password`)
+- PostgreSQL admin password in the user's Secret
+
+**Running:**
+
+Start the example PipelineRun on demand (it lives in `.tekton-examples/`, not auto-triggered):
+
+```bash
+oc create -f .tekton-examples/roks-eic-ossm3-run.yaml
+tkn pipelinerun logs -f <pipelinerun-name>
+```
+
+Cluster name: `redhat-roks-eic-pr<N>` (starts with `redhat-`, at most 30 characters).
+
+**Failed or rejected runs** leave the cluster for debugging (billable). Clean up with:
+
+```bash
+make roks-destroy CLUSTER=redhat-roks-eic-pr123
+```
+
+Requires `ibmcloud` CLI (logged in), `container-service` and `vpc-infrastructure` plugins, `jq`, and the same Secrets/env vars as the pipeline.
+
+**Recovery hints:**
+
+- **Stale state lock**: `Error acquiring the state lock`. Ensure no other run is using the state, then:
+  ```bash
+  make roks-init CLUSTER=redhat-roks-eic-pr123
+  terraform -chdir=roks/terraform force-unlock <lock ID from error>
+  ```
+
+- **Cluster deleted outside Terraform** (provider 2.8.0 fails on 404):
+  ```bash
+  make roks-init CLUSTER=redhat-roks-eic-pr123
+  terraform -chdir=roks/terraform state rm ibm_container_vpc_cluster.cluster
+  make roks-destroy CLUSTER=redhat-roks-eic-pr123
+  ```
+
+See `roks/terraform/README.md` for details.
