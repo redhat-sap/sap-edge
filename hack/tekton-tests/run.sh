@@ -34,6 +34,11 @@ for f in ../../.tekton/pipelines/*.yaml ../../.tekton/*-run.yaml ../../.tekton-e
 done
 shopt -u nullglob
 
+if [ "${#FILES[@]}" -eq 0 ]; then
+  echo "Error: No pipeline or run files found" >&2
+  exit 1
+fi
+
 python3 -I check_pipeline.py \
   --cell-gate hcp-ossm3-dedicated-validation-pipeline:cellCount:2 \
   "${FILES[@]}"
