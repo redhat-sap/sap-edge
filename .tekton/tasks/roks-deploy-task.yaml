@@ -137,7 +137,9 @@ spec:
         set -euo pipefail
 
         # Never print secrets: the API key, the HMAC keys and the PostgreSQL
-        # password stay in the environment / terraform.tfvars (mode 600).
+        # password stay in the environment / terraform.tfvars (mode 600),
+        # never in argv (ibmcloud login and the IBM provider read
+        # IBMCLOUD_API_KEY, the s3 backend the HMAC keys).
         WORKSPACE_DIR="$(workspaces.source.path)"
         TF_DIR="${WORKSPACE_DIR}/roks/terraform"
         KUBECONFIG_OUT="${WORKSPACE_DIR}/kubeconfig"
@@ -250,7 +252,10 @@ spec:
 
         # --- IBM Cloud login and the identity that must own the infrastructure key ---
         echo "🔐 Logging in to IBM Cloud (region ${IBMCLOUD_REGION}, resource group ${IBMCLOUD_RESOURCE_GROUP})..."
-        ibmcloud login --apikey "${IBMCLOUD_API_KEY}" -r "${IBMCLOUD_REGION}" -g "${IBMCLOUD_RESOURCE_GROUP}"
+        # The CLI reads the API key from IBMCLOUD_API_KEY, so it is never in
+        # argv; no stdin, so that it fails instead of prompting.
+        ibmcloud login -r "${IBMCLOUD_REGION}" -g "${IBMCLOUD_RESOURCE_GROUP}" < /dev/null ||
+          fail "ibmcloud login failed (API key from Secret roksIbmcloudSecretName, key IBMCLOUD_API_KEY)"
 
         # Claims (not the token) of the session's IAM token
         jwt_claims() {
