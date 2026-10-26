@@ -90,6 +90,7 @@ export async function runElmInit({
   password,
   cwd,
   timeoutMs = 600000,
+  killGracePeriodMs = 5000,
   spawnImpl = spawn,
   platform = process.platform,
   log = console.log,
@@ -126,11 +127,17 @@ export async function runElmInit({
 log_user 1
 set timeout ${Math.ceil(timeoutMs / 1000)}
 spawn "${escapedElm}" init -c "${escapedCfg}"
-expect -re "(?i)password"
-send "${escapedPwd}\\r"
-expect eof
-lassign [wait] pid spawnid os_error_flag value
-exit $value
+expect {
+  -nocase -re "password" {
+    send "${escapedPwd}\\r"
+    expect eof
+    lassign [wait] pid spawnid os_error_flag value
+    exit $value
+  }
+  timeout {
+    exit 1
+  }
+}
 `;
 
       const child = spawnImpl(command, args, { env, cwd, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -207,14 +214,21 @@ exit $value
       let lineBuffer = '';
       let passwordSent = false;
       let timeoutHandle;
+      let killHandle;
+      let exitCode = null;
+      let exitSignal = null;
 
       const cleanup = () => {
         if (timeoutHandle) clearTimeout(timeoutHandle);
+        if (killHandle) clearTimeout(killHandle);
       };
 
       const fail = (error) => {
         cleanup();
-        child.kill();
+        child.kill('SIGTERM');
+        killHandle = setTimeout(() => {
+          child.kill('SIGKILL');
+        }, killGracePeriodMs);
         reject(error);
       };
 
@@ -250,11 +264,26 @@ exit $value
         child.stderr.on('data', onData);
       }
 
+      // Handle EPIPE errors when elm exits right after printing password prompt
+      if (child.stdin) {
+        child.stdin.on('error', (error) => {
+          // EPIPE is expected if elm exits immediately; only fail on other errors
+          if (error.code !== 'EPIPE') {
+            fail(new SetupError(`Failed to write to elm init: ${error.message}`));
+          }
+        });
+      }
+
       child.on('error', (error) => {
         fail(new SetupError(`Failed to run elm init: ${error.message}`));
       });
 
       child.on('exit', (code, signal) => {
+        exitCode = code;
+        exitSignal = signal;
+      });
+
+      child.on('close', () => {
         cleanup();
 
         // Log any remaining output
@@ -263,12 +292,12 @@ exit $value
           log(masked);
         }
 
-        if (code === 0) {
+        if (exitCode === 0) {
           resolve();
-        } else if (signal) {
-          reject(new SetupError(`elm init was killed with signal ${signal}`));
+        } else if (exitSignal) {
+          reject(new SetupError(`elm init was killed with signal ${exitSignal}`));
         } else {
-          reject(new SetupError(`elm init failed (exit ${code})`));
+          reject(new SetupError(`elm init failed (exit ${exitCode})`));
         }
       });
     });

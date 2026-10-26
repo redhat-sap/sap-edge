@@ -7,6 +7,8 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { Writable } from 'node:stream';
 import { promisify } from 'node:util';
 import { fetchElmCli, runElmInit } from './elm-cli.mjs';
 
@@ -311,4 +313,303 @@ exit 0
   } finally {
     await rm(folder, { recursive: true, force: true });
   }
+});
+
+// Linux-specific tests with fake spawnImpl
+function fakeChild() {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.stdin = new Writable({
+    write(chunk, encoding, callback) {
+      child.stdinWrites = child.stdinWrites || [];
+      child.stdinWrites.push(chunk.toString());
+      callback();
+    },
+  });
+  child.stdin.on = child.stdin.on.bind(child.stdin);
+  child.kill = (signal) => {
+    child.killSignals = child.killSignals || [];
+    child.killSignals.push(signal || 'SIGTERM');
+  };
+  return child;
+}
+
+test('linux_argv_with_quote_escaping', async () => {
+  const elmPath = "/tmp/test's/elm";
+  const contextFile = "/tmp/context.cfg";
+  let capturedArgs;
+
+  const spawnImpl = (command, args, opts) => {
+    assert.equal(command, 'script');
+    capturedArgs = args;
+    const child = fakeChild();
+    // Immediate success
+    setImmediate(() => {
+      child.emit('exit', 0, null);
+      child.emit('close');
+    });
+    return child;
+  };
+
+  await runElmInit({
+    elmPath,
+    contextFile,
+    password: 'test',
+    cwd: '/tmp',
+    platform: 'linux',
+    spawnImpl,
+    log: () => {},
+  });
+
+  assert.deepEqual(capturedArgs, [
+    '-q',
+    '-e',
+    '-c',
+    "'/tmp/test'\\''s/elm' init -c '/tmp/context.cfg'",
+    '/dev/null',
+  ]);
+});
+
+test('linux_child_env_exact_keys', async () => {
+  let capturedEnv;
+  const cwd = '/home/test';
+
+  const spawnImpl = (command, args, opts) => {
+    capturedEnv = opts.env;
+    const child = fakeChild();
+    setImmediate(() => {
+      child.emit('exit', 0, null);
+      child.emit('close');
+    });
+    return child;
+  };
+
+  await runElmInit({
+    elmPath: '/tmp/elm',
+    contextFile: '/tmp/context.cfg',
+    password: 'test',
+    cwd,
+    platform: 'linux',
+    spawnImpl,
+    log: () => {},
+  });
+
+  assert.deepEqual(Object.keys(capturedEnv).sort(), ['HOME', 'PATH', 'TERM']);
+  assert.equal(capturedEnv.HOME, cwd);
+  assert.equal(capturedEnv.TERM, 'dumb');
+  assert.equal(capturedEnv.PATH, process.env.PATH);
+});
+
+test('linux_prompt_split_across_chunks', async () => {
+  const password = 'test-password';
+
+  const spawnImpl = (command, args, opts) => {
+    const child = fakeChild();
+    setImmediate(() => {
+      child.stdout.emit('data', Buffer.from('Context Pass'));
+      child.stdout.emit('data', Buffer.from('word: '));
+      setTimeout(() => {
+        assert.equal(child.stdinWrites.length, 1);
+        assert.equal(child.stdinWrites[0], password + '\n');
+        child.emit('exit', 0, null);
+        child.emit('close');
+      }, 10);
+    });
+    return child;
+  };
+
+  await runElmInit({
+    elmPath: '/tmp/elm',
+    contextFile: '/tmp/context.cfg',
+    password,
+    cwd: '/tmp',
+    platform: 'linux',
+    spawnImpl,
+    log: () => {},
+  });
+});
+
+test('linux_password_masked_in_logs', async () => {
+  const password = 'secret123';
+  const logLines = [];
+
+  const spawnImpl = (command, args, opts) => {
+    const child = fakeChild();
+    setImmediate(() => {
+      child.stdout.emit('data', Buffer.from('Context Password: \n'));
+      child.stdout.emit('data', Buffer.from(`You entered: ${password}\n`));
+      child.stdout.emit('data', Buffer.from('Done\n'));
+      child.emit('exit', 0, null);
+      child.emit('close');
+    });
+    return child;
+  };
+
+  await runElmInit({
+    elmPath: '/tmp/elm',
+    contextFile: '/tmp/context.cfg',
+    password,
+    cwd: '/tmp',
+    platform: 'linux',
+    spawnImpl,
+    log: (line) => logLines.push(line),
+  });
+
+  const fullLog = logLines.join('\n');
+  assert.ok(!fullLog.includes(password), `Password should not appear in logs: ${fullLog}`);
+  assert.ok(fullLog.includes('***'), 'Password should be masked with ***');
+});
+
+test('linux_exit_code_3_rejection', async () => {
+  const spawnImpl = (command, args, opts) => {
+    const child = fakeChild();
+    setImmediate(() => {
+      child.stdout.emit('data', Buffer.from('Context Password: \n'));
+      child.stdout.emit('data', Buffer.from('Wrong password\n'));
+      child.emit('exit', 3, null);
+      child.emit('close');
+    });
+    return child;
+  };
+
+  await assert.rejects(
+    runElmInit({
+      elmPath: '/tmp/elm',
+      contextFile: '/tmp/context.cfg',
+      password: 'test',
+      cwd: '/tmp',
+      platform: 'linux',
+      spawnImpl,
+      log: () => {},
+    }),
+    (err) => {
+      assert.equal(err.name, 'SetupError');
+      assert.equal(err.message, 'elm init failed (exit 3)');
+      return true;
+    }
+  );
+});
+
+test('linux_timeout_kills_child', async () => {
+  const spawnImpl = (command, args, opts) => {
+    const child = fakeChild();
+    setImmediate(() => {
+      child.stdout.emit('data', Buffer.from('Context Password: \n'));
+      // Never emit exit/close to trigger timeout
+    });
+    return child;
+  };
+
+  await assert.rejects(
+    runElmInit({
+      elmPath: '/tmp/elm',
+      contextFile: '/tmp/context.cfg',
+      password: 'test',
+      cwd: '/tmp',
+      platform: 'linux',
+      spawnImpl,
+      timeoutMs: 100,
+      log: () => {},
+    }),
+    (err) => {
+      assert.equal(err.name, 'SetupError');
+      assert.equal(err.message, 'elm init timed out');
+      return true;
+    }
+  );
+});
+
+test('linux_stdin_epipe_ignored', async () => {
+  const spawnImpl = (command, args, opts) => {
+    const child = fakeChild();
+    setImmediate(() => {
+      child.stdout.emit('data', Buffer.from('Context Password: \n'));
+      // Trigger EPIPE after password is sent
+      setTimeout(() => {
+        const epipeError = new Error('write EPIPE');
+        epipeError.code = 'EPIPE';
+        child.stdin.emit('error', epipeError);
+        child.emit('exit', 0, null);
+        child.emit('close');
+      }, 10);
+    });
+    return child;
+  };
+
+  // Should not reject due to EPIPE
+  await runElmInit({
+    elmPath: '/tmp/elm',
+    contextFile: '/tmp/context.cfg',
+    password: 'test',
+    cwd: '/tmp',
+    platform: 'linux',
+    spawnImpl,
+    log: () => {},
+  });
+});
+
+test('linux_stdin_non_epipe_error_rejects', async () => {
+  const spawnImpl = (command, args, opts) => {
+    const child = fakeChild();
+    setImmediate(() => {
+      child.stdout.emit('data', Buffer.from('Context Password: \n'));
+      setTimeout(() => {
+        const otherError = new Error('other error');
+        otherError.code = 'EOTHER';
+        child.stdin.emit('error', otherError);
+      }, 10);
+    });
+    return child;
+  };
+
+  await assert.rejects(
+    runElmInit({
+      elmPath: '/tmp/elm',
+      contextFile: '/tmp/context.cfg',
+      password: 'test',
+      cwd: '/tmp',
+      platform: 'linux',
+      spawnImpl,
+      log: () => {},
+    }),
+    (err) => {
+      assert.equal(err.name, 'SetupError');
+      assert.ok(err.message.includes('Failed to write'));
+      return true;
+    }
+  );
+});
+
+test('linux_sigkill_after_grace_period', async () => {
+  const spawnImpl = (command, args, opts) => {
+    const child = fakeChild();
+    setImmediate(() => {
+      child.stdout.emit('data', Buffer.from('Context Password: \n'));
+      // Never emit close to simulate ignoring SIGTERM
+    });
+    return child;
+  };
+
+  await assert.rejects(
+    runElmInit({
+      elmPath: '/tmp/elm',
+      contextFile: '/tmp/context.cfg',
+      password: 'test',
+      cwd: '/tmp',
+      platform: 'linux',
+      spawnImpl,
+      timeoutMs: 50,
+      killGracePeriodMs: 30,
+      log: () => {},
+    }),
+    (err) => {
+      assert.equal(err.name, 'SetupError');
+      assert.equal(err.message, 'elm init timed out');
+      return true;
+    }
+  );
+
+  // Wait a bit to let the kill signals be recorded
+  await new Promise((resolve) => setTimeout(resolve, 50));
 });
