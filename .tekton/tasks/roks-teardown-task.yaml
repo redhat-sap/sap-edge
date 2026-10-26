@@ -114,6 +114,8 @@ spec:
         GENERATED_KUBECONFIG_SECRET_NAME="edgelm-kubeconfig-generated-${CLUSTER_NAME}"
         CREDS_SECRET_NAME="eic-credentials-roks-${CLUSTER_NAME}"
         REGISTRY_SECRET_NAME="eic-registry-roks-${CLUSTER_NAME}"
+        # Per-run browser access Role and RoleBinding
+        BROWSER_ROLE_NAME="roks-sap-browser-${CLUSTER_NAME}"
         TF_INIT_RETRY_DELAY="${TF_INIT_RETRY_DELAY:-30}"
         TF_DESTROY_RETRY_DELAY="${TF_DESTROY_RETRY_DELAY:-60}"
         SWEEP_WAIT_SECONDS="${SWEEP_WAIT_SECONDS:-900}"
@@ -543,6 +545,17 @@ spec:
         else
           add_remaining "Secret ${GENERATED_KUBECONFIG_SECRET_NAME} on the pipeline cluster (oc delete failed)"
         fi
+        # roks-sap-browser-access creates the Role and RoleBinding on the pipeline cluster
+        if oc delete role "${BROWSER_ROLE_NAME}" --ignore-not-found=true; then
+          echo "✅ Role ${BROWSER_ROLE_NAME} deleted (pipeline cluster)"
+        else
+          add_remaining "Role ${BROWSER_ROLE_NAME} on the pipeline cluster (oc delete failed)"
+        fi
+        if oc delete rolebinding "${BROWSER_ROLE_NAME}" --ignore-not-found=true; then
+          echo "✅ RoleBinding ${BROWSER_ROLE_NAME} deleted (pipeline cluster)"
+        else
+          add_remaining "RoleBinding ${BROWSER_ROLE_NAME} on the pipeline cluster (oc delete failed)"
+        fi
         # roks-validate-and-get-access / roks-registry-access write them on the hub if set
         if [[ "${HUB_UNREADABLE}" == "true" ]]; then
           add_remaining "Secrets ${CREDS_SECRET_NAME} and ${REGISTRY_SECRET_NAME} on the hub cluster (kubeconfig Secret ${HUB_KUBECONFIG_SECRET} unreadable)"
@@ -567,7 +580,7 @@ spec:
           else
             echo "  Leftover sweep:    nothing left of cluster ${CLUSTER_ID} in ${DEDICATED_RESOURCE_GROUP}"
           fi
-          echo "  Pipeline artifacts: ${CONFIGMAP_NAME} and ${GENERATED_KUBECONFIG_SECRET_NAME} (pipeline cluster), ${CREDS_SECRET_NAME} and ${REGISTRY_SECRET_NAME} (${SECRETS_WHERE}) deleted"
+          echo "  Pipeline artifacts: ${CONFIGMAP_NAME}, ${GENERATED_KUBECONFIG_SECRET_NAME} (pipeline cluster), ${BROWSER_ROLE_NAME} Role and RoleBinding (pipeline cluster), ${CREDS_SECRET_NAME} and ${REGISTRY_SECRET_NAME} (${SECRETS_WHERE}) deleted"
           echo "=============================================="
         else
           echo "❌ Teardown of ${CLUSTER_NAME} incomplete; still present:"

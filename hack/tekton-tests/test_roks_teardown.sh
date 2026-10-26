@@ -807,6 +807,17 @@ for NAME in "Redhat_ROKS" "roks-eic-pr7" "redhat-roks-eic-pr7-0123456789x" "redh
 done
 echo "✅ PASS: invalid_cluster_name_fails"
 
+# Test case: teardown_deletes_browser_role
+echo ""
+echo "Test: teardown_deletes_browser_role"
+echo "--------------------------------------------"
+setup
+run_teardown
+expect_success
+assert_called "^delete role roks-sap-browser-${CLUSTER} --ignore-not-found=true$"
+assert_called "^delete rolebinding roks-sap-browser-${CLUSTER} --ignore-not-found=true$"
+echo "✅ PASS: teardown_deletes_browser_role"
+
 echo ""
 echo "============================================"
 echo "✅ All roks-teardown tests passed"

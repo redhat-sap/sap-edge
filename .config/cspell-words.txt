@@ -228,3 +228,5 @@ ibmclouddb
 multitenant
 iamapikey
 ibmc
+serviceaccounts
+subjectaccessreviews
