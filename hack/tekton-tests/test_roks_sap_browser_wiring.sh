@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2026 SAP edge team
 # SPDX-FileContributor: Manjun Jiao (@mjiao)
 # SPDX-License-Identifier: Apache-2.0
-# cspell:words benv findall noqa PWDEBUG repr rstrip splitlines
+# cspell:words benv findall isfile noqa PWDEBUG repr rstrip splitlines
 
 set -euo pipefail
 
@@ -121,7 +121,8 @@ expected_values = {
     "SAP_BROWSER_ACCESS": "route",
     "SAP_BROWSER_ENTRY": "roks-pipeline.mjs",
     "SAP_BROWSER_SOURCE_BOUND": "$(workspaces.source.bound)",
-    "SAP_BROWSER_SOURCE": "$(workspaces.source.path)/hack/sap-browser",
+    # The pipeline binds the workspace with subPath hack/sap-browser
+    "SAP_BROWSER_SOURCE": "$(workspaces.source.path)",
     "SAP_BROWSER_MODE": "$(params.mode)",
     "SAP_BROWSER_PHASE": "$(params.phase)",
     "SAP_ELM_URL": "$(params.elmUrl)",
@@ -311,15 +312,18 @@ echo "✅ PASS: oauth_proxy_sidecar"
 echo ""
 echo "Test: pipeline_wiring"
 echo "--------------------------------------------"
-python3 -I - "${PIPELINE}" <<'PY'
+python3 -I - "${PIPELINE}" ../.. <<'PY'
+import os
 import sys
 import yaml
 
 with open(sys.argv[1], encoding="utf-8") as f:
     pipeline = yaml.safe_load(f)
+repo = sys.argv[2]
 spec = pipeline["spec"]
 params = {p["name"]: p for p in spec["params"]}
 tasks = {t["name"]: t for t in spec["tasks"]}
+finally_tasks = {t["name"]: t for t in spec.get("finally", [])}
 errors = []
 MISSING = object()
 
@@ -346,7 +350,14 @@ mode_description = params.get("sapBrowserMode", {}).get("description", "")
 for word in ("disabled", "inspect", "auto"):
     check(word in mode_description, f"sapBrowserMode description must name {word}")
 
-when_disabled = [{"input": "$(params.sapBrowserMode)", "operator": "notin", "values": ["disabled"]}]
+# Both must hold: a mode other than disabled and an image (a pod without an
+# image would fail the run)
+when_enabled = [
+    {"input": "$(params.sapBrowserMode)", "operator": "notin", "values": ["disabled"]},
+    {"input": "$(params.sapBrowserImage)", "operator": "notin", "values": [""]},
+]
+full_workspace = [{"name": "source", "workspace": "source"}]
+helper_code_only = [{"name": "source", "workspace": "source", "subPath": "hack/sap-browser"}]
 browser_params = {
     "mode": "$(params.sapBrowserMode)",
     "runnerImage": "$(params.sapBrowserImage)",
@@ -366,17 +377,21 @@ expected = {
         "taskRef": "roks-sap-browser-access",
         "runAfter": {"validate-and-get-access"},
         "params": {"clusterName": "$(params.clusterName)"},
+        # needs the ROKS kubeconfig at the workspace root
+        "workspaces": full_workspace,
     },
     "sap-browser-deploy": {
         "taskRef": "roks-sap-browser",
         "runAfter": {"sap-browser-access", "registry-access"},
         "params": {**browser_params, "phase": "deploy",
                    "clusterEdgeNodeId": "$(tasks.sap-browser-access.results.clusterEdgeNodeId)"},
+        "workspaces": helper_code_only,
     },
     "sap-browser-teardown": {
         "taskRef": "roks-sap-browser",
         "runAfter": {"approval-teardown"},
         "params": {**browser_params, "phase": "teardown"},
+        "workspaces": helper_code_only,
     },
 }
 for name, want in expected.items():
@@ -385,19 +400,42 @@ for name, want in expected.items():
     if task is None:
         continue
     check(task.get("taskRef") == {"name": want["taskRef"]}, f"{name}: taskRef should be {want['taskRef']}, got {task.get('taskRef')}")
-    check(task.get("when") == when_disabled, f"{name}: when must be exactly sapBrowserMode notin [disabled], got {task.get('when')}")
+    check(task.get("when") == when_enabled, f"{name}: when must be exactly sapBrowserMode notin [disabled] and sapBrowserImage notin [\"\"], got {task.get('when')}")
     check(set(task.get("runAfter", [])) == want["runAfter"], f"{name}: runAfter should be {sorted(want['runAfter'])}, got {task.get('runAfter')}")
     got_params = {p["name"]: p["value"] for p in task.get("params", [])}
     check(got_params == want["params"], f"{name}: params differ:\n  got      {got_params}\n  expected {want['params']}")
-    check(task.get("workspaces") == [{"name": "source", "workspace": "source"}],
-          f"{name}: must bind workspace source to the pipeline's source, got {task.get('workspaces')}")
+    check(task.get("workspaces") == want["workspaces"],
+          f"{name}: workspaces should be {want['workspaces']}, got {task.get('workspaces')}")
     check("retries" not in task, f"{name}: no retries (a rerun could repeat SAP actions)")
     check("timeout" not in task, f"{name}: no task timeout (a timed-out task fails the run; the session has its own limit)")
 
 check(set(tasks["approval-elm-eic-iflow-deployed"].get("runAfter", [])) == {"configure-mesh-eic", "registry-access", "sap-browser-deploy"},
       f"approval-elm-eic-iflow-deployed runAfter should be [configure-mesh-eic, registry-access, sap-browser-deploy], got {tasks['approval-elm-eic-iflow-deployed'].get('runAfter')}")
-check(set(tasks["teardown-roks"].get("runAfter", [])) == {"approval-teardown", "sap-browser-teardown"},
-      f"teardown-roks runAfter should be [approval-teardown, sap-browser-teardown], got {tasks['teardown-roks'].get('runAfter')}")
+
+# teardown-roks is a finally task (runs after sap-browser-teardown whatever its
+# result), gated on the teardown approval only
+check("teardown-roks" not in tasks, "teardown-roks must not be in tasks")
+teardown = finally_tasks.get("teardown-roks")
+check(teardown is not None, "teardown-roks must be in finally")
+if teardown is not None:
+    check(teardown.get("when") == [{"input": "$(tasks.approval-teardown.status)", "operator": "in", "values": ["Succeeded"]}],
+          f"teardown-roks: when must be exactly $(tasks.approval-teardown.status) in [Succeeded], got {teardown.get('when')}")
+    check("runAfter" not in teardown, "teardown-roks: finally tasks take no runAfter")
+    check(teardown.get("taskRef") == {"name": "roks-teardown"}, f"teardown-roks: taskRef should be roks-teardown, got {teardown.get('taskRef')}")
+    check(teardown.get("workspaces") == full_workspace, f"teardown-roks: needs the full workspace, got {teardown.get('workspaces')}")
+check(set(finally_tasks) == {"teardown-roks"}, f"finally should hold only teardown-roks, got {sorted(finally_tasks)}")
+
+# With subPath hack/sap-browser the helper code sits at the workspace root,
+# where entrypoint.sh copies it from (SAP_BROWSER_SOURCE) and runs the entry.
+helper_dir = os.path.join(repo, "hack", "sap-browser")
+for name in ("roks-pipeline.mjs", "entrypoint.sh", "control.mjs"):
+    check(os.path.isfile(os.path.join(helper_dir, name)), f"hack/sap-browser/{name} missing")
+with open(os.path.join(helper_dir, "entrypoint.sh"), encoding="utf-8") as f:
+    entrypoint = f.read()
+for needle in ('helper_source="$SAP_BROWSER_SOURCE"',
+               'tar --exclude=node_modules -C "$helper_source" -cf - .',
+               'node "$SAP_BROWSER_SESSION_DIR/code/$entry"'):
+    check(needle in entrypoint, f"entrypoint.sh no longer contains {needle!r}")
 
 for name, task in tasks.items():
     if task.get("taskRef", {}).get("kind") == "ApprovalTask":
@@ -453,6 +491,10 @@ if params.get("sapBrowserMode") != "disabled":
     errors.append(f"sapBrowserMode should be \"disabled\", got {params.get('sapBrowserMode')!r}")
 if "taskRunSpecs" in run["spec"]:
     errors.append("taskRunSpecs must stay commented out while the browser is disabled")
+# teardown-roks runs in finally: 3 destroy attempts of up to 2h plus the sweep
+want_timeouts = {"pipeline": "336h", "tasks": "324h", "finally": "12h"}
+if run["spec"].get("timeouts") != want_timeouts:
+    errors.append(f"timeouts should be {want_timeouts}, got {run['spec'].get('timeouts')}")
 
 lines = text.splitlines()
 for name in ("sapBrowserImage", "sapElmUrl"):

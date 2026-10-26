@@ -565,6 +565,8 @@ With `sapBrowserMode` other than `disabled`, the run starts a Chromium browser i
 2. `oc -n <pipeline namespace> apply -f hack/sap-browser/roks-runner-rbac.yaml`: the ServiceAccount `roks-sap-browser-runner` (reads PipelineRuns/TaskRuns, creates and deletes its Route and Service, gets no Secrets namespace-wide) and the right of the `pipeline` ServiceAccount to create the per-run Role `roks-sap-browser-<cluster>`. That Role grants `get` on this run's three Secrets only, so the `pipeline` ServiceAccount must hold `get` on them itself. If the OAuth proxy logs 403 on `subjectaccessreviews`, bind `system:auth-delegator` to the runner (command in the file).
 3. Download the Linux x86_64 `elm` CLI from the SAP Software Download Center and upload it (the binary, a `.zip` or a `.tar.gz`; not a `.SAR`) to `tools/elm/` in the OBC bucket. The browser takes the newest file there. Upload a new one when ELM needs a newer CLI.
 
+Failures before the browser starts (a wrong or unreachable image, or no ServiceAccount because `roks-runner-rbac.yaml` was not applied) fail the browser task's pod and stop the run, unlike failures inside the browser. Try `sapBrowserMode: inspect` first; a rerun reuses the cluster.
+
 **Enable it** in the run file: set `sapBrowserMode` to `inspect` or `auto`, uncomment `sapBrowserImage` (your image) and `sapElmUrl` (the direct ELM URL), and uncomment `taskRunSpecs` (the browser tasks must run as `roks-sap-browser-runner`). `sapBrowserSessionMinutes` (default 180, at most 240) limits each browser session including login, pipeline waits and the hand-over; `sapBrowserLoginMinutes` (default 30) limits the login. The browser does not support a hub cluster: with `hubKubeconfigSecretName` set it stops at once (outcome `skipped-hub`).
 
 **What you do:**
@@ -581,7 +583,7 @@ The approvals stay as they are; iFlows are still deployed by hand.
 
 **`auto` is not complete yet:** the ELM screens are not mapped, so `auto` hands over to you right after the login. Use `inspect` to record them: after the login Playwright Inspector opens in the browser; record the walkthrough (Add Edge Node, Prerequisites with the ELM zip, Embedded Cloud Connector, Configuration and EIC deployment, the EIC zip, and at teardown the Edge Node deletion), copy the generated code, then resume Inspector. Recordings can contain entered credentials; keep them private. In `inspect` mode nothing is uploaded: files downloaded in the task's browser stay in the pod, so download the zips again in your own browser and upload them to the folders.
 
-**Failed or rejected runs** leave the cluster for debugging (billable). Clean up with:
+**Failed or rejected runs** leave the cluster for debugging (billable): `teardown-roks` is a `finally` task that runs only after `approval-teardown` is approved (then also when `sap-browser-teardown` failed). Clean up with:
 
 ```bash
 make roks-destroy CLUSTER=redhat-roks-eic-pr123

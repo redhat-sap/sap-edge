@@ -54,9 +54,11 @@
 #    hack/sap-browser/roks-runner-rbac.yaml and upload the Linux elm CLI to
 #    tools/elm/ in the OBC bucket (.tekton/README.md, Browser automation).
 #
-# A failed or rejected run leaves the cluster and its IBM Cloud resources in
-# place for debugging (they are billable): destroy them from the Terraform
-# state with  make roks-destroy CLUSTER=<clusterName>  (roks.makefile).
+# teardown-roks runs (as a finally task) only after approval-teardown is
+# approved. A run that fails before, or whose teardown approval is rejected,
+# leaves the cluster and its IBM Cloud resources in place for debugging (they
+# are billable): destroy them from the Terraform state with
+# make roks-destroy CLUSTER=<clusterName>  (roks.makefile).
 #
 # Pipelines-as-Code fills in {{ pull_request_number }}, {{ repo_url }} and
 # {{ revision }}: to run it, copy this file into .tekton/ on a pull request
@@ -92,8 +94,8 @@ spec:
   #     serviceAccountName: roks-sap-browser-runner
   timeouts:
     pipeline: "336h"      # Total pipeline timeout (14 days)
-    tasks: "335h"         # Individual task timeout (tasks + finally must be <= pipeline); well above Terraform's 3h create / 2h delete
-    finally: "60m"        # Finally tasks timeout
+    tasks: "324h"         # All tasks except finally (tasks + finally must be <= pipeline); well above Terraform's 3h create
+    finally: "12h"        # teardown-roks (finally): 3 destroy attempts of up to 2h each plus the sweep
   params:
     - name: repoUrl
       value: "{{ repo_url }}"

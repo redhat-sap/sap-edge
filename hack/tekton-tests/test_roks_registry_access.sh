@@ -256,7 +256,8 @@ if params.get("roksCredentialsSecretName") != "roks-ci-credentials":
 for old in ("roksIbmcloudSecretName", "terraformStateSecretName", "postgresAdminPasswordSecretName"):
     if old in params:
         errors.append(f"pipeline param {old} should be gone")
-tasks = {t["name"]: {p["name"]: p.get("value") for p in t.get("params", [])} for t in pipeline["spec"]["tasks"]}
+tasks = {t["name"]: {p["name"]: p.get("value") for p in t.get("params", [])}
+         for t in pipeline["spec"]["tasks"] + pipeline["spec"].get("finally", [])}
 expected = {
     "deploy-roks": "roksCredentialsSecretName",
     "registry-access": "roksCredentialsSecretName",
@@ -294,7 +295,8 @@ if "hubClusterName" in params:
     errors.append("pipeline param hubClusterName should be gone")
 if params.get("hubKubeconfigSecretName", {}).get("default", None) != "":
     errors.append(f"hubKubeconfigSecretName should default to \"\", got {params.get('hubKubeconfigSecretName')}")
-tasks = {t["name"]: {p["name"]: p.get("value") for p in t.get("params", [])} for t in pipeline["spec"]["tasks"]}
+tasks = {t["name"]: {p["name"]: p.get("value") for p in t.get("params", [])}
+         for t in pipeline["spec"]["tasks"] + pipeline["spec"].get("finally", [])}
 for task in ("validate-and-get-access", "registry-access", "teardown-roks"):
     value = tasks.get(task, {}).get("hubKubeconfigSecretName")
     if value != "$(params.hubKubeconfigSecretName)":
