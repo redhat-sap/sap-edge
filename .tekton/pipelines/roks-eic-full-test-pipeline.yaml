@@ -10,9 +10,15 @@ metadata:
   annotations:
     description: "Complete SAP Edge Integration Cell validation pipeline for ROKS (Red Hat OpenShift on IBM Cloud, VPC): deploys a ROKS cluster with Terraform in the resource group redhat-sap-edge-roks-ci (IBM Cloud Container Registry namespace for ELM, IBM Cloud Databases for PostgreSQL and Redis), pauses for the restricted-resources upload to the run's own S3 folders, sets up OSSM3 restricted access, optionally drives the ELM steps with a Playwright browser behind a Route (sapBrowserMode), pauses for ELM registration and EIC deployment, runs two rounds of endpoint tests, and tears down the infrastructure"
 spec:
-  # Failure policy (as ROSA/ARO/HCP): no finally teardown. A failed or rejected
-  # run leaves the cluster for debugging; destroy it from the Terraform state
-  # with: make roks-destroy CLUSTER=<clusterName>
+  # Failure policy (as ROSA/ARO/HCP): a run that fails before the teardown
+  # approval, or whose teardown approval is rejected, leaves the cluster for
+  # debugging; destroy it from the Terraform state with:
+  # make roks-destroy CLUSTER=<clusterName>
+  # teardown-roks is a finally task so that it also runs when the optional
+  # browser teardown session (sap-browser-teardown) fails, even at pod level.
+  # Its `when` lets it run only after approval-teardown succeeded: never when
+  # the run failed earlier or the teardown approval was rejected or not
+  # reached.
   #
   # ApprovalTasks ignore `when` on this cluster, so no gate carries one (and
   # ROSA's switch for skipping the whole EIC validation, which relies on it,
@@ -238,7 +244,8 @@ spec:
     # =============================================
     # SAP browser automation (optional, sapBrowserMode)
     # =============================================
-    # Skipped tasks (sapBrowserMode disabled) do not block the tasks that
+    # Skipped tasks (sapBrowserMode disabled, or no sapBrowserImage: a pod
+    # without an image would fail the run) do not block the tasks that
     # runAfter them. The browser tasks always succeed and report their
     # outcome in a result, so the manual path and teardown-roks continue after
     # any browser failure. No retries: a rerun could repeat SAP actions. No
@@ -253,6 +260,9 @@ spec:
         - input: $(params.sapBrowserMode)
           operator: notin
           values: [disabled]
+        - input: $(params.sapBrowserImage)
+          operator: notin
+          values: [""]
       taskRef: { name: roks-sap-browser-access }
       params:
         - name: clusterName
@@ -270,6 +280,9 @@ spec:
         - input: $(params.sapBrowserMode)
           operator: notin
           values: [disabled]
+        - input: $(params.sapBrowserImage)
+          operator: notin
+          values: [""]
       taskRef: { name: roks-sap-browser }
       params:
         - name: mode
@@ -300,9 +313,12 @@ spec:
           value: $(params.sapBrowserSessionMinutes)
         - name: loginMinutes
           value: $(params.sapBrowserLoginMinutes)
+      # Only the helper code: the rest of the workspace (e.g. the cluster-admin
+      # kubeconfig) stays out of the pod with the shared browser
       workspaces:
         - name: source
           workspace: source
+          subPath: hack/sap-browser
 
     # =============================================
     # OSSM3 Restricted-Access Setup
@@ -884,13 +900,17 @@ spec:
           value: '336h'
 
     # Optional teardown session after approval (second login): delete the
-    # Edge Node in ELM. Its outcome does not matter to teardown-roks.
+    # Edge Node in ELM. teardown-roks (finally) runs after it whatever its
+    # outcome.
     - name: sap-browser-teardown
       runAfter: [approval-teardown]
       when:
         - input: $(params.sapBrowserMode)
           operator: notin
           values: [disabled]
+        - input: $(params.sapBrowserImage)
+          operator: notin
+          values: [""]
       taskRef: { name: roks-sap-browser }
       params:
         - name: mode
@@ -919,13 +939,23 @@ spec:
           value: $(params.sapBrowserSessionMinutes)
         - name: loginMinutes
           value: $(params.sapBrowserLoginMinutes)
+      # Only the helper code: the rest of the workspace (e.g. the cluster-admin
+      # kubeconfig) stays out of the pod with the shared browser
       workspaces:
         - name: source
           workspace: source
+          subPath: hack/sap-browser
 
-    # Teardown after approval (and after the optional browser teardown session)
+  finally:
+    # Teardown after the teardown approval, and after the optional browser
+    # teardown session whatever its result (finally runs once every task is
+    # done). Skipped when approval-teardown did not succeed (rejected, or not
+    # reached because the run failed earlier).
     - name: teardown-roks
-      runAfter: [approval-teardown, sap-browser-teardown]
+      when:
+        - input: "$(tasks.approval-teardown.status)"
+          operator: in
+          values: ["Succeeded"]
       taskRef: { name: roks-teardown }
       params:
         - name: clusterName

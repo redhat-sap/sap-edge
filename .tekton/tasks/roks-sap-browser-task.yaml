@@ -72,6 +72,9 @@ spec:
         handed-over, skipped-hub or failed
   workspaces:
     - name: source
+      description: >-
+        The checkout's hack/sap-browser folder (bind with subPath:
+        hack/sap-browser), so no other workspace file reaches the pod
       readOnly: true
       optional: true
   volumes:
@@ -156,7 +159,7 @@ spec:
         - name: SAP_BROWSER_SOURCE_BOUND
           value: $(workspaces.source.bound)
         - name: SAP_BROWSER_SOURCE
-          value: $(workspaces.source.path)/hack/sap-browser
+          value: $(workspaces.source.path)
         - name: SAP_BROWSER_MODE
           value: $(params.mode)
         - name: SAP_BROWSER_PHASE
