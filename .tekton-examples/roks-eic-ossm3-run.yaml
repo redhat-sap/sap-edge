@@ -39,15 +39,20 @@
 #    sap-eic-restricted-cluster-config-resources, the EIC auth Secret and the
 #    Jira Secret. The zips are not uploaded in advance: the run creates
 #    restricted-resources/<clusterName>/elm/ and .../edge-icell/ in the OBC
-#    bucket (archiving earlier zips) and waits at two gates. Upload the ELM
-#    zip to elm/ first; once applied, register the Edge Node and deploy EIC,
-#    then upload the EIC zip to edge-icell/. Each run needs fresh uploads.
+#    bucket (archiving earlier zips) and waits for the zips in two steps
+#    (wait-elm-zip, wait-eic-zip). Upload the ELM zip to elm/ first; once
+#    applied, register the Edge Node and deploy EIC, then upload the EIC zip
+#    to edge-icell/. Each run needs fresh uploads.
 #    No hub cluster is needed: the Secrets eic-credentials-roks-<cluster>
 #    and eic-registry-roks-<cluster> go to the pipeline namespace unless
 #    hubKubeconfigSecretName is set (see below).
 # 4. Add 172.17.0.0/18 (ROKS pod network) and 10.0.0.0/16 (VPC) to the IP
 #    filter allowlist of the httpbinipfilter iFlow (otherwise
 #    test-httpbinipfilter fails).
+# 5. Only for the optional browser automation (sapBrowserMode below): build
+#    and push the runner image (hack/sap-browser/PIPELINE.md), apply
+#    hack/sap-browser/roks-runner-rbac.yaml and upload the Linux elm CLI to
+#    tools/elm/ in the OBC bucket (.tekton/README.md, Browser automation).
 #
 # A failed or rejected run leaves the cluster and its IBM Cloud resources in
 # place for debugging (they are billable): destroy them from the Terraform
@@ -78,6 +83,13 @@ metadata:
 spec:
   pipelineRef:
     name: roks-eic-full-test-pipeline
+  # When enabling sapBrowserMode, uncomment (the browser tasks run as the
+  # ServiceAccount from hack/sap-browser/roks-runner-rbac.yaml):
+  # taskRunSpecs:
+  #   - pipelineTaskName: sap-browser-deploy
+  #     serviceAccountName: roks-sap-browser-runner
+  #   - pipelineTaskName: sap-browser-teardown
+  #     serviceAccountName: roks-sap-browser-runner
   timeouts:
     pipeline: "336h"      # Total pipeline timeout (14 days)
     tasks: "335h"         # Individual task timeout (tasks + finally must be <= pipeline); well above Terraform's 3h create / 2h delete
@@ -137,6 +149,18 @@ spec:
       value: "stable-3.3"
     - name: obcName
       value: "sap-eic-restricted-cluster-config-resources"
+    # --- SAP browser automation (optional; setup step 5) ---
+    # "disabled": everything by hand. To enable it, set "inspect" (log in, then
+    # record the ELM screens with Playwright Inspector) or "auto", and
+    # uncomment the image and the ELM URL (next lines) and taskRunSpecs (top
+    # of spec). Until the ELM screens are mapped, "auto" hands over to you
+    # right after the login.
+    # - name: sapBrowserImage
+    #   value: "YOUR_REGISTRY/YOUR_PROJECT/sap-browser:dev-1"
+    # - name: sapElmUrl
+    #   value: "https://YOUR-TENANT/comsapclmedgelm.comsapclmedgelm/index.html"
+    - name: sapBrowserMode
+      value: "disabled"
   workspaces:
     - name: source
       volumeClaimTemplate:

@@ -148,12 +148,13 @@ if mesh_eic:
     check(run_after_set(mesh_eic) == {"prepare-namespaces-eic"},
           f"ROKS: configure-mesh-eic runAfter must be [prepare-namespaces-eic], got {run_after_set(mesh_eic)}")
 
-# approval-elm-eic-iflow-deployed depends on configure-mesh-eic and registry-access
+# approval-elm-eic-iflow-deployed depends on configure-mesh-eic, registry-access
+# and the optional browser deploy session
 approval = tasks.get("approval-elm-eic-iflow-deployed")
 check(approval is not None, "ROKS: approval-elm-eic-iflow-deployed must exist")
 if approval:
-    check(run_after_set(approval) == {"configure-mesh-eic", "registry-access"},
-          f"ROKS: approval-elm-eic-iflow-deployed runAfter must be [configure-mesh-eic, registry-access], got {run_after_set(approval)}")
+    check(run_after_set(approval) == {"configure-mesh-eic", "registry-access", "sap-browser-deploy"},
+          f"ROKS: approval-elm-eic-iflow-deployed runAfter must be [configure-mesh-eic, registry-access, sap-browser-deploy], got {run_after_set(approval)}")
     description = task_param(approval, "description")
     check(description and "registration and EIC deployment" in description,
           "ROKS: approval-elm-eic-iflow-deployed description must mention registration and EIC deployment")

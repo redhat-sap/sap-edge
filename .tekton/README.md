@@ -64,6 +64,8 @@ CI/CD pipelines for deploying and testing SAP Edge Integration Cell on ARO, ROSA
 - `roks-validate-and-get-access-task`: Validate cluster access, switch the workspace to a ServiceAccount token kubeconfig and store it with the database connection data in the Secret `eic-credentials-roks-<cluster>` (on the hub cluster when `hubKubeconfigSecretName` is set)
 - `roks-validate-and-create-configmap-task`: Find EIC host and ingress address for tests
 - `roks-registry-access-task`: Store the ICR access for ELM (server, namespace, user, API key from the Terraform state) in the Secret `eic-registry-roks-<cluster>` (on the hub cluster when `hubKubeconfigSecretName` is set), and the Redis password in `eic-credentials-roks-<cluster>`
+- `roks-sap-browser-access-task`: Optional browser automation: let the runner ServiceAccount read this run's three Secrets (per-run Role) and read the cluster's Edge Node ID label
+- `roks-sap-browser-task`: Optional browser automation: Playwright browser for the ELM steps (deploy or teardown phase) behind a per-run Route with the OpenShift OAuth proxy; always succeeds and reports its result `outcome`
 - `roks-teardown-task`: Destroy infrastructure and clean up artifacts
 
 ### HCP Tasks
@@ -551,7 +553,33 @@ tkn pipelinerun logs -f <pipelinerun-name>
 
 Cluster name: `redhat-roks-eic-pr<N>` (starts with `redhat-`, at most 30 characters).
 
-**Restricted-resources upload:** right after the run starts it creates the folders `restricted-resources/<clusterName>/elm/` and `restricted-resources/<clusterName>/edge-icell/` in the OBC bucket (archiving earlier zips of each component) and waits at two gates. Upload the ELM zip to `elm/` first (new-format bundle with `apply-restricted-resources.sh`; `wait-elm-zip` shows the path and `aws s3 cp` command); once `apply-rbac-elm` applies it, register the Edge Node with the generated restricted kubeconfig and deploy EIC, then upload the EIC zip to `edge-icell/`. Each task reads only its own component folder under `restricted-resources/<clusterName>/`, never zips directly under `restricted-resources/`. The folders are named after the cluster (unique per run), and each run needs fresh uploads (earlier zips are archived).
+**Restricted-resources upload:** right after the run starts it creates the folders `restricted-resources/<clusterName>/elm/` and `restricted-resources/<clusterName>/edge-icell/` in the OBC bucket (archiving earlier zips of each component) and waits for the zips in two steps, `wait-elm-zip` and `wait-eic-zip` (tasks, not approvals). Upload the ELM zip to `elm/` first (new-format bundle with `apply-restricted-resources.sh`; `wait-elm-zip` shows the path and `aws s3 cp` command); once `apply-rbac-elm` applies it, register the Edge Node with the generated restricted kubeconfig and deploy EIC, then upload the EIC zip to `edge-icell/`. Each task reads only its own component folder under `restricted-resources/<clusterName>/`, never zips directly under `restricted-resources/`. The folders are named after the cluster (unique per run), and each run needs fresh uploads (earlier zips are archived).
+
+#### Browser automation (optional)
+
+With `sapBrowserMode` other than `disabled`, the run starts a Chromium browser in a task pod for the SAP ELM steps (Edge Node, zips, Embedded Cloud Connector, EIC deployment, and the Edge Node deletion at teardown). You reach it through a per-run Route protected by the OpenShift OAuth proxy: only users allowed to create `pods/portforward` in the pipeline namespace get in. Default `disabled`: the browser tasks are skipped and everything is done by hand as described above.
+
+**One-time setup** (pipeline namespace):
+
+1. Build and push the runner image as described in [`hack/sap-browser/PIPELINE.md`](../hack/sap-browser/PIPELINE.md#build-and-install-once) (the HCP steps after the push are not needed for ROKS).
+2. `oc -n <pipeline namespace> apply -f hack/sap-browser/roks-runner-rbac.yaml`: the ServiceAccount `roks-sap-browser-runner` (reads PipelineRuns/TaskRuns, creates and deletes its Route and Service, gets no Secrets namespace-wide) and the right of the `pipeline` ServiceAccount to create the per-run Role `roks-sap-browser-<cluster>`. That Role grants `get` on this run's three Secrets only, so the `pipeline` ServiceAccount must hold `get` on them itself. If the OAuth proxy logs 403 on `subjectaccessreviews`, bind `system:auth-delegator` to the runner (command in the file).
+3. Download the Linux x86_64 `elm` CLI from the SAP Software Download Center and upload it (the binary, a `.zip` or a `.tar.gz`; not a `.SAR`) to `tools/elm/` in the OBC bucket. The browser takes the newest file there. Upload a new one when ELM needs a newer CLI.
+
+**Enable it** in the run file: set `sapBrowserMode` to `inspect` or `auto`, uncomment `sapBrowserImage` (your image) and `sapElmUrl` (the direct ELM URL), and uncomment `taskRunSpecs` (the browser tasks must run as `roks-sap-browser-runner`). `sapBrowserSessionMinutes` (default 180, at most 240) limits each browser session including login, pipeline waits and the hand-over; `sapBrowserLoginMinutes` (default 30) limits the login. The browser does not support a hub cluster: with `hubKubeconfigSecretName` set it stops at once (outcome `skipped-hub`).
+
+**What you do:**
+
+1. After `registry-access`, open the `sap-browser-deploy` log (`tkn pipelinerun logs -f <pipelinerun> -t sap-browser-deploy`) and open the Route link it prints.
+2. Log in to OpenShift, then log in to SAP in the browser shown. Playwright continues in that session.
+3. After approving `approval-teardown`, do the same with the `sap-browser-teardown` log: a second login, then the Edge Node is deleted. `teardown-roks` runs after it whatever its outcome.
+
+The approvals stay as they are; iFlows are still deployed by hand.
+
+**Outcomes** (result `outcome` of each browser task, e.g. `tkn taskrun describe <taskrun>`): `deployed`, `edge-node-deleted` or `nothing-to-delete` (done); `inspection-finished` (inspect mode); `handed-over` (the automation stopped and you finished by hand); `failed` (setup, login or session failure); `skipped-hub`. The browser tasks always succeed, so check the outcome rather than the task status.
+
+**Manual fallback:** whatever happens in the browser, the run continues. On a hand-over the browser stays open with the reason in the log: finish the steps there or in your own browser, then close Chromium or run the `oc exec ... -c step-browser -- node /opt/sap-browser/control.mjs finish` command from the log. Without the browser (`failed`), do the steps by hand: upload the zips to `elm/` and `edge-icell/` (`wait-elm-zip` and `wait-eic-zip` wait for them either way), and at teardown delete the Edge Node in ELM yourself.
+
+**`auto` is not complete yet:** the ELM screens are not mapped, so `auto` hands over to you right after the login. Use `inspect` to record them: after the login Playwright Inspector opens in the browser; record the walkthrough (Add Edge Node, Prerequisites with the ELM zip, Embedded Cloud Connector, Configuration and EIC deployment, the EIC zip, and at teardown the Edge Node deletion), copy the generated code, then resume Inspector. Recordings can contain entered credentials; keep them private. In `inspect` mode nothing is uploaded: files downloaded in the task's browser stay in the pod, so download the zips again in your own browser and upload them to the folders.
 
 **Failed or rejected runs** leave the cluster for debugging (billable). Clean up with:
 
