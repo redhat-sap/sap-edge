@@ -197,6 +197,11 @@ spec:
           value: $(context.taskRun.name)
         - name: RUNNER_SERVICE_ACCOUNT
           value: $(params.runnerServiceAccount)
+        # The ServiceAccount the pod really runs as (taskRunSpecs of the run file)
+        - name: POD_SERVICE_ACCOUNT
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.serviceAccountName
         - name: S3_PREFIX
           value: restricted-resources/$(params.clusterName)/
         - name: BUCKET_HOST

@@ -4,6 +4,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
+import { SetupError } from './inputs.mjs';
 import { waitForPipelineTask } from './milestones.mjs';
 
 const successfulTask = {
@@ -151,29 +152,47 @@ test('rejects_when_task_skipped', async () => {
 });
 
 test('rejects_when_run_stopping', async () => {
-  for (const reason of ['PipelineRunStopping', 'Stopping', 'Cancelled', 'CancelledRunFinally', 'StoppedRunFinally']) {
-    const reader = async (kind, name) => {
-      if (kind === 'pipelinerun' && name === 'run-1') {
-        return {
-          metadata: { uid: 'run-uid' },
-          status: {
-            conditions: [{ type: 'Succeeded', status: 'Unknown', reason }],
-            childReferences: [],
-          },
-        };
-      }
-      throw new Error(`Unexpected read: ${kind}/${name}`);
-    };
-
+  // The Succeeded=Unknown reasons Tekton sets while a run is stopped or cancelled
+  // (PipelineRunStopping, then CancelledRunningFinally / StoppedRunningFinally
+  // while finally tasks run), and Cancelled
+  const runWith = (reason) => async (kind, name) => {
+    if (kind === 'pipelinerun' && name === 'run-1') {
+      return {
+        metadata: { uid: 'run-uid' },
+        status: {
+          conditions: [{ type: 'Succeeded', status: 'Unknown', reason }],
+          childReferences: [],
+        },
+      };
+    }
+    throw new Error(`Unexpected read: ${kind}/${name}`);
+  };
+  for (const reason of ['PipelineRunStopping', 'CancelledRunningFinally', 'StoppedRunningFinally', 'Cancelled']) {
     await assert.rejects(
-      waitForPipelineTask(reader, {
+      waitForPipelineTask(runWith(reason), {
         pipelineRun: 'run-1',
         pipelineRunUID: 'run-uid',
         pipelineTaskName: 'generate-sa-based-kubeconfig',
         intervalMs: 10,
+        // An unrecognized reason would wait forever
+        signal: AbortSignal.timeout(2000),
       }),
-      /stopping/i,
+      (error) => error instanceof SetupError && error.message === `PipelineRun is stopping: ${reason}`,
       `Should reject for reason: ${reason}`
+    );
+  }
+  // Names Tekton does not set (and Running) keep the wait going
+  for (const reason of ['Running', 'Stopping', 'CancelledRunFinally', 'StoppedRunFinally']) {
+    await assert.rejects(
+      waitForPipelineTask(runWith(reason), {
+        pipelineRun: 'run-1',
+        pipelineRunUID: 'run-uid',
+        pipelineTaskName: 'generate-sa-based-kubeconfig',
+        intervalMs: 5,
+        signal: AbortSignal.timeout(60),
+      }),
+      (error) => error?.name === 'TimeoutError',
+      `Should keep waiting for reason: ${reason}`
     );
   }
 });

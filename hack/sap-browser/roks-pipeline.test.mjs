@@ -14,7 +14,7 @@ import { chromiumLaunchOptions, main, roksPipelineOptions } from './roks-pipelin
 import { finishSession } from './session.mjs';
 
 const ELM = 'https://elm.example.com/';
-const ROUTE_URL = 'https://roks-sap-browser-roks-c1.apps.example.com/vnc.html?autoconnect=1&resize=remote&path=websockify';
+const ROUTE_URL = 'https://sapb-roks-c1-sap-edge-ci.apps.example.com/vnc.html?autoconnect=1&resize=remote&path=websockify';
 const SECRETS = ['pg-secret-value', 'aws-secret-value', 'context-secret-value', 'leaked-secret-value'];
 
 async function folderTest(work) {
@@ -35,6 +35,7 @@ function environment(directory, overrides = {}) {
     POD_UID: 'pod-uid-1',
     TASKRUN_NAME: 'roks-run-1-sap-browser-deploy',
     RUNNER_SERVICE_ACCOUNT: 'roks-sap-browser-runner',
+    POD_SERVICE_ACCOUNT: 'roks-sap-browser-runner',
     S3_PREFIX: 'restricted-resources/roks-c1/',
     BUCKET_HOST: 's3.openshift-storage.svc',
     BUCKET_PORT: '443',
@@ -181,6 +182,7 @@ test('options_validation', async () => folderTest(async (directory) => {
   rejects({ POSTGRES_ADMIN_PASSWORD: '' }, /POSTGRES_ADMIN_PASSWORD/);
   rejects({ AWS_SECRET_ACCESS_KEY: '' }, /AWS_SECRET_ACCESS_KEY/);
   rejects({ BUCKET_PORT: '99999' }, /BUCKET_PORT/);
+  rejects({ POD_SERVICE_ACCOUNT: '' }, /POD_SERVICE_ACCOUNT/);
   // The admin password and bucket are only needed when the deploy flow runs.
   for (const overrides of [{ SAP_BROWSER_MODE: 'inspect' }, { SAP_BROWSER_PHASE: 'teardown' }]) {
     const options = roksPipelineOptions(environment(directory, {
@@ -191,6 +193,30 @@ test('options_validation', async () => folderTest(async (directory) => {
   for (const id of ['', 'unknown', 'Edge-Node-42']) {
     assert.equal(roksPipelineOptions(environment(directory, { CLUSTER_EDGE_NODE_ID: id })).clusterEdgeNodeId, id);
   }
+}));
+
+test('rejects_pod_without_runner_service_account', async () => folderTest(async (directory) => {
+  // Without the run file's taskRunSpecs the pod runs as the pipeline SA
+  assert.throws(() => roksPipelineOptions(environment(directory, { POD_SERVICE_ACCOUNT: 'pipeline' })), (error) =>
+    error instanceof SetupError &&
+    error.message === 'The browser pod runs as pipeline, not roks-sap-browser-runner: add the taskRunSpecs from the run file.');
+  // Also in inspect mode and for the teardown phase
+  for (const overrides of [{ SAP_BROWSER_MODE: 'inspect' }, { SAP_BROWSER_PHASE: 'teardown' }]) {
+    assert.throws(() => roksPipelineOptions(environment(directory, { ...overrides, POD_SERVICE_ACCOUNT: 'pipeline' })), SetupError);
+  }
+  assert.equal(roksPipelineOptions(environment(directory)).serviceAccount, 'roks-sap-browser-runner');
+}));
+
+test('wrong_pod_service_account_fails_without_route', async () => folderTest(async (directory) => {
+  const h = harness();
+  const outcome = await main(environment(directory, { POD_SERVICE_ACCOUNT: 'pipeline' }), h.deps);
+  assert.equal(outcome, 'failed');
+  assert.equal(await readFile(join(directory, 'outcome'), 'utf8'), 'failed');
+  assert.ok(!h.calls.some((call) => call[0] === 'openRoute' || call[0] === 'loadRoksInputs' || call === 'launch'),
+    `no Route, inputs or browser: ${JSON.stringify(h.calls.map((call) => (Array.isArray(call) ? call[0] : call)))}`);
+  assert.ok(h.logs.includes('The browser pod runs as pipeline, not roks-sap-browser-runner: add the taskRunSpecs from the run file.'),
+    h.logs.join('\n'));
+  assertNoSecrets(h.logs);
 }));
 
 test('chromium_env_is_minimal', async () => folderTest(async (directory) => {
@@ -283,7 +309,7 @@ test('auto_deploy_outcome', async () => folderTest(async (directory) => {
 
   const [, routeOptions] = h.calls.find((call) => call[0] === 'openRoute');
   assert.deepEqual(routeOptions, {
-    name: 'roks-sap-browser-roks-c1',
+    name: 'sapb-roks-c1',
     podName: 'roks-run-1-sap-browser-deploy-pod',
     podUID: 'pod-uid-1',
     taskRunName: 'roks-run-1-sap-browser-deploy',

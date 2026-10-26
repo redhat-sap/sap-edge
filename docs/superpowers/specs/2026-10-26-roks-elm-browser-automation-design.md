@@ -9,7 +9,7 @@ cspell:words Containerfile ELMB PWDEBUG SAPCAR bsdutils portforward promisified 
 # Design: Playwright automation of the ELM steps in the ROKS EIC pipeline
 
 Date: 2026-10-26
-Status: draft, waiting for the user's review
+Status: approved by the user (2026-10-26)
 
 ## Intent
 
@@ -125,10 +125,12 @@ only to simplify. The real order above needs two applies.
   provider; whether SAP SSO works from the pod is untested
   (`hack/sap-browser/PIPELINE.md`) and is the first thing to try.
 - The ROKS credentials Secret `eic-credentials-roks-<cluster>` uses other key
-  names than the HCP Secret the helper reads today (`postgres-host`,
-  `postgres-port`, `postgres-database`, `postgres-username`, `postgres-ca`,
-  `redis-host`, `redis-port`, `redis-username`, `redis-password`,
-  `redis-ca`, `kubeconfig` versus the HCP `postgres-dbname`, `postgres-user`,
+  names than the HCP Secret the helper reads today (`kubeconfig`,
+  `cluster-name`, `cluster-id`, `api-url`, `postgres-host`, `postgres-port`,
+  `postgres-database`, `postgres-username`, `postgres-ca.crt`, `redis-host`,
+  `redis-port`, `redis-username`, `redis-ca.crt` from
+  `roks-validate-and-get-access`, plus `redis-password` from
+  `roks-registry-access`, versus the HCP `postgres-dbname`, `postgres-user`,
   `postgres-tls-root-cert`, `redis-tls-cert`, …). The PostgreSQL admin
   password is not in it: it is key `POSTGRES_ADMIN_PASSWORD` of
   `roks-ci-credentials`, which also holds the IBM Cloud API key and the state

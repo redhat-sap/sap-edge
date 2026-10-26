@@ -6,9 +6,26 @@ import { test } from 'node:test';
 import { routeName, openRoute } from './route.mjs';
 import { SetupError } from './inputs.mjs';
 
+// A Route status the router has admitted
+const admitted = (host) => ({
+  status: { ingress: [{ host, conditions: [{ type: 'Admitted', status: 'True' }] }] },
+});
+
 test('routeName', () => {
-  assert.equal(routeName('my-cluster'), 'roks-sap-browser-my-cluster');
-  assert.equal(routeName('test'), 'roks-sap-browser-test');
+  assert.equal(routeName('my-cluster'), 'sapb-my-cluster');
+  assert.equal(routeName('test'), 'sapb-test');
+});
+
+test('route_name_fits_dns_and_annotation_limits', () => {
+  // ROKS cluster names have at most 30 characters
+  const name = routeName('redhat-roks-eic-pr12345678901');
+  assert.equal(name.length, 5 + 29);
+  const longest = routeName('r'.repeat(30));
+  // Router host <route>-<namespace>.<apps domain>: the first label has at
+  // most 63 characters, which leaves 27 for the namespace
+  assert.ok(`${longest}-${'n'.repeat(27)}`.length <= 63);
+  // The SA annotation name part (after the prefix) has at most 63 characters
+  assert.ok(`oauth-redirectreference.${longest}`.length <= 63);
 });
 
 test('creates_service_route_and_annotation', async () => {
@@ -24,11 +41,7 @@ test('creates_service_route_and_annotation', async () => {
     },
     async get(kind, name) {
       if (kind === 'route' && name === 'test-route') {
-        return {
-          status: {
-            ingress: [{ host: 'test-route.example.com' }],
-          },
-        };
+        return admitted('test-route.example.com');
       }
       throw new Error('Unexpected get');
     },
@@ -130,11 +143,7 @@ test('url_from_admitted_host', async () => {
     },
     async get(kind, name) {
       if (kind === 'route' && name === 'test-route') {
-        return {
-          status: {
-            ingress: [{ host: 'my-route.apps.cluster.example.com' }],
-          },
-        };
+        return admitted('my-route.apps.cluster.example.com');
       }
       throw new Error('Unexpected get');
     },
@@ -179,11 +188,7 @@ test('recreates_stale_objects', async () => {
     },
     async get(kind, name) {
       if (kind === 'route' && name === 'test-route') {
-        return {
-          status: {
-            ingress: [{ host: 'test-route.example.com' }],
-          },
-        };
+        return admitted('test-route.example.com');
       }
       throw new Error('Unexpected get');
     },
@@ -228,11 +233,7 @@ test('close_removes_everything', async () => {
     },
     async get(kind, name) {
       if (kind === 'route' && name === 'test-route') {
-        return {
-          status: {
-            ingress: [{ host: 'test-route.example.com' }],
-          },
-        };
+        return admitted('test-route.example.com');
       }
       throw new Error('Unexpected get');
     },
@@ -280,11 +281,7 @@ test('close_never_throws', async () => {
     },
     async get(kind, name) {
       if (kind === 'route' && name === 'test-route') {
-        return {
-          status: {
-            ingress: [{ host: 'test-route.example.com' }],
-          },
-        };
+        return admitted('test-route.example.com');
       }
       throw new Error('Unexpected get');
     },
@@ -458,4 +455,92 @@ test('failure_cleans_up_when_route_create_fails', async () => {
     p.mergePatch.metadata.annotations['serviceaccounts.openshift.io/oauth-redirectreference.test-route'] === null
   );
   assert.ok(hasAnnotationRemoval, 'Annotation cleanup attempted after Route create failure');
+});
+
+// Fake client whose Route status comes from a list (the last entry repeats)
+function admissionClient(statuses) {
+  const removals = [];
+  const patches = [];
+  let gets = 0;
+  return {
+    removals,
+    patches,
+    get gets() { return gets; },
+    async create(kind, body) { return { metadata: { name: body.metadata.name } }; },
+    async patch(kind, name, mergePatch) { patches.push({ kind, name, mergePatch }); return { metadata: { name } }; },
+    async get(kind, name) {
+      if (kind !== 'route' || name !== 'test-route') throw new Error('Unexpected get');
+      const status = statuses[Math.min(gets, statuses.length - 1)];
+      gets++;
+      return { status };
+    },
+    async remove(kind, name) { removals.push({ kind, name }); },
+  };
+}
+
+const routeOptions = {
+  name: 'test-route',
+  podName: 'test-pod',
+  podUID: 'test-uid-12345',
+  taskRunName: 'test-taskrun',
+  serviceAccount: 'test-sa',
+  timeoutMs: 5000,
+  intervalMs: 5,
+};
+
+test('waits_for_admitted_condition', async () => {
+  const client = admissionClient([
+    { ingress: [] },
+    // The router has set the host but not decided yet
+    { ingress: [{ host: 'test-route.example.com' }] },
+    { ingress: [{ host: 'test-route.example.com', conditions: [{ type: 'Admitted', status: 'Unknown' }] }] },
+    { ingress: [{ host: 'test-route.example.com', conditions: [{ type: 'Admitted', status: 'True' }] }] },
+  ]);
+  const { url } = await openRoute(client, routeOptions);
+  assert.equal(url, 'https://test-route.example.com/vnc.html?autoconnect=1&resize=remote&path=websockify');
+  assert.equal(client.gets, 4, 'URL returned only once the Route is admitted');
+  assert.equal(client.removals.length, 0, 'nothing removed on success');
+});
+
+test('rejects_route_not_admitted', async () => {
+  const client = admissionClient([
+    { ingress: [{ host: 'test-route.example.com' }] },
+    {
+      ingress: [{
+        host: 'test-route.example.com',
+        conditions: [{
+          type: 'Admitted',
+          status: 'False',
+          reason: 'HostAlreadyClaimed',
+          message: 'route test-route already exposes test-route.example.com and is older\nsecond line',
+        }],
+      }],
+    },
+  ]);
+  await assert.rejects(openRoute(client, routeOptions), (error) => {
+    assert.ok(error instanceof SetupError);
+    // The reason only, on one line
+    assert.equal(error.message, 'Route not admitted: HostAlreadyClaimed');
+    return true;
+  });
+  assert.equal(client.gets, 2);
+  // The failure cleanup still runs
+  assert.ok(client.removals.find((r) => r.kind === 'route' && r.name === 'test-route'), 'Route removed');
+  assert.ok(client.removals.find((r) => r.kind === 'service' && r.name === 'test-route'), 'Service removed');
+  assert.ok(client.patches.some((p) => p.kind === 'serviceaccount' &&
+    p.mergePatch.metadata.annotations['serviceaccounts.openshift.io/oauth-redirectreference.test-route'] === null),
+  'annotation removed');
+});
+
+test('not_admitted_reason_is_sanitized', async () => {
+  for (const [reason, expected] of [
+    [undefined, 'Route not admitted: unknown reason'],
+    ['Bad\nReason with spaces', 'Route not admitted: unknown reason'],
+    ['InvalidHost', 'Route not admitted: InvalidHost'],
+  ]) {
+    const client = admissionClient([
+      { ingress: [{ host: 'h.example.com', conditions: [{ type: 'Admitted', status: 'False', reason }] }] },
+    ]);
+    await assert.rejects(openRoute(client, routeOptions), (error) => error instanceof SetupError && error.message === expected);
+  }
 });

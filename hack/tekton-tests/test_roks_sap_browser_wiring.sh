@@ -139,7 +139,9 @@ expected_values = {
     "SAP_BROWSER_LOGIN_MINUTES": "$(params.loginMinutes)",
     "SAP_BROWSER_RESULT_PATH": "$(results.outcome.path)",
 }
-field_refs = {"POD_NAME": "metadata.name", "POD_UID": "metadata.uid"}
+field_refs = {"POD_NAME": "metadata.name", "POD_UID": "metadata.uid",
+              # checked against RUNNER_SERVICE_ACCOUNT (missing taskRunSpecs)
+              "POD_SERVICE_ACCOUNT": "spec.serviceAccountName"}
 secret_refs = {
     "AWS_ACCESS_KEY_ID": ("$(params.obcName)", "AWS_ACCESS_KEY_ID", False),
     "AWS_SECRET_ACCESS_KEY": ("$(params.obcName)", "AWS_SECRET_ACCESS_KEY", False),

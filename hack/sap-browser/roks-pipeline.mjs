@@ -28,8 +28,13 @@ export function roksPipelineOptions(env) {
   let url;
   try { url = new URL(env.SAP_ELM_URL); } catch { throw new SetupError('Set sapElmUrl to the ELM HTTPS URL.'); }
   if (url.protocol !== 'https:' || url.username || url.password) throw new SetupError('Use an ELM HTTPS URL without credentials.');
-  for (const key of ['PIPELINE_NAMESPACE', 'PIPELINE_RUN', 'POD_NAME', 'TASKRUN_NAME', 'RUNNER_SERVICE_ACCOUNT']) {
+  for (const key of ['PIPELINE_NAMESPACE', 'PIPELINE_RUN', 'POD_NAME', 'TASKRUN_NAME', 'RUNNER_SERVICE_ACCOUNT', 'POD_SERVICE_ACCOUNT']) {
     if (!namePattern.test(env[key] ?? '')) throw new SetupError(`Missing or invalid ${key}.`);
+  }
+  // Without the run file's taskRunSpecs the pod runs as the pipeline SA, which
+  // cannot read the PipelineRun or create the Route: stop before anything else.
+  if (env.POD_SERVICE_ACCOUNT !== env.RUNNER_SERVICE_ACCOUNT) {
+    throw new SetupError(`The browser pod runs as ${env.POD_SERVICE_ACCOUNT}, not ${env.RUNNER_SERVICE_ACCOUNT}: add the taskRunSpecs from the run file.`);
   }
   if (!/^[a-z](?:[a-z0-9-]*[a-z0-9])?$/.test(env.CLUSTER_NAME ?? '')) throw new SetupError('Missing or invalid CLUSTER_NAME.');
   for (const key of ['PIPELINE_RUN_UID', 'POD_UID']) {

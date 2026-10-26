@@ -68,11 +68,13 @@ export async function loadRoksInputs(read, pipelineRun, {
     }
   }
 
-  // Read credentials from Secrets, only decode the 10 listed keys (never the admin kubeconfig)
+  // Read credentials from Secrets, only decode the 10 listed keys (never the admin kubeconfig).
+  // Key names as roks-validate-and-get-access writes them (CA certificates as
+  // postgres-ca.crt and redis-ca.crt); roks-registry-access adds redis-password.
   const credentialsSecret = await read('secret', `eic-credentials-roks-${clusterName}`);
   const allowedKeys = [
-    'postgres-host', 'postgres-port', 'postgres-database', 'postgres-username', 'postgres-ca',
-    'redis-host', 'redis-port', 'redis-username', 'redis-password', 'redis-ca',
+    'postgres-host', 'postgres-port', 'postgres-database', 'postgres-username', 'postgres-ca.crt',
+    'redis-host', 'redis-port', 'redis-username', 'redis-password', 'redis-ca.crt',
   ];
   const filteredCredentials = { data: {} };
   for (const key of allowedKeys) {
@@ -85,23 +87,27 @@ export async function loadRoksInputs(read, pipelineRun, {
   const registrySecret = await read('secret', `eic-registry-roks-${clusterName}`);
   const registryData = decodeSecret(registrySecret);
 
+  // The PostgreSQL keys exist only with deployPostgres "true", the Redis keys
+  // only with deployRedis "true"; the registry keys depend on neither.
+  const postgres = (key) => required(credentialsData, key, '(deployPostgres must be "true")');
+  const redis = (key) => required(credentialsData, key, '(deployRedis must be "true")');
+
   // Build result object - never include the admin kubeconfig
-  const context = '(deployPostgres and deployRedis must be "true")';
   return {
     clusterName,
     pipelineRun,
     postgres: {
-      host: required(credentialsData, 'postgres-host', context),
-      port: required(credentialsData, 'postgres-port', context),
-      database: required(credentialsData, 'postgres-database', context),
-      username: required(credentialsData, 'postgres-username', context),
+      host: postgres('postgres-host'),
+      port: postgres('postgres-port'),
+      database: postgres('postgres-database'),
+      username: postgres('postgres-username'),
       password: postgresPassword,
     },
     redis: {
-      host: required(credentialsData, 'redis-host', context),
-      port: required(credentialsData, 'redis-port', context),
-      username: required(credentialsData, 'redis-username', context),
-      password: required(credentialsData, 'redis-password', context),
+      host: redis('redis-host'),
+      port: redis('redis-port'),
+      username: redis('redis-username'),
+      password: redis('redis-password'),
     },
     registry: {
       server: required(registryData, 'server'),
@@ -110,8 +116,8 @@ export async function loadRoksInputs(read, pipelineRun, {
       password: required(registryData, 'password'),
     },
     attachments: {
-      postgresCA: required(credentialsData, 'postgres-ca', context),
-      redisCA: required(credentialsData, 'redis-ca', context),
+      postgresCA: postgres('postgres-ca.crt'),
+      redisCA: redis('redis-ca.crt'),
     },
   };
 }
