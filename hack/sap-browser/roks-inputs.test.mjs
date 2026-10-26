@@ -3,6 +3,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { SetupError } from './inputs.mjs';
 import { loadRoksInputs, loadRestrictedKubeconfig } from './roks-inputs.mjs';
 
 const encoded = (values) => Object.fromEntries(Object.entries(values).map(([key, value]) =>
@@ -31,21 +32,31 @@ function roksResources(cluster = 'c1') {
       metadata: { ownerReferences: [{ uid: 'run-uid' }] },
       status: { conditions: [{ type: 'Succeeded', status: 'True' }] },
     },
+    // The real key set of eic-credentials-roks-<cluster>: roks-validate-and-get-access
+    // (.tekton/tasks/roks-validate-and-get-access-task.yaml, add_file/add_value/add_ca)
+    // writes kubeconfig, cluster-name, cluster-id, api-url, postgres-host,
+    // postgres-port, postgres-database, postgres-username, postgres-ca.crt,
+    // redis-host, redis-port, redis-username, redis-ca.crt; roks-registry-access
+    // (.tekton/tasks/roks-registry-access-task.yaml) adds redis-password.
     [`secret/eic-credentials-roks-${cluster}`]: {
       data: encoded({
+        'kubeconfig': 'ADMIN-KUBECONFIG-MUST-NOT-BE-READ',
+        'cluster-name': cluster,
+        'cluster-id': 'c7000000000000000001',
+        'api-url': 'https://c100.eu-de.containers.cloud.ibm.com:31000',
         'postgres-host': 'db.example.test',
         'postgres-port': '5432',
         'postgres-database': 'edgedb',
         'postgres-username': 'edgedb',
-        'postgres-ca': 'test-postgres-ca',
+        'postgres-ca.crt': 'test-postgres-ca',
         'redis-host': 'redis.example.test',
         'redis-port': '6379',
         'redis-username': 'default',
+        'redis-ca.crt': 'test-redis-ca',
         'redis-password': 'test-redis-password',
-        'redis-ca': 'test-redis-ca',
-        'kubeconfig': 'ADMIN-KUBECONFIG-MUST-NOT-BE-READ',
       }),
     },
+    // eic-registry-roks-<cluster> as roks-registry-access writes it
     [`secret/eic-registry-roks-${cluster}`]: {
       data: encoded({
         'server': 'us.icr.io',
@@ -158,4 +169,44 @@ test('restricted_kubeconfig_only_from_generated_secret', async () => {
   assert.equal(kubeconfig, 'RESTRICTED-KUBECONFIG');
   // Should read exactly one secret: the generated kubeconfig
   assert.deepEqual(reads, ['secret/edgelm-kubeconfig-generated-c1']);
+});
+
+test('missing_key_names_the_right_switch', async () => {
+  const load = (objects) => loadRoksInputs(reader(objects), 'run-1', {
+    expectedRunUID: 'run-uid', expectedClusterName: 'c1', postgresPassword: 'test-postgres-password',
+  });
+  const without = (secret, key) => {
+    const objects = roksResources('c1');
+    delete objects[`secret/${secret}-c1`].data[key];
+    return objects;
+  };
+
+  // PostgreSQL keys exist only with deployPostgres "true"
+  for (const key of ['postgres-host', 'postgres-ca.crt']) {
+    await assert.rejects(load(without('eic-credentials-roks', key)), (error) => {
+      assert.ok(error instanceof SetupError);
+      assert.ok(error.message.includes(key), error.message);
+      assert.match(error.message, /deployPostgres must be "true"/);
+      assert.doesNotMatch(error.message, /deployRedis/);
+      return true;
+    });
+  }
+  // Redis keys exist only with deployRedis "true" (redis-password comes from registry-access)
+  for (const key of ['redis-host', 'redis-password', 'redis-ca.crt']) {
+    await assert.rejects(load(without('eic-credentials-roks', key)), (error) => {
+      assert.ok(error instanceof SetupError);
+      assert.ok(error.message.includes(key), error.message);
+      assert.match(error.message, /deployRedis must be "true"/);
+      assert.doesNotMatch(error.message, /deployPostgres/);
+      return true;
+    });
+  }
+  // Registry keys do not depend on either switch
+  await assert.rejects(load(without('eic-registry-roks', 'password')), (error) => {
+    assert.ok(error instanceof SetupError);
+    assert.match(error.message, /: password$/);
+    assert.doesNotMatch(error.message, /deployPostgres|deployRedis/);
+    assert.ok(!error.message.includes('test-registry-password'));
+    return true;
+  });
 });

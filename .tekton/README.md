@@ -557,7 +557,7 @@ Cluster name: `redhat-roks-eic-pr<N>` (starts with `redhat-`, at most 30 charact
 
 #### Browser automation (optional)
 
-With `sapBrowserMode` other than `disabled`, the run starts a Chromium browser in a task pod for the SAP ELM steps (Edge Node, zips, Embedded Cloud Connector, EIC deployment, and the Edge Node deletion at teardown). You reach it through a per-run Route protected by the OpenShift OAuth proxy: only users allowed to create `pods/portforward` in the pipeline namespace get in. Default `disabled` (or an empty `sapBrowserImage`): the browser tasks are skipped and everything is done by hand as described above.
+With `sapBrowserMode` other than `disabled`, the run starts a Chromium browser in a task pod for the SAP ELM steps (Edge Node, zips, Embedded Cloud Connector, EIC deployment, and the Edge Node deletion at teardown). You reach it through a per-run Route protected by the OpenShift OAuth proxy: only users allowed to create `pods/portforward` in the pipeline namespace get in. The Route is named `sapb-<clusterName>`, and the router host `<route>-<namespace>.<apps domain>` needs a first label (route name + "-" + namespace) of at most 63 characters: with a cluster name of at most 30 characters that leaves room for namespaces of up to 27 characters. A Route the router does not admit ends the session as `failed` with the reason in the log. Default `disabled` (or an empty `sapBrowserImage`): the browser tasks are skipped and everything is done by hand as described above.
 
 **One-time setup** (pipeline namespace):
 
@@ -567,7 +567,7 @@ With `sapBrowserMode` other than `disabled`, the run starts a Chromium browser i
 
 Failures before the browser starts (a wrong or unreachable image, or no ServiceAccount because `roks-runner-rbac.yaml` was not applied) fail the browser task's pod and stop the run, unlike failures inside the browser. Try `sapBrowserMode: inspect` first; a rerun reuses the cluster.
 
-**Enable it** in the run file: set `sapBrowserMode` to `inspect` or `auto`, uncomment `sapBrowserImage` (your image) and `sapElmUrl` (the direct ELM URL), and uncomment `taskRunSpecs` (the browser tasks must run as `roks-sap-browser-runner`). An empty `sapBrowserImage` skips the browser tasks, as `disabled` does. `sapBrowserSessionMinutes` (default 180, at most 240) limits each browser session including login, pipeline waits and the hand-over; `sapBrowserLoginMinutes` (default 30) limits the login. The browser does not support a hub cluster: with `hubKubeconfigSecretName` set it stops at once (outcome `skipped-hub`).
+**Enable it** in the run file: set `sapBrowserMode` to `inspect` or `auto`, uncomment `sapBrowserImage` (your image) and `sapElmUrl` (the direct ELM URL), and uncomment `taskRunSpecs` (the browser tasks must run as `roks-sap-browser-runner`; without them the browser stops at once with outcome `failed`). An empty `sapBrowserImage` skips the browser tasks, as `disabled` does. `sapBrowserSessionMinutes` (default 180, at most 240) limits each browser session including login, pipeline waits and the hand-over; `sapBrowserLoginMinutes` (default 30) limits the login. The browser does not support a hub cluster: with `hubKubeconfigSecretName` set it stops at once (outcome `skipped-hub`).
 
 **What you do:**
 

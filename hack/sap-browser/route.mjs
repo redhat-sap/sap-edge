@@ -3,8 +3,12 @@
 
 import { SetupError } from './inputs.mjs';
 
+// Short prefix: the router host <route>-<namespace>.<apps domain> needs a first
+// label of at most 63 characters (cluster names have at most 30, which leaves
+// 27 for the namespace), and the SA annotation name
+// oauth-redirectreference.<route> must stay within 63 characters too.
 export function routeName(clusterName) {
-  return 'roks-sap-browser-' + clusterName;
+  return 'sapb-' + clusterName;
 }
 
 export async function openRoute(client, {
@@ -138,15 +142,23 @@ async function createWithRetry(client, kind, body) {
   }
 }
 
+// The URL only once the router has admitted the Route (a host alone can still
+// be rejected, e.g. HostAlreadyClaimed or a host name that is too long).
 async function pollForHost(client, name, timeoutMs, intervalMs) {
   const startTime = Date.now();
 
   while (Date.now() - startTime < timeoutMs) {
     const route = await client.get('route', name);
-    const host = route.status?.ingress?.[0]?.host;
+    const ingress = route.status?.ingress?.[0];
+    const admitted = ingress?.conditions?.find((condition) => condition.type === 'Admitted');
 
-    if (host) {
-      return `https://${host}/vnc.html?autoconnect=1&resize=remote&path=websockify`;
+    if (admitted?.status === 'False') {
+      // The reason only (a CamelCase word), never the free-text message
+      const reason = /^[A-Za-z0-9._-]{1,100}$/.test(admitted.reason ?? '') ? admitted.reason : 'unknown reason';
+      throw new SetupError(`Route not admitted: ${reason}`);
+    }
+    if (admitted?.status === 'True' && ingress.host) {
+      return `https://${ingress.host}/vnc.html?autoconnect=1&resize=remote&path=websockify`;
     }
 
     // Wait before next poll

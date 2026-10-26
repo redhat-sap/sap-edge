@@ -37,10 +37,13 @@ export async function waitForPipelineTask(read, {
       throw new SetupError(`Pipeline task ${pipelineTaskName} was skipped.`);
     }
 
-    // Check if the run is stopping/cancelled
+    // Check if the run is stopping/cancelled: the Succeeded=Unknown reasons
+    // Tekton sets then (PipelineRunStopping, then CancelledRunningFinally or
+    // StoppedRunningFinally while finally tasks run); Cancelled for a finished
+    // cancel (status False, also caught by the finished check below)
     const succeededCondition = run.status?.conditions?.find((cond) => cond.type === 'Succeeded');
     if (succeededCondition?.status === 'Unknown') {
-      const stoppingReasons = ['PipelineRunStopping', 'Stopping', 'Cancelled', 'CancelledRunFinally', 'StoppedRunFinally'];
+      const stoppingReasons = ['PipelineRunStopping', 'CancelledRunningFinally', 'StoppedRunningFinally', 'Cancelled'];
       if (stoppingReasons.includes(succeededCondition.reason)) {
         throw new SetupError(`PipelineRun is stopping: ${succeededCondition.reason}`);
       }

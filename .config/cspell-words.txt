@@ -168,6 +168,7 @@ rolebinding
 rolebindings
 sailoperator
 SAPCAR
+sapb
 sapeic
 saponrhel
 schedulable
