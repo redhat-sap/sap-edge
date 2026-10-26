@@ -237,3 +237,7 @@ iamapikey
 ibmc
 serviceaccounts
 subjectaccessreviews
+Containerfile
+portforward
+subresource
+urandom

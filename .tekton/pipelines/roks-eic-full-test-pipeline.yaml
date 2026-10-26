@@ -8,7 +8,7 @@ kind: Pipeline
 metadata:
   name: roks-eic-full-test-pipeline
   annotations:
-    description: "Complete SAP Edge Integration Cell validation pipeline for ROKS (Red Hat OpenShift on IBM Cloud, VPC): deploys a ROKS cluster with Terraform in the resource group redhat-sap-edge-roks-ci (IBM Cloud Container Registry namespace for ELM, IBM Cloud Databases for PostgreSQL and Redis), pauses for the restricted-resources upload to the run's own S3 folders, sets up OSSM3 restricted access, pauses for ELM registration and EIC deployment, runs two rounds of endpoint tests, and tears down the infrastructure"
+    description: "Complete SAP Edge Integration Cell validation pipeline for ROKS (Red Hat OpenShift on IBM Cloud, VPC): deploys a ROKS cluster with Terraform in the resource group redhat-sap-edge-roks-ci (IBM Cloud Container Registry namespace for ELM, IBM Cloud Databases for PostgreSQL and Redis), pauses for the restricted-resources upload to the run's own S3 folders, sets up OSSM3 restricted access, optionally drives the ELM steps with a Playwright browser behind a Route (sapBrowserMode), pauses for ELM registration and EIC deployment, runs two rounds of endpoint tests, and tears down the infrastructure"
 spec:
   # Failure policy (as ROSA/ARO/HCP): no finally teardown. A failed or rejected
   # run leaves the cluster for debugging; destroy it from the Terraform state
@@ -117,6 +117,32 @@ spec:
       type: string
       description: "Name of the ObjectBucketClaim (OBC) for downloading restricted-access RBAC resources from S3"
       default: "sap-eic-restricted-cluster-config-resources"
+
+    # --- SAP browser automation (optional) ---
+    - name: sapBrowserMode
+      type: string
+      description: "Optional Playwright browser for the ELM steps: disabled (default; everything by hand), inspect (log in, then record the ELM screens with Playwright Inspector) or auto (Playwright runs the ELM steps; until the screens are mapped it hands over to you at once). Needs the taskRunSpecs of the run file; the approvals stay"
+      default: "disabled"
+    - name: sapBrowserImage
+      type: string
+      description: "SAP browser runner image built from hack/sap-browser/Containerfile; required unless sapBrowserMode is disabled"
+      default: ""
+    - name: sapElmUrl
+      type: string
+      description: "Direct SAP Edge Lifecycle Management HTTPS URL; required unless sapBrowserMode is disabled"
+      default: ""
+    - name: sapBrowserSessionMinutes
+      type: string
+      description: "Limit of each browser session (deploy, teardown) including login, pipeline waits and hand-over (1-240 minutes)"
+      default: "180"
+    - name: sapBrowserLoginMinutes
+      type: string
+      description: "Limit for the interactive OpenShift and SAP login within a browser session"
+      default: "30"
+    - name: oauthProxyImage
+      type: string
+      description: "OpenShift OAuth proxy image that protects the browser Route"
+      default: "image-registry.openshift-image-registry.svc:5000/openshift/oauth-proxy:v4.4"
   workspaces:
     - name: source
   tasks:
@@ -205,6 +231,75 @@ spec:
           value: $(params.roksCredentialsSecretName)
         - name: hubKubeconfigSecretName
           value: $(params.hubKubeconfigSecretName)
+      workspaces:
+        - name: source
+          workspace: source
+
+    # =============================================
+    # SAP browser automation (optional, sapBrowserMode)
+    # =============================================
+    # Skipped tasks (sapBrowserMode disabled) do not block the tasks that
+    # runAfter them. The browser tasks always succeed and report their
+    # outcome in a result, so the manual path and teardown-roks continue after
+    # any browser failure. No retries: a rerun could repeat SAP actions. No
+    # task timeout: a timed-out task would fail the run; each session ends on
+    # its own after sapBrowserSessionMinutes.
+
+    # Grant the runner ServiceAccount get on this run's three Secrets and read
+    # the cluster's Edge Node ID label before any zip of this run is applied
+    - name: sap-browser-access
+      runAfter: [validate-and-get-access]
+      when:
+        - input: $(params.sapBrowserMode)
+          operator: notin
+          values: [disabled]
+      taskRef: { name: roks-sap-browser-access }
+      params:
+        - name: clusterName
+          value: $(params.clusterName)
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Deploy session (Route link in the log): add the Edge Node, put the ELM
+    # zip into elm/, wait for the restricted kubeconfig, set up the Embedded
+    # Cloud Connector, deploy EIC and put its zip into edge-icell/
+    - name: sap-browser-deploy
+      runAfter: [sap-browser-access, registry-access]
+      when:
+        - input: $(params.sapBrowserMode)
+          operator: notin
+          values: [disabled]
+      taskRef: { name: roks-sap-browser }
+      params:
+        - name: mode
+          value: $(params.sapBrowserMode)
+        - name: phase
+          value: deploy
+        - name: runnerImage
+          value: $(params.sapBrowserImage)
+        - name: oauthProxyImage
+          value: $(params.oauthProxyImage)
+        - name: elmUrl
+          value: $(params.sapElmUrl)
+        - name: pipelineRun
+          value: $(context.pipelineRun.name)
+        - name: pipelineRunUID
+          value: $(context.pipelineRun.uid)
+        - name: clusterName
+          value: $(params.clusterName)
+        - name: obcName
+          value: $(params.obcName)
+        - name: roksCredentialsSecretName
+          value: $(params.roksCredentialsSecretName)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
+        - name: clusterEdgeNodeId
+          value: $(tasks.sap-browser-access.results.clusterEdgeNodeId)
+        - name: sessionMinutes
+          value: $(params.sapBrowserSessionMinutes)
+        - name: loginMinutes
+          value: $(params.sapBrowserLoginMinutes)
       workspaces:
         - name: source
           workspace: source
@@ -395,9 +490,10 @@ spec:
     # Manual ELM/EIC Deployment + Tests
     # =============================================
 
-    # Manual approval gate after OSSM3 setup and ICR registry access (no `when`)
+    # Manual approval gate after OSSM3 setup, ICR registry access and the
+    # optional browser deploy session (no `when`)
     - name: approval-elm-eic-iflow-deployed
-      runAfter: [configure-mesh-eic, registry-access]
+      runAfter: [configure-mesh-eic, registry-access, sap-browser-deploy]
       taskRef:
         apiVersion: openshift-pipelines.org/v1alpha1
         kind: ApprovalTask
@@ -787,9 +883,49 @@ spec:
         - name: timeout
           value: '336h'
 
-    # Teardown after approval
-    - name: teardown-roks
+    # Optional teardown session after approval (second login): delete the
+    # Edge Node in ELM. Its outcome does not matter to teardown-roks.
+    - name: sap-browser-teardown
       runAfter: [approval-teardown]
+      when:
+        - input: $(params.sapBrowserMode)
+          operator: notin
+          values: [disabled]
+      taskRef: { name: roks-sap-browser }
+      params:
+        - name: mode
+          value: $(params.sapBrowserMode)
+        - name: phase
+          value: teardown
+        - name: runnerImage
+          value: $(params.sapBrowserImage)
+        - name: oauthProxyImage
+          value: $(params.oauthProxyImage)
+        - name: elmUrl
+          value: $(params.sapElmUrl)
+        - name: pipelineRun
+          value: $(context.pipelineRun.name)
+        - name: pipelineRunUID
+          value: $(context.pipelineRun.uid)
+        - name: clusterName
+          value: $(params.clusterName)
+        - name: obcName
+          value: $(params.obcName)
+        - name: roksCredentialsSecretName
+          value: $(params.roksCredentialsSecretName)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubKubeconfigSecretName)
+        - name: sessionMinutes
+          value: $(params.sapBrowserSessionMinutes)
+        - name: loginMinutes
+          value: $(params.sapBrowserLoginMinutes)
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Teardown after approval (and after the optional browser teardown session)
+    - name: teardown-roks
+      runAfter: [approval-teardown, sap-browser-teardown]
       taskRef: { name: roks-teardown }
       params:
         - name: clusterName
