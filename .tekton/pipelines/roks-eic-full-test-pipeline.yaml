@@ -102,10 +102,11 @@ spec:
       description: "Jira issue key to update with test results (empty skips the Jira update)"
       default: ""
 
-    # --- Hub cluster ---
-    - name: hubClusterName
+    # --- Hub cluster (optional) ---
+    - name: hubKubeconfigSecretName
       type: string
-      description: "Name of the hub cluster (used to derive kubeconfig secret name: {hubClusterName}-kubeconfig)"
+      description: "Optional: name of a Secret in the pipeline namespace with a hub cluster kubeconfig (key kubeconfig, config or value). When set, the Secrets eic-credentials-roks-<clusterName> and eic-registry-roks-<clusterName> are stored on (and deleted from) the hub cluster; empty (default) keeps them in the pipeline namespace on the pipeline cluster"
+      default: ""
 
     # --- OSSM3 parameters ---
     - name: ossm3Channel
@@ -176,6 +177,7 @@ spec:
 
     # Switch the workspace kubeconfig to a ServiceAccount token kubeconfig and
     # store the PostgreSQL/Redis connection data in eic-credentials-roks-<cluster>
+    # (pipeline cluster, or the hub cluster when hubKubeconfigSecretName is set)
     - name: validate-and-get-access
       runAfter: [deploy-roks]
       taskRef: { name: roks-validate-and-get-access }
@@ -183,13 +185,14 @@ spec:
         - name: clusterName
           value: $(params.clusterName)
         - name: hubKubeconfigSecretName
-          value: $(params.hubClusterName)-kubeconfig
+          value: $(params.hubKubeconfigSecretName)
       workspaces:
         - name: source
           workspace: source
 
     # IBM Cloud Container Registry access for ELM: Secret eic-registry-roks-<cluster>
-    # on the hub (the ICR namespace and its service ID come from roks-deploy's
+    # on the pipeline cluster, or the hub cluster when hubKubeconfigSecretName
+    # is set (the ICR namespace and its service ID come from roks-deploy's
     # Terraform), and redis-password in eic-credentials-roks-<cluster> when
     # Redis is deployed
     - name: registry-access
@@ -205,7 +208,7 @@ spec:
         - name: roksCredentialsSecretName
           value: $(params.roksCredentialsSecretName)
         - name: hubKubeconfigSecretName
-          value: $(params.hubClusterName)-kubeconfig
+          value: $(params.hubKubeconfigSecretName)
       workspaces:
         - name: source
           workspace: source
@@ -324,14 +327,16 @@ spec:
 
             Restricted kubeconfig stored as Secret 'edgelm-kubeconfig-generated-$(params.clusterName)' in the pipeline namespace on the pipeline cluster.
 
+            The Secrets 'eic-registry-roks-$(params.clusterName)' and 'eic-credentials-roks-$(params.clusterName)' below are in the pipeline namespace on the pipeline cluster, or on the hub cluster when hubKubeconfigSecretName is set (hubKubeconfigSecretName: '$(params.hubKubeconfigSecretName)').
+
             Container registry for ELM (IBM Cloud Container Registry):
             - Server: de.icr.io
             - Namespace: $(params.clusterName)
             - Username: iamapikey
-            - Password: key 'password' of Secret 'eic-registry-roks-$(params.clusterName)' on the hub cluster '$(params.hubClusterName)' (the Secret also holds server, namespace and username)
+            - Password: key 'password' of Secret 'eic-registry-roks-$(params.clusterName)' (the Secret also holds server, namespace and username)
 
             IBM Cloud Databases (deployPostgres=$(params.deployPostgres), deployRedis=$(params.deployRedis); public endpoints, TLS only, reachable from the cluster):
-            - Connection data in Secret 'eic-credentials-roks-$(params.clusterName)' on the hub cluster '$(params.hubClusterName)'; the endpoints are also printed by validate-and-get-access
+            - Connection data in Secret 'eic-credentials-roks-$(params.clusterName)'; the endpoints are also printed by validate-and-get-access
             - PostgreSQL: keys postgres-host, postgres-port, postgres-database, postgres-username, postgres-ca.crt; password: key POSTGRES_ADMIN_PASSWORD of Secret '$(params.roksCredentialsSecretName)' in the pipeline namespace on the pipeline cluster
             - Redis: keys redis-host, redis-port, redis-username, redis-password, redis-ca.crt
 
@@ -712,7 +717,7 @@ spec:
         - name: terraformStateEndpoint
           value: $(params.terraformStateEndpoint)
         - name: hubKubeconfigSecretName
-          value: $(params.hubClusterName)-kubeconfig
+          value: $(params.hubKubeconfigSecretName)
       workspaces:
         - name: source
           workspace: source

@@ -263,7 +263,8 @@ none of this):
   `edgelm-kubeconfig-generated-<cluster>` (restricted kubeconfig of
   `ossm3-generate-sa-based-kubeconfig`) on the pipeline cluster, and the
   Secrets `eic-credentials-roks-<cluster>` and `eic-registry-roks-<cluster>`
-  (on the hub cluster when `hubKubeconfigSecretName` is set), and removes
+  (on the pipeline cluster, or on the hub cluster when the optional
+  `hubKubeconfigSecretName` is set), and removes
   `terraform.tfvars` (it may hold the PostgreSQL password) from the
   workspace.
 - It exits 0 when the destroy succeeded, the sweep left nothing and every
@@ -291,7 +292,8 @@ Then delete the pipeline artifacts: `oc delete configmap cluster-info-roks-<clus
 and `oc delete secret edgelm-kubeconfig-generated-<cluster> --ignore-not-found`
 in the pipeline namespace, and
 `oc delete secret eic-credentials-roks-<cluster> eic-registry-roks-<cluster> --ignore-not-found`
-on the hub cluster (or in the pipeline namespace without a hub).
+in the pipeline namespace (or on the hub cluster if the run set
+`hubKubeconfigSecretName`).
 
 **Do not push to the PR while `deploy-roks` or `teardown-roks` runs.** The
 example PipelineRun sets `cancel-in-progress: "false"`, so a push does not

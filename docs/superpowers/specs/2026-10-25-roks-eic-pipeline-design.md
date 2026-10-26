@@ -51,17 +51,20 @@ down.
     that `roks-deploy` wrote to the workspace, replace it with a ServiceAccount
     token kubeconfig (`kubeconfig`, same contract the shared tasks expect) and
     store that plus the database connection data in the Secret
-    `eic-credentials-roks-<cluster>` (on the hub cluster when configured).
+    `eic-credentials-roks-<cluster>` (on the hub cluster when
+    `hubKubeconfigSecretName` is set).
   - `roks-validate-and-create-configmap` — find the EIC host and ingress
     address for the tests (ConfigMap with `host` and `ingressIP`, same format
     as ROSA's).
   - `roks-registry-access` — hands ELM the run's IBM Cloud Container Registry
     (ICR) access: registry server, namespace, user `iamapikey` and a push/pull
     API key, stored as the Secret `eic-registry-roks-<cluster>` on the hub
-    cluster when `hubKubeconfigSecretName` is set (the pipeline always passes
-    it), else on the pipeline cluster.
+    cluster when `hubKubeconfigSecretName` is set (an optional pipeline param,
+    default empty: no hub), else in the pipeline namespace on the pipeline
+    cluster.
   - `roks-teardown` — `terraform destroy` plus cleanup of pipeline-side
-    artifacts (ConfigMaps, Secrets on the hub), tolerant of partial state.
+    artifacts (ConfigMaps, Secrets on the pipeline cluster or the hub),
+    tolerant of partial state.
 - An ICR namespace for the run (container registry for ELM/EIC), created by
   the same Terraform on every run, with a service ID that can push and pull in
   that namespace only.
@@ -197,7 +200,8 @@ down.
   `redhat-sap-edge-roks-ci`, OpenShift version param in the run file (start
   with the 4.21 line the account already runs), cluster name
   `redhat-roks-eic-pr{{ pull_request_number }}`, OSSM channel as in the ROSA
-  run, hub `eic`, `deployPostgres`/`deployRedis` `"true"` (no `deployQuay`).
+  run, no hub cluster (optional `hubKubeconfigSecretName`, default empty),
+  `deployPostgres`/`deployRedis` `"true"` (no `deployQuay`).
 - **Credentials (one Secret in the pipeline namespace,
   `roksCredentialsSecretName`, default `roks-ci-credentials`):** key
   `IBMCLOUD_API_KEY` — preferably a service ID's key with access scoped to

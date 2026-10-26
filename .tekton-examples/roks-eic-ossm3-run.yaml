@@ -37,8 +37,10 @@
 #        --from-literal=POSTGRES_ADMIN_PASSWORD=<password>
 # 3. As for the other EIC runs: the ObjectBucketClaim
 #    sap-eic-restricted-cluster-config-resources with the restricted-resources
-#    zip files under restricted-resources/, the EIC auth Secret, the Jira
-#    Secret and the hub kubeconfig Secret <hubClusterName>-kubeconfig.
+#    zip files under restricted-resources/, the EIC auth Secret and the Jira
+#    Secret. No hub cluster is needed: the Secrets eic-credentials-roks-<cluster>
+#    and eic-registry-roks-<cluster> go to the pipeline namespace unless
+#    hubKubeconfigSecretName is set (see below).
 # 4. Add 172.17.0.0/18 (ROKS pod network) and 10.0.0.0/16 (VPC) to the IP
 #    filter allowlist of the httpbinipfilter iFlow (otherwise
 #    test-httpbinipfilter fails).
@@ -119,8 +121,13 @@ spec:
       value: "jira-secret-mj"
     - name: jiraIssueKey
       value: ""                                 # Jira issue to comment on; empty skips update-jira-ticket
-    - name: hubClusterName
-      value: "eic"
+    # --- Hub cluster (optional; none by default) ---
+    # To store eic-credentials-roks-<cluster> and eic-registry-roks-<cluster>
+    # on a hub cluster instead of the pipeline cluster, set this param to the
+    # name of a Secret in the pipeline namespace with the hub kubeconfig (key
+    # kubeconfig, config or value), e.g.:
+    # - name: hubKubeconfigSecretName
+    #   value: "eic-kubeconfig"
     # --- OSSM3 parameters ---
     - name: ossm3Channel
       value: "stable-3.3"

@@ -272,6 +272,43 @@ if errors:
 PY
 echo "✅ PASS: pipeline_credentials_wiring"
 
+# Test case: pipeline_hub_optional
+# No hub by default: the optional hubKubeconfigSecretName (default "") goes
+# unchanged to every task that writes or deletes the hub Secrets, and the
+# example run sets neither it nor the removed hubClusterName.
+echo ""
+echo "Test: pipeline_hub_optional"
+echo "--------------------------------------------"
+python3 -I - ../../.tekton/pipelines/roks-eic-full-test-pipeline.yaml ../../.tekton-examples/roks-eic-ossm3-run.yaml <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    pipeline = yaml.safe_load(f)
+with open(sys.argv[2], encoding="utf-8") as f:
+    run = next(d for d in yaml.safe_load_all(f) if d and d.get("kind") == "PipelineRun")
+
+errors = []
+params = {p["name"]: p for p in pipeline["spec"]["params"]}
+if "hubClusterName" in params:
+    errors.append("pipeline param hubClusterName should be gone")
+if params.get("hubKubeconfigSecretName", {}).get("default", None) != "":
+    errors.append(f"hubKubeconfigSecretName should default to \"\", got {params.get('hubKubeconfigSecretName')}")
+tasks = {t["name"]: {p["name"]: p.get("value") for p in t.get("params", [])} for t in pipeline["spec"]["tasks"]}
+for task in ("validate-and-get-access", "registry-access", "teardown-roks"):
+    value = tasks.get(task, {}).get("hubKubeconfigSecretName")
+    if value != "$(params.hubKubeconfigSecretName)":
+        errors.append(f"{task}.hubKubeconfigSecretName should be $(params.hubKubeconfigSecretName), got {value!r}")
+run_params = {p["name"] for p in run["spec"]["params"]}
+for name in ("hubClusterName", "hubKubeconfigSecretName"):
+    if name in run_params:
+        errors.append(f"the example run should not set {name} (no hub by default)")
+if errors:
+    print("\n".join(errors))
+    sys.exit(1)
+PY
+echo "✅ PASS: pipeline_hub_optional"
+
 # Test case: registry_secret_created
 echo ""
 echo "Test: registry_secret_created"
