@@ -69,52 +69,59 @@ export async function openRoute(client, {
     },
   });
 
-  // Create Service (with retry on conflict)
-  await createWithRetry(client, 'service', serviceBody);
+  const cleanup = () => cleanupResources(client, name, serviceAccount, annotationKey);
 
-  // Create Route (with retry on conflict)
-  await createWithRetry(client, 'route', routeBody);
+  try {
+    // Create Service (with retry on conflict)
+    await createWithRetry(client, 'service', serviceBody);
 
-  // Patch ServiceAccount annotation
-  await client.patch('serviceaccount', serviceAccount, {
-    metadata: {
-      annotations: {
-        [annotationKey]: annotationValue,
-      },
-    },
-  });
+    // Create Route (with retry on conflict)
+    await createWithRetry(client, 'route', routeBody);
 
-  // Poll for Route admission
-  const url = await pollForHost(client, name, timeoutMs, intervalMs);
-
-  // Return URL and close function
-  const close = async () => {
-    try {
-      await client.remove('route', name);
-    } catch (error) {
-      console.warn('Warning: failed to remove Route during cleanup');
-    }
-
-    try {
-      await client.remove('service', name);
-    } catch (error) {
-      console.warn('Warning: failed to remove Service during cleanup');
-    }
-
-    try {
-      await client.patch('serviceaccount', serviceAccount, {
-        metadata: {
-          annotations: {
-            [annotationKey]: null,
-          },
+    // Patch ServiceAccount annotation
+    await client.patch('serviceaccount', serviceAccount, {
+      metadata: {
+        annotations: {
+          [annotationKey]: annotationValue,
         },
-      });
-    } catch (error) {
-      console.warn('Warning: failed to remove annotation during cleanup');
-    }
-  };
+      },
+    });
 
-  return { url, close };
+    // Poll for Route admission
+    const url = await pollForHost(client, name, timeoutMs, intervalMs);
+
+    return { url, close: cleanup };
+  } catch (error) {
+    // Clean up any resources created before the error
+    await cleanup();
+    throw error;
+  }
+}
+
+async function cleanupResources(client, name, serviceAccount, annotationKey) {
+  try {
+    await client.remove('route', name);
+  } catch (error) {
+    console.warn('Warning: failed to remove Route during cleanup');
+  }
+
+  try {
+    await client.remove('service', name);
+  } catch (error) {
+    console.warn('Warning: failed to remove Service during cleanup');
+  }
+
+  try {
+    await client.patch('serviceaccount', serviceAccount, {
+      metadata: {
+        annotations: {
+          [annotationKey]: null,
+        },
+      },
+    });
+  } catch (error) {
+    console.warn('Warning: failed to remove annotation during cleanup');
+  }
 }
 
 async function createWithRetry(client, kind, body) {

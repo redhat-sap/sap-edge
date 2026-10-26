@@ -346,3 +346,116 @@ test('times_out_without_host', async () => {
     }
   );
 });
+
+test('failure_cleans_up_on_timeout', async () => {
+  const removals = [];
+  const patches = [];
+  const fakeClient = {
+    async create() {
+      return { metadata: { name: 'test-route' } };
+    },
+    async patch(kind, name, mergePatch) {
+      patches.push({ kind, name, mergePatch });
+      return { metadata: { name } };
+    },
+    async get(kind, name) {
+      if (kind === 'route' && name === 'test-route') {
+        // Route never gets admitted (no host)
+        return {
+          status: {
+            ingress: [],
+          },
+        };
+      }
+      throw new Error('Unexpected get');
+    },
+    async remove(kind, name) {
+      removals.push({ kind, name });
+    },
+  };
+
+  await assert.rejects(
+    openRoute(fakeClient, {
+      name: 'test-route',
+      podName: 'test-pod',
+      podUID: 'test-uid-12345',
+      taskRunName: 'test-taskrun',
+      serviceAccount: 'test-sa',
+      timeoutMs: 200,
+      intervalMs: 50,
+    }),
+    (err) => {
+      assert.ok(err instanceof SetupError);
+      assert.ok(err.message.includes('timeout') || err.message.includes('admitted'));
+      return true;
+    }
+  );
+
+  // Verify cleanup happened
+  assert.ok(removals.find(r => r.kind === 'route' && r.name === 'test-route'), 'Route removed on timeout');
+  assert.ok(removals.find(r => r.kind === 'service' && r.name === 'test-route'), 'Service removed on timeout');
+
+  // Verify annotation was removed (not left set)
+  const annotationRemoval = patches.find(p =>
+    p.kind === 'serviceaccount' &&
+    p.name === 'test-sa' &&
+    p.mergePatch.metadata.annotations['serviceaccounts.openshift.io/oauth-redirectreference.test-route'] === null
+  );
+  assert.ok(annotationRemoval, 'Annotation removed on timeout');
+});
+
+test('failure_cleans_up_when_route_create_fails', async () => {
+  const removals = [];
+  const patches = [];
+  const fakeClient = {
+    async create(kind, body) {
+      if (kind === 'service') {
+        return { metadata: { name: body.metadata.name } };
+      }
+      if (kind === 'route') {
+        // Route create fails with non-'exists' error
+        throw new SetupError('Quota exceeded for routes');
+      }
+      throw new Error('Unexpected create');
+    },
+    async patch(kind, name, mergePatch) {
+      patches.push({ kind, name, mergePatch });
+      return { metadata: { name } };
+    },
+    async get() {
+      throw new Error('Should not get here');
+    },
+    async remove(kind, name) {
+      removals.push({ kind, name });
+    },
+  };
+
+  await assert.rejects(
+    openRoute(fakeClient, {
+      name: 'test-route',
+      podName: 'test-pod',
+      podUID: 'test-uid-12345',
+      taskRunName: 'test-taskrun',
+      serviceAccount: 'test-sa',
+      timeoutMs: 5000,
+      intervalMs: 100,
+    }),
+    (err) => {
+      assert.ok(err instanceof SetupError);
+      assert.ok(err.message.includes('Quota exceeded'));
+      return true;
+    }
+  );
+
+  // Verify Service was removed (created before Route failed)
+  assert.ok(removals.find(r => r.kind === 'service' && r.name === 'test-route'), 'Service removed after Route create failure');
+
+  // Annotation should not be left set (patch to null should be attempted, even if it wasn't set)
+  // The cleanup tries to remove it regardless
+  const hasAnnotationRemoval = patches.some(p =>
+    p.kind === 'serviceaccount' &&
+    p.name === 'test-sa' &&
+    p.mergePatch.metadata.annotations['serviceaccounts.openshift.io/oauth-redirectreference.test-route'] === null
+  );
+  assert.ok(hasAnnotationRemoval, 'Annotation cleanup attempted after Route create failure');
+});
