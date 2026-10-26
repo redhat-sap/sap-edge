@@ -312,6 +312,21 @@ exit 2
   }
 });
 
+// Pid a fake elm wrote to file, polled until it is there (at most withinMs)
+async function waitForPid(file, withinMs) {
+  const deadline = Date.now() + withinMs;
+  while (Date.now() < deadline) {
+    try {
+      const pid = Number.parseInt((await readFile(file, 'utf8')).trim(), 10);
+      if (Number.isInteger(pid) && pid > 0) return pid;
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return assert.fail(`fake elm did not write ${file} within ${withinMs} ms`);
+}
+
 test('init_times_out', async () => {
   const folder = await mkdtemp(join(tmpdir(), 'elm-init-test-'));
   try {
@@ -328,13 +343,18 @@ exit 0
     await chmod(elmPath, 0o755);
     await writeFile(contextFile, 'test-context');
 
-    await assert.rejects(
+    // Enough headroom for expect to start and spawn the fake elm on a loaded
+    // machine: with 500 ms the timeout sometimes fired before elm existed, so
+    // there was no pid file (and no process) to check.
+    const timeoutMs = 4000;
+    const started = Date.now();
+    const rejection = assert.rejects(
       runElmInit({
         elmPath,
         contextFile,
         password: 'test',
         cwd: folder,
-        timeoutMs: 500,
+        timeoutMs,
         killGracePeriodMs: 500,
         platform: process.platform,
       }),
@@ -344,14 +364,17 @@ exit 0
         return true;
       }
     );
+    rejection.catch(() => {}); // awaited below; no unhandled rejection if an assertion fails first
 
-    // Wait ~1s after rejection to ensure cleanup
+    // The fake elm runs before the timeout fires...
+    const pid = await waitForPid(pidFile, timeoutMs - 500);
+    assert.ok(Date.now() - started < timeoutMs, 'fake elm started only after the timeout');
+    assert.doesNotThrow(() => process.kill(pid, 0), 'fake elm is not running before the timeout');
+
+    await rejection;
+
+    // ...and is gone ~1s after the rejection
     await new Promise((resolve) => setTimeout(resolve, 1000));
-
-    // Verify no process from this test is alive
-    const pidContent = await readFile(pidFile, 'utf8');
-    const pid = parseInt(pidContent.trim(), 10);
-    assert.ok(Number.isFinite(pid) && pid > 0);
     assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
   } finally {
     await rm(folder, { recursive: true, force: true });
