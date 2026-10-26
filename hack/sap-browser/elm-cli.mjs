@@ -125,14 +125,21 @@ export async function runElmInit({
       const escapedPwd = password.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\$/g, '\\$').replace(/\[/g, '\\[').replace(/\]/g, '\\]');
       const expectScript = `
 log_user 1
-set timeout ${Math.ceil(timeoutMs / 1000)}
+set timeout ${Math.ceil(timeoutMs / 1000) + 5}
 spawn "${escapedElm}" init -c "${escapedCfg}"
 expect {
   -nocase -re "password" {
     send "${escapedPwd}\\r"
-    expect eof
+    expect {
+      eof {}
+      timeout { exit 1 }
+    }
     lassign [wait] pid spawnid os_error_flag value
     exit $value
+  }
+  eof {
+    lassign [wait] pid spawnid os_error_flag value
+    exit [expr {$value == 0 ? 1 : $value}]
   }
   timeout {
     exit 1
@@ -143,20 +150,25 @@ expect {
       const child = spawnImpl(command, args, { env, cwd, stdio: ['pipe', 'pipe', 'pipe'] });
       let lineBuffer = '';
       let timeoutHandle;
+      let killHandle;
 
       const cleanup = () => {
         if (timeoutHandle) clearTimeout(timeoutHandle);
+        if (killHandle) clearTimeout(killHandle);
       };
 
       const fail = (error) => {
         cleanup();
-        child.kill();
+        child.kill('SIGTERM');
+        killHandle = setTimeout(() => {
+          child.kill('SIGKILL');
+        }, killGracePeriodMs);
         reject(error);
       };
 
       timeoutHandle = setTimeout(() => {
         fail(new SetupError('elm init timed out'));
-      }, timeoutMs + 1000); // Add 1s buffer for expect's own timeout
+      }, timeoutMs);
 
       // Send the expect script to stdin
       child.stdin.write(expectScript);
@@ -184,11 +196,19 @@ expect {
         child.stderr.on('data', onData);
       }
 
+      let exitCode = null;
+      let exitSignal = null;
+
       child.on('error', (error) => {
         fail(new SetupError(`Failed to run elm init: ${error.message}`));
       });
 
       child.on('exit', (code, signal) => {
+        exitCode = code;
+        exitSignal = signal;
+      });
+
+      child.on('close', () => {
         cleanup();
 
         // Log any remaining output
@@ -197,12 +217,12 @@ expect {
           log(masked);
         }
 
-        if (code === 0) {
+        if (exitCode === 0) {
           resolve();
-        } else if (signal) {
-          reject(new SetupError(`elm init was killed with signal ${signal}`));
+        } else if (exitSignal) {
+          reject(new SetupError(`elm init was killed with signal ${exitSignal}`));
         } else {
-          reject(new SetupError(`elm init failed (exit ${code})`));
+          reject(new SetupError(`elm init failed (exit ${exitCode})`));
         }
       });
     });

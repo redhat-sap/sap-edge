@@ -69,6 +69,7 @@ eicadmin
 elbv
 elif
 endfor
+EOTHER
 endpointslice
 endswith
 envsubst
@@ -115,6 +116,7 @@ masterauth
 mjiao
 mktemp
 multistack
+nocase
 nofile
 northeurope
 notin

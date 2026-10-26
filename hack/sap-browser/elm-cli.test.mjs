@@ -3,7 +3,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -281,12 +281,45 @@ exit 0
   }
 });
 
-test('init_times_out', async () => {
+test('init_fails_when_elm_exits_before_prompt', async () => {
   const folder = await mkdtemp(join(tmpdir(), 'elm-init-test-'));
   try {
     const elmPath = join(folder, 'fake-elm');
     const contextFile = join(folder, 'context.cfg');
     await writeFile(elmPath, `#!/bin/bash
+echo "Error: boom"
+exit 2
+`);
+    await chmod(elmPath, 0o755);
+    await writeFile(contextFile, 'test-context');
+
+    await assert.rejects(
+      runElmInit({
+        elmPath,
+        contextFile,
+        password: 'test',
+        cwd: folder,
+        platform: process.platform,
+      }),
+      (err) => {
+        assert.equal(err.name, 'SetupError');
+        assert.ok(err.message.includes('elm init failed'));
+        return true;
+      }
+    );
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+});
+
+test('init_times_out', async () => {
+  const folder = await mkdtemp(join(tmpdir(), 'elm-init-test-'));
+  try {
+    const elmPath = join(folder, 'fake-elm');
+    const contextFile = join(folder, 'context.cfg');
+    const pidFile = join(folder, 'elm.pid');
+    await writeFile(elmPath, `#!/bin/bash
+echo $$ > "${pidFile}"
 read -rs -p 'Context Password: ' pw
 echo
 sleep 10
@@ -302,6 +335,7 @@ exit 0
         password: 'test',
         cwd: folder,
         timeoutMs: 500,
+        killGracePeriodMs: 500,
         platform: process.platform,
       }),
       (err) => {
@@ -310,6 +344,15 @@ exit 0
         return true;
       }
     );
+
+    // Wait ~1s after rejection to ensure cleanup
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+
+    // Verify no process from this test is alive
+    const pidContent = await readFile(pidFile, 'utf8');
+    const pid = parseInt(pidContent.trim(), 10);
+    assert.ok(Number.isFinite(pid) && pid > 0);
+    assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
   } finally {
     await rm(folder, { recursive: true, force: true });
   }
@@ -327,7 +370,6 @@ function fakeChild() {
       callback();
     },
   });
-  child.stdin.on = child.stdin.on.bind(child.stdin);
   child.kill = (signal) => {
     child.killSignals = child.killSignals || [];
     child.killSignals.push(signal || 'SIGTERM');
@@ -403,18 +445,18 @@ test('linux_child_env_exact_keys', async () => {
 
 test('linux_prompt_split_across_chunks', async () => {
   const password = 'test-password';
+  let savedChild;
 
   const spawnImpl = (command, args, opts) => {
     const child = fakeChild();
+    savedChild = child;
     setImmediate(() => {
       child.stdout.emit('data', Buffer.from('Context Pass'));
       child.stdout.emit('data', Buffer.from('word: '));
-      setTimeout(() => {
-        assert.equal(child.stdinWrites.length, 1);
-        assert.equal(child.stdinWrites[0], password + '\n');
-        child.emit('exit', 0, null);
-        child.emit('close');
-      }, 10);
+      child.stdout.emit('data', Buffer.from('Your password is set\n'));
+      child.stdout.emit('data', Buffer.from('Done\n'));
+      child.emit('exit', 0, null);
+      child.emit('close');
     });
     return child;
   };
@@ -428,6 +470,8 @@ test('linux_prompt_split_across_chunks', async () => {
     spawnImpl,
     log: () => {},
   });
+
+  assert.deepEqual(savedChild.stdinWrites, [password + '\n']);
 });
 
 test('linux_password_masked_in_logs', async () => {
@@ -492,8 +536,10 @@ test('linux_exit_code_3_rejection', async () => {
 });
 
 test('linux_timeout_kills_child', async () => {
+  let savedChild;
   const spawnImpl = (command, args, opts) => {
     const child = fakeChild();
+    savedChild = child;
     setImmediate(() => {
       child.stdout.emit('data', Buffer.from('Context Password: \n'));
       // Never emit exit/close to trigger timeout
@@ -510,6 +556,7 @@ test('linux_timeout_kills_child', async () => {
       platform: 'linux',
       spawnImpl,
       timeoutMs: 100,
+      killGracePeriodMs: 50,
       log: () => {},
     }),
     (err) => {
@@ -518,14 +565,16 @@ test('linux_timeout_kills_child', async () => {
       return true;
     }
   );
+
+  assert.deepEqual(savedChild.killSignals, ['SIGTERM']);
 });
 
 test('linux_stdin_epipe_ignored', async () => {
-  const spawnImpl = (command, args, opts) => {
+  // EPIPE + exit 0 → resolves
+  const spawnImplSuccess = (command, args, opts) => {
     const child = fakeChild();
     setImmediate(() => {
       child.stdout.emit('data', Buffer.from('Context Password: \n'));
-      // Trigger EPIPE after password is sent
       setTimeout(() => {
         const epipeError = new Error('write EPIPE');
         epipeError.code = 'EPIPE';
@@ -537,16 +586,48 @@ test('linux_stdin_epipe_ignored', async () => {
     return child;
   };
 
-  // Should not reject due to EPIPE
   await runElmInit({
     elmPath: '/tmp/elm',
     contextFile: '/tmp/context.cfg',
     password: 'test',
     cwd: '/tmp',
     platform: 'linux',
-    spawnImpl,
+    spawnImpl: spawnImplSuccess,
     log: () => {},
   });
+
+  // EPIPE + exit 2 → rejects with exit code
+  const spawnImplFailure = (command, args, opts) => {
+    const child = fakeChild();
+    setImmediate(() => {
+      child.stdout.emit('data', Buffer.from('Context Password: \n'));
+      setTimeout(() => {
+        const epipeError = new Error('write EPIPE');
+        epipeError.code = 'EPIPE';
+        child.stdin.emit('error', epipeError);
+        child.emit('exit', 2, null);
+        child.emit('close');
+      }, 10);
+    });
+    return child;
+  };
+
+  await assert.rejects(
+    runElmInit({
+      elmPath: '/tmp/elm',
+      contextFile: '/tmp/context.cfg',
+      password: 'test',
+      cwd: '/tmp',
+      platform: 'linux',
+      spawnImpl: spawnImplFailure,
+      log: () => {},
+    }),
+    (err) => {
+      assert.equal(err.name, 'SetupError');
+      assert.equal(err.message, 'elm init failed (exit 2)');
+      return true;
+    }
+  );
 });
 
 test('linux_stdin_non_epipe_error_rejects', async () => {
@@ -582,8 +663,10 @@ test('linux_stdin_non_epipe_error_rejects', async () => {
 });
 
 test('linux_sigkill_after_grace_period', async () => {
+  let savedChild;
   const spawnImpl = (command, args, opts) => {
     const child = fakeChild();
+    savedChild = child;
     setImmediate(() => {
       child.stdout.emit('data', Buffer.from('Context Password: \n'));
       // Never emit close to simulate ignoring SIGTERM
@@ -610,6 +693,54 @@ test('linux_sigkill_after_grace_period', async () => {
     }
   );
 
-  // Wait a bit to let the kill signals be recorded
+  // Wait for the grace period to elapse
   await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual(savedChild.killSignals, ['SIGTERM', 'SIGKILL']);
+});
+
+test('linux_no_sigkill_when_closed_in_grace', async () => {
+  let savedChild;
+  const spawnImpl = (command, args, opts) => {
+    const child = fakeChild();
+    savedChild = child;
+    let killCount = 0;
+    const originalKill = child.kill.bind(child);
+    child.kill = (signal) => {
+      originalKill(signal);
+      killCount++;
+      if (killCount === 1) {
+        // Close immediately after SIGTERM
+        setImmediate(() => {
+          child.emit('exit', 143, null);
+          child.emit('close');
+        });
+      }
+    };
+    setImmediate(() => {
+      child.stdout.emit('data', Buffer.from('Context Password: \n'));
+      // Will close after SIGTERM
+    });
+    return child;
+  };
+
+  await assert.rejects(
+    runElmInit({
+      elmPath: '/tmp/elm',
+      contextFile: '/tmp/context.cfg',
+      password: 'test',
+      cwd: '/tmp',
+      platform: 'linux',
+      spawnImpl,
+      timeoutMs: 50,
+      killGracePeriodMs: 100,
+      log: () => {},
+    }),
+    (err) => {
+      assert.equal(err.name, 'SetupError');
+      return true;
+    }
+  );
+
+  // SIGKILL timer should have been cleared
+  assert.deepEqual(savedChild.killSignals, ['SIGTERM']);
 });
