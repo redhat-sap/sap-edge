@@ -1,21 +1,26 @@
 // SPDX-FileCopyrightText: 2026 SAP edge team
 // SPDX-License-Identifier: Apache-2.0
 
-import { writeFile } from 'node:fs/promises';
+import { rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { SetupError } from './inputs.mjs';
 import { uploadBundle } from './s3.mjs';
+
+const VALID_STATES = ['absent', 'added', 'initialized', 'eic-deployed'];
+
+function normalizeId(id) {
+  return String(id).trim().toLowerCase();
+}
 
 export async function runDeployFlow(ctx) {
   const { page, steps, inputs, clusterEdgeNodeId, s3, s3Prefix, dir, waitForTask, loadKubeconfig, fetchElm, elmInit, password, log } = ctx;
   const { clusterName } = inputs;
 
-  // Step 1: Get edge node state
+  // Step 1: Get edge node state and validate
   let state = await steps.edgeNodeState(page, clusterName);
 
-  // If state is unknown, reject immediately
-  if (state === 'unknown') {
-    throw new SetupError(`Edge Node has unknown state; cannot proceed safely. Check the ELM UI manually.`);
+  if (!VALID_STATES.includes(state)) {
+    throw new SetupError(`Edge Node has unrecognised state: ${state}. Cannot proceed safely.`);
   }
 
   // Step 2: Handle leftover nodes (check if existing node belongs to this cluster)
@@ -28,8 +33,8 @@ export async function runDeployFlow(ctx) {
       throw new SetupError(`Cannot verify that the existing Edge Node ${clusterName} belongs to this cluster; not deleting it. Continue manually.`);
     }
 
-    // If IDs don't match, delete the leftover node
-    if (existingId !== clusterEdgeNodeId) {
+    // If cluster ID is empty or IDs don't match (normalized), delete the leftover node
+    if (!clusterEdgeNodeId || normalizeId(existingId) !== normalizeId(clusterEdgeNodeId)) {
       log(`Leftover Edge Node detected (existing ID: ${existingId}, cluster ID: ${clusterEdgeNodeId}), deleting...`);
       await steps.deleteEdgeNode(page, { clusterName });
       state = 'absent';
@@ -53,7 +58,10 @@ export async function runDeployFlow(ctx) {
   if (state === 'absent' || state === 'added') {
     const kubeconfigContent = await loadKubeconfig();
     const kubeconfigFile = join(dir, 'edgelm-kubeconfig.yaml');
-    await writeFile(kubeconfigFile, kubeconfigContent, { mode: 0o600 });
+    try {
+      await rm(kubeconfigFile, { force: true });
+    } catch {}
+    await writeFile(kubeconfigFile, kubeconfigContent, { mode: 0o600, flag: 'wx' });
 
     const contextFile = await steps.setUpCloudConnector(page, { clusterName, kubeconfigFile, password, dir });
 
@@ -68,8 +76,12 @@ export async function runDeployFlow(ctx) {
     // Write CA cert files
     const postgresCAFile = join(dir, 'postgres-ca.crt');
     const redisCAFile = join(dir, 'redis-ca.crt');
-    await writeFile(postgresCAFile, inputs.attachments.postgresCA, { mode: 0o600 });
-    await writeFile(redisCAFile, inputs.attachments.redisCA, { mode: 0o600 });
+    try {
+      await rm(postgresCAFile, { force: true });
+      await rm(redisCAFile, { force: true });
+    } catch {}
+    await writeFile(postgresCAFile, inputs.attachments.postgresCA, { mode: 0o600, flag: 'wx' });
+    await writeFile(redisCAFile, inputs.attachments.redisCA, { mode: 0o600, flag: 'wx' });
 
     const files = {
       postgresCA: postgresCAFile,
@@ -95,8 +107,8 @@ export async function runDeployFlow(ctx) {
 export async function runTeardownFlow({ page, steps, clusterName, log }) {
   const state = await steps.edgeNodeState(page, clusterName);
 
-  if (state === 'unknown') {
-    throw new SetupError(`Edge Node has unknown state; cannot safely delete. Check the ELM UI manually.`);
+  if (!VALID_STATES.includes(state)) {
+    throw new SetupError(`Edge Node has unrecognised state: ${state}. Cannot proceed safely.`);
   }
 
   if (state === 'absent') {
