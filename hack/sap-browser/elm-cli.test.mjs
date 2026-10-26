@@ -453,6 +453,8 @@ test('linux_prompt_split_across_chunks', async () => {
     setImmediate(() => {
       child.stdout.emit('data', Buffer.from('Context Pass'));
       child.stdout.emit('data', Buffer.from('word: '));
+      // Record writes before chunk 3 to verify split-prompt triggered the write
+      child.writesBeforeChunk3 = child.stdinWrites.length;
       child.stdout.emit('data', Buffer.from('Your password is set\n'));
       child.stdout.emit('data', Buffer.from('Done\n'));
       child.emit('exit', 0, null);
@@ -471,6 +473,9 @@ test('linux_prompt_split_across_chunks', async () => {
     log: () => {},
   });
 
+  // The split prompt "Context Pass" + "word: " should have already triggered the write
+  assert.equal(savedChild.writesBeforeChunk3, 1);
+  // And it should be the only write (not triggered again by "password" in chunk 3)
   assert.deepEqual(savedChild.stdinWrites, [password + '\n']);
 });
 
@@ -652,6 +657,7 @@ test('linux_stdin_non_epipe_error_rejects', async () => {
       cwd: '/tmp',
       platform: 'linux',
       spawnImpl,
+      killGracePeriodMs: 50,
       log: () => {},
     }),
     (err) => {
@@ -732,7 +738,7 @@ test('linux_no_sigkill_when_closed_in_grace', async () => {
       platform: 'linux',
       spawnImpl,
       timeoutMs: 50,
-      killGracePeriodMs: 100,
+      killGracePeriodMs: 30,
       log: () => {},
     }),
     (err) => {
@@ -741,6 +747,8 @@ test('linux_no_sigkill_when_closed_in_grace', async () => {
     }
   );
 
+  // Wait longer than killGracePeriodMs to ensure SIGKILL timer would have fired if not cleared
+  await new Promise((resolve) => setTimeout(resolve, 80));
   // SIGKILL timer should have been cleared
   assert.deepEqual(savedChild.killSignals, ['SIGTERM']);
 });
