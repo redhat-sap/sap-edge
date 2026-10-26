@@ -41,7 +41,11 @@ roleRef:
   name: roks-sap-browser-runner
 ---
 # The pipeline ServiceAccount needs to create per-run Roles and RoleBindings
-# that grant the browser runner access to this run's Secrets.
+# that grant the browser runner access to this run's Secrets. The pipeline SA
+# can only grant 'get secrets' it holds itself (Kubernetes RBAC escalation
+# check); it must already have 'get' on those Secrets, otherwise oc apply of
+# the per-run Role is rejected with "attempting to grant RBAC permissions not
+# currently held".
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

@@ -81,7 +81,9 @@ spec:
         echo ""
         echo "📝 Creating Role and RoleBinding '${ROLE_NAME}' on the pipeline cluster..."
 
-        oc apply -f - <<EOF
+        RBAC_ERROR=""
+        set +e
+        oc apply -f - <<EOF 2>"${TMP_DIR}/rbac-error.log"
         apiVersion: rbac.authorization.k8s.io/v1
         kind: Role
         metadata:
@@ -95,8 +97,15 @@ spec:
               - eic-registry-roks-${CLUSTER_NAME}
               - edgelm-kubeconfig-generated-${CLUSTER_NAME}
         EOF
+        ROLE_RC=$?
+        set -e
+        if [[ "${ROLE_RC}" -ne 0 ]]; then
+          RBAC_ERROR="Role"
+        fi
 
-        oc apply -f - <<EOF
+        if [[ -z "${RBAC_ERROR}" ]]; then
+          set +e
+          oc apply -f - <<EOF 2>"${TMP_DIR}/rbac-error.log"
         apiVersion: rbac.authorization.k8s.io/v1
         kind: RoleBinding
         metadata:
@@ -109,22 +118,46 @@ spec:
           kind: Role
           name: ${ROLE_NAME}
         EOF
+          BINDING_RC=$?
+          set -e
+          if [[ "${BINDING_RC}" -ne 0 ]]; then
+            RBAC_ERROR="RoleBinding"
+          fi
+        fi
 
-        echo "✅ Role and RoleBinding created"
+        if [[ -n "${RBAC_ERROR}" ]]; then
+          echo "❌ Failed to create ${RBAC_ERROR} ${ROLE_NAME}: the browser will not be able to read this run's Secrets"
+          echo "   Likely cause: the pipeline ServiceAccount lacks rbac.authorization.k8s.io role/rolebinding create rights,"
+          echo "   or does not itself hold 'get' on the three Secrets (Kubernetes RBAC escalation check)"
+          echo "   See hack/sap-browser/roks-runner-rbac.yaml for the required pipeline SA permissions"
+        else
+          echo "✅ Role and RoleBinding created"
+        fi
 
         # --- Read Edge Node ID from the ROKS cluster ---
         echo ""
         echo "📋 Reading Edge Node ID from ROKS cluster..."
         EDGE_NODE_ID=""
-        if NS_JSON=$("${CLUSTER_OC[@]}" get ns edgelm -o json 2>/dev/null); then
-          EDGE_NODE_ID=$(jq -r '.metadata.labels["edgelm.sap.com/edge-node-id"] // ""' <<< "${NS_JSON}" 2>/dev/null || true)
-          if [[ -n "${EDGE_NODE_ID}" ]]; then
-            echo "✅ Edge Node ID: ${EDGE_NODE_ID}"
+        set +e
+        NS_OUTPUT=$("${CLUSTER_OC[@]}" get ns edgelm --ignore-not-found -o json 2>&1)
+        NS_RC=$?
+        set -e
+        if [[ "${NS_RC}" -eq 0 ]]; then
+          if [[ -z "${NS_OUTPUT}" ]]; then
+            echo "ℹ️  Namespace edgelm not found"
           else
-            echo "ℹ️  Edge Node ID label not found"
+            EDGE_NODE_ID=$(jq -r '.metadata.labels["edgelm.sap.com/edge-node-id"] // ""' <<< "${NS_OUTPUT}" 2>/dev/null || true)
+            if [[ -n "${EDGE_NODE_ID}" ]]; then
+              echo "✅ Edge Node ID: ${EDGE_NODE_ID}"
+            else
+              echo "ℹ️  Edge Node ID label not found"
+            fi
           fi
         else
-          echo "ℹ️  Namespace edgelm not found"
+          EDGE_NODE_ID="unknown"
+          # Extract error category (Unauthorized, Forbidden, connection refused, etc.)
+          ERROR_CATEGORY=$(echo "${NS_OUTPUT}" | grep -oE "(Unauthorized|Forbidden|connection refused|unable to connect|timeout)" || echo "read error")
+          echo "⚠️  Could not read namespace edgelm (${ERROR_CATEGORY}); Edge Node ID set to 'unknown'"
         fi
 
         echo -n "${EDGE_NODE_ID}" > "$(results.clusterEdgeNodeId.path)"

@@ -48,7 +48,7 @@ captured_manifest() {
 
 run_browser_access() {
   printf '%s\t%s\t%s\n' \
-    '--kubeconfig */kubeconfig get ns edgelm -o json' 0 "{\"metadata\":{\"labels\":{\"edgelm.sap.com/edge-node-id\":\"${EDGE_NODE_ID}\"}}}" \
+    '--kubeconfig */kubeconfig get ns edgelm --ignore-not-found -o json' 0 "{\"metadata\":{\"labels\":{\"edgelm.sap.com/edge-node-id\":\"${EDGE_NODE_ID}\"}}}" \
     > "${FAKE_OC_RULES}"
 
   TASK_CWD="${WS}" run_task "${TASK}" \
@@ -178,17 +178,14 @@ setup
 run_browser_access
 expect_success
 
-BINDING=$(captured_manifest "roks-sap-browser-${CLUSTER}") || { cat "${FAKE_OC_LOG}"; fail "RoleBinding roks-sap-browser-${CLUSTER} not applied"; }
 # The RoleBinding and Role have the same name, so we need to find both
-ROLE_FILE=""
 BINDING_FILE=""
 for FILE in "${FAKE_OC_STDIN_DIR}"/*.yaml; do
   [[ -f "${FILE}" ]] || continue
   if grep -qE "^  name: roks-sap-browser-${CLUSTER}\$" "${FILE}"; then
-    if grep -qE "^kind: Role\$" "${FILE}"; then
-      ROLE_FILE="${FILE}"
-    elif grep -qE "^kind: RoleBinding\$" "${FILE}"; then
+    if grep -qE "^kind: RoleBinding\$" "${FILE}"; then
       BINDING_FILE="${FILE}"
+      break
     fi
   fi
 done
@@ -242,7 +239,7 @@ run_browser_access
 expect_success
 
 # Check that the task queries the ROKS cluster for the edge node ID
-assert_called "^--kubeconfig ${WS}/kubeconfig get ns edgelm -o json$"
+assert_called "^--kubeconfig ${WS}/kubeconfig get ns edgelm --ignore-not-found -o json$"
 
 # Check the result file contains the edge node ID
 RESULT=$(cat "${RESULTS_DIR}/clusterEdgeNodeId")
@@ -253,10 +250,10 @@ echo "✅ PASS: edge_node_id_result"
 echo ""
 echo "Test: edge_node_id_empty_when_absent"
 echo "--------------------------------------------"
-# Namespace missing
+# Namespace missing (--ignore-not-found returns rc 0 with empty output)
 setup
 printf '%s\t%s\t%s\n' \
-  '--kubeconfig */kubeconfig get ns edgelm -o json' 1 'Error from server (NotFound): namespaces "edgelm" not found' \
+  '--kubeconfig */kubeconfig get ns edgelm --ignore-not-found -o json' 0 '' \
   > "${FAKE_OC_RULES}"
 TASK_CWD="${WS}" run_task "${TASK}" \
   --param clusterName="${CLUSTER_NAME}" \
@@ -271,7 +268,7 @@ RESULT=$(cat "${RESULTS_DIR}/clusterEdgeNodeId")
 # Label missing
 setup
 printf '%s\t%s\t%s\n' \
-  '--kubeconfig */kubeconfig get ns edgelm -o json' 0 '{"metadata":{"labels":{}}}' \
+  '--kubeconfig */kubeconfig get ns edgelm --ignore-not-found -o json' 0 '{"metadata":{"labels":{}}}' \
   > "${FAKE_OC_RULES}"
 TASK_CWD="${WS}" run_task "${TASK}" \
   --param clusterName="${CLUSTER_NAME}" \
@@ -284,6 +281,47 @@ RESULT=$(cat "${RESULTS_DIR}/clusterEdgeNodeId")
 [[ "${RESULT}" == "" ]] || fail "clusterEdgeNodeId result should be empty when label is missing, got '${RESULT}'"
 
 echo "✅ PASS: edge_node_id_empty_when_absent"
+
+# Test case: edge_node_id_unknown_on_read_error
+echo ""
+echo "Test: edge_node_id_unknown_on_read_error"
+echo "--------------------------------------------"
+setup
+printf '%s\t%s\t%s\n' \
+  '--kubeconfig */kubeconfig get ns edgelm --ignore-not-found -o json' 1 'Error from server (Unauthorized): namespaces "edgelm" is forbidden: User "system:serviceaccount:default:cluster-admin-sa" cannot get resource "namespaces" in API group "" in the namespace "edgelm"' \
+  > "${FAKE_OC_RULES}"
+TASK_CWD="${WS}" run_task "${TASK}" \
+  --param clusterName="${CLUSTER_NAME}" \
+  --param runnerServiceAccount="${RUNNER_SERVICE_ACCOUNT}" \
+  --workspace-dir source="${WS}" \
+  --results-dir "${RESULTS_DIR}" \
+  --drop '# Install tools' 'echo "✅ Tools installed"'
+expect_success
+RESULT=$(cat "${RESULTS_DIR}/clusterEdgeNodeId")
+[[ "${RESULT}" == "unknown" ]] || fail "clusterEdgeNodeId result should be 'unknown' on read error, got '${RESULT}'"
+grep -q "⚠️.*Could not read namespace edgelm" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "warning not printed on read error"; }
+grep -q "Unauthorized" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "error category not printed"; }
+echo "✅ PASS: edge_node_id_unknown_on_read_error"
+
+# Test case: role_apply_failure_does_not_fail_task
+echo ""
+echo "Test: role_apply_failure_does_not_fail_task"
+echo "--------------------------------------------"
+setup
+printf '%s\t%s\t%s\n' \
+  '--kubeconfig */kubeconfig get ns edgelm --ignore-not-found -o json' 0 '' \
+  'apply -f -' 1 'Error from server (Forbidden): error when creating "STDIN": roles.rbac.authorization.k8s.io "roks-sap-browser-redhat-roks-eic-pr7" is forbidden: user "system:serviceaccount:default:pipeline" (groups=["system:serviceaccounts" "system:serviceaccounts:default" "system:authenticated"]) is attempting to grant RBAC permissions not currently held' \
+  > "${FAKE_OC_RULES}"
+TASK_CWD="${WS}" run_task "${TASK}" \
+  --param clusterName="${CLUSTER_NAME}" \
+  --param runnerServiceAccount="${RUNNER_SERVICE_ACCOUNT}" \
+  --workspace-dir source="${WS}" \
+  --results-dir "${RESULTS_DIR}" \
+  --drop '# Install tools' 'echo "✅ Tools installed"'
+expect_success
+grep -q "❌.*Failed to create.*the browser will not be able to read this run's Secrets" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "error message not printed on RBAC apply failure"; }
+grep -q "Kubernetes RBAC escalation check" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "escalation check explanation not printed"; }
+echo "✅ PASS: role_apply_failure_does_not_fail_task"
 
 echo ""
 echo "============================================"
