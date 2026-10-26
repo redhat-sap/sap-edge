@@ -47,6 +47,8 @@ def run_after_set(task):
     return set(task.get("runAfter", []))
 
 
+UPLOAD_PLAN = "$(tasks.prepare-restricted-resources-prefix.results.uploadPlan)"
+
 # ROKS pipeline
 roks_path = sys.argv[1]
 name, params, tasks = load(roks_path)
@@ -75,14 +77,20 @@ if elm_wait:
     instructions = task_param(elm_wait, "instructions")
     check(instructions and "Edge Lifecycle Management" in instructions and "elm/" in instructions,
           "ROKS: wait-elm-zip instructions must mention ELM and elm/ folder")
+    # The upload plan (folders, console and aws s3 cp steps) is a result of
+    # the prefix task, which has no `when` (no skip cascade)
+    check(instructions and instructions.strip().endswith(UPLOAD_PLAN),
+          f"ROKS: wait-elm-zip instructions must end with {UPLOAD_PLAN}")
 
 # apply-rbac-elm (renamed from apply-rbac)
 check("apply-rbac" not in tasks, "ROKS: apply-rbac must be renamed to apply-rbac-elm")
 elm_apply = tasks.get("apply-rbac-elm")
 check(elm_apply is not None, "ROKS: apply-rbac-elm must exist")
 if elm_apply:
-    check(run_after_set(elm_apply) == {"verify-operators", "wait-elm-zip"},
-          f"ROKS: apply-rbac-elm runAfter must be [verify-operators, wait-elm-zip], got {run_after_set(elm_apply)}")
+    # sap-browser-access records the cluster's pre-run Edge Node ID before the
+    # ELM zip is applied, also when the zip was uploaded by hand early
+    check(run_after_set(elm_apply) == {"verify-operators", "wait-elm-zip", "sap-browser-access"},
+          f"ROKS: apply-rbac-elm runAfter must be [verify-operators, wait-elm-zip, sap-browser-access], got {run_after_set(elm_apply)}")
     check(task_param(elm_apply, "requiredComponents") == "elm",
           "ROKS: apply-rbac-elm requiredComponents must be \"elm\"")
     check(task_param(elm_apply, "s3Prefix") == "restricted-resources/$(params.clusterName)/",
@@ -122,6 +130,8 @@ if eic_wait:
     instructions = task_param(eic_wait, "instructions")
     check(instructions and "Edge Integration Cell" in instructions and "edge-icell/" in instructions,
           "ROKS: wait-eic-zip instructions must mention EIC and edge-icell/ folder")
+    check(instructions and instructions.strip().endswith(UPLOAD_PLAN),
+          f"ROKS: wait-eic-zip instructions must end with {UPLOAD_PLAN}")
 
 # apply-rbac-eic
 eic_apply = tasks.get("apply-rbac-eic")

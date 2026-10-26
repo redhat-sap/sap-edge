@@ -54,10 +54,28 @@ if [[ "$1" == "s3" ]] && [[ "$2" == "ls" ]]; then
     CALL_COUNT=$((CALL_COUNT + 1))
     echo "${CALL_COUNT}" > "${FOLDER_COUNT_FILE}"
 
-    # Check for a data file for this folder and poll count
+    # Runaway guard: a task that never stops polling gets a zip (and the test
+    # fails on the marker) instead of hanging
+    if [[ "${CALL_COUNT}" -gt 40 ]]; then
+      echo "${FOLDER}" >> "${CALL_COUNT_FILE}.runaway"
+      echo "2026-10-26 10:00:00      1 runaway.zip"
+      exit 0
+    fi
+
+    # <folder>_poll<N>.fail: the listing fails (stderr text, exit 255)
+    FAIL_FILE="${POLL_DATA_DIR}/${FOLDER_SAFE}_poll${CALL_COUNT}.fail"
+    if [[ -f "${FAIL_FILE}" ]]; then
+      cat "${FAIL_FILE}" >&2
+      exit 255
+    fi
+
+    # Check for a data file for this folder and poll count; like aws s3 ls,
+    # nothing under the prefix means no output and exit 1
     DATA_FILE="${POLL_DATA_DIR}/${FOLDER_SAFE}_poll${CALL_COUNT}.txt"
-    if [[ -f "${DATA_FILE}" ]]; then
+    if [[ -s "${DATA_FILE}" ]]; then
       cat "${DATA_FILE}"
+    else
+      exit 1
     fi
   fi
 fi
@@ -261,13 +279,14 @@ for i in 1 2; do
 EOF
 done
 
-INSTRUCTIONS="Upload the bundles to the folders below"
+INSTRUCTION_TEXT="Upload the bundles to the folders below"
 
-run_with_fake_aws_poll "${CALL_COUNT_FILE}" \
+# As the param and as the env value Tekton sets from it
+INSTRUCTIONS="${INSTRUCTION_TEXT}" run_with_fake_aws_poll "${CALL_COUNT_FILE}" \
   --param obcName=x \
   --param s3Prefix=prefix_ \
   --param components="elm" \
-  --param instructions="${INSTRUCTIONS}" \
+  --param instructions="${INSTRUCTION_TEXT}" \
   --param pollSeconds=0
 
 if [[ "${TASK_RC}" -ne 0 ]]; then
@@ -277,7 +296,7 @@ if [[ "${TASK_RC}" -ne 0 ]]; then
 fi
 
 # Instructions should appear exactly once
-INSTR_COUNT=$(echo "${TASK_OUT}" | grep -c -F "${INSTRUCTIONS}" || true)
+INSTR_COUNT=$(echo "${TASK_OUT}" | grep -c -F "${INSTRUCTION_TEXT}" || true)
 if [[ "${INSTR_COUNT}" -ne 1 ]]; then
   echo "TASK OUTPUT:"
   echo "${TASK_OUT}"
@@ -325,6 +344,231 @@ if ! echo "${TASK_OUT}" | grep -qF 'restricted-resources-Edge_Integration_Cell-8
 fi
 
 echo "✅ PASS: accepts_keys_with_spaces"
+
+# Number of calls the fake aws got for a folder (prefix_/<folder>/)
+folder_calls() {
+  cat "${CALL_COUNT_FILE}.prefix__$1_" 2>/dev/null || echo 0
+}
+
+# Fail when the task kept polling past the runaway guard
+check_no_runaway() {
+  if [[ -f "${CALL_COUNT_FILE}.runaway" ]]; then
+    echo "TASK OUTPUT:"
+    echo "${TASK_OUT}"
+    fail "task kept polling after the zip appeared: $(cat "${CALL_COUNT_FILE}.runaway")"
+  fi
+}
+
+LISTING_SECRET="FAKE-SECRET-IN-AWS-STDERR-0123"
+
+# ----------------------------------------------------------------------------
+# Test: listing_errors_are_retried
+# ----------------------------------------------------------------------------
+echo ""
+echo "Test: listing_errors_are_retried"
+echo "--------------------------------------------"
+
+POLL_DATA_DIR=$(tmp_dir)
+CALL_COUNT_FILE=$(tmp_file)
+echo "0" > "${CALL_COUNT_FILE}"
+
+# elm/: the listing fails on polls 1-2 (aws exits non-zero with an error on
+# stderr), then the zip is there (poll 3, plus the final listing)
+for i in 1 2; do
+  echo "An error occurred (InvalidAccessKeyId) when calling the ListObjectsV2 operation: ${LISTING_SECRET}" \
+    > "${POLL_DATA_DIR}/prefix__elm__poll${i}.fail"
+done
+for i in 3 4; do
+  cat > "${POLL_DATA_DIR}/prefix__elm__poll${i}.txt" <<EOF
+2026-10-26 10:00:00      12345 restricted-resources-Edge_Lifecycle_Management-1.64.0.zip
+EOF
+done
+
+run_with_fake_aws_poll "${CALL_COUNT_FILE}" \
+  --param obcName=x \
+  --param s3Prefix=prefix_ \
+  --param components="elm" \
+  --param pollSeconds=0
+
+if [[ "${TASK_RC}" -ne 0 ]]; then
+  echo "TASK OUTPUT:"
+  echo "${TASK_OUT}"
+  fail "task failed on a listing error (rc ${TASK_RC})"
+fi
+check_no_runaway
+[[ "$(folder_calls elm)" -eq 4 ]] || { echo "${TASK_OUT}"; fail "expected 3 polls + the final listing for elm, got $(folder_calls elm) calls"; }
+grep -qF 'restricted-resources-Edge_Lifecycle_Management-1.64.0.zip' <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "zip not listed after the listing errors"; }
+# One warning for the first failure; at most one per 10 failed listings
+WARNINGS=$(grep -c "⚠️  listing elm failed" <<< "${TASK_OUT}" || true)
+[[ "${WARNINGS}" -eq 1 ]] || { echo "${TASK_OUT}"; fail "expected 1 listing warning, got ${WARNINGS}"; }
+grep -qF "⚠️  listing elm failed (attempt 1); retrying" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "listing warning text differs"; }
+# aws stderr is never printed (it could hold credentials)
+! grep -qF "${LISTING_SECRET}" <<< "${TASK_OUT}" || fail "aws stderr printed in the task output"
+! grep -q "syntax error" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "arithmetic error in the zip count"; }
+
+echo "✅ PASS: listing_errors_are_retried"
+
+# ----------------------------------------------------------------------------
+# Test: failure_warnings_are_rate_limited
+# ----------------------------------------------------------------------------
+echo ""
+echo "Test: failure_warnings_are_rate_limited"
+echo "--------------------------------------------"
+
+POLL_DATA_DIR=$(tmp_dir)
+CALL_COUNT_FILE=$(tmp_file)
+echo "0" > "${CALL_COUNT_FILE}"
+
+for i in $(seq 1 12); do
+  echo "Could not connect to the endpoint URL" > "${POLL_DATA_DIR}/prefix__elm__poll${i}.fail"
+done
+for i in 13 14; do
+  cat > "${POLL_DATA_DIR}/prefix__elm__poll${i}.txt" <<EOF
+2026-10-26 10:00:00      12345 restricted-resources-Edge_Lifecycle_Management-1.64.0.zip
+EOF
+done
+
+run_with_fake_aws_poll "${CALL_COUNT_FILE}" \
+  --param obcName=x \
+  --param s3Prefix=prefix_ \
+  --param components="elm" \
+  --param pollSeconds=0
+
+[[ "${TASK_RC}" -eq 0 ]] || { echo "${TASK_OUT}"; fail "task failed (rc ${TASK_RC})"; }
+check_no_runaway
+[[ "$(folder_calls elm)" -eq 14 ]] || { echo "${TASK_OUT}"; fail "expected 13 polls + the final listing, got $(folder_calls elm) calls"; }
+# 12 failed listings: warnings for the 1st and the 11th only
+WARNINGS=$(grep "⚠️  listing elm failed" <<< "${TASK_OUT}" || true)
+[[ "${WARNINGS}" == $'⚠️  listing elm failed (attempt 1); retrying\n⚠️  listing elm failed (attempt 11); retrying' ]] \
+  || { echo "${TASK_OUT}"; fail "expected warnings for attempts 1 and 11 only, got: ${WARNINGS}"; }
+
+echo "✅ PASS: failure_warnings_are_rate_limited"
+
+# ----------------------------------------------------------------------------
+# Test: empty_folder_keeps_waiting
+# ----------------------------------------------------------------------------
+echo ""
+echo "Test: empty_folder_keeps_waiting"
+echo "--------------------------------------------"
+
+POLL_DATA_DIR=$(tmp_dir)
+CALL_COUNT_FILE=$(tmp_file)
+echo "0" > "${CALL_COUNT_FILE}"
+
+# elm/ stays empty for 12 polls (aws s3 ls: no output, exit 1), then the zip
+for i in 13 14; do
+  cat > "${POLL_DATA_DIR}/prefix__elm__poll${i}.txt" <<EOF
+2026-10-26 10:00:00      12345 restricted-resources-Edge_Lifecycle_Management-1.64.0.zip
+EOF
+done
+
+run_with_fake_aws_poll "${CALL_COUNT_FILE}" \
+  --param obcName=x \
+  --param s3Prefix=prefix_ \
+  --param components="elm" \
+  --param pollSeconds=0
+
+if [[ "${TASK_RC}" -ne 0 ]]; then
+  echo "TASK OUTPUT:"
+  echo "${TASK_OUT}"
+  fail "task crashed on an empty folder (rc ${TASK_RC})"
+fi
+check_no_runaway
+[[ "$(folder_calls elm)" -eq 14 ]] || { echo "${TASK_OUT}"; fail "an empty folder must keep the task waiting: expected 13 polls + the final listing, got $(folder_calls elm) calls"; }
+grep -qF "⏳ still waiting for: elm" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "waiting message not printed"; }
+# An empty folder is the normal waiting state, not a listing failure
+! grep -q "listing elm failed" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "empty folder reported as a listing failure"; }
+! grep -q "syntax error" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "arithmetic error in the zip count"; }
+
+echo "✅ PASS: empty_folder_keeps_waiting"
+
+# ----------------------------------------------------------------------------
+# Test: final_listing_failure_is_tolerated
+# ----------------------------------------------------------------------------
+echo ""
+echo "Test: final_listing_failure_is_tolerated"
+echo "--------------------------------------------"
+
+POLL_DATA_DIR=$(tmp_dir)
+CALL_COUNT_FILE=$(tmp_file)
+echo "0" > "${CALL_COUNT_FILE}"
+
+cat > "${POLL_DATA_DIR}/prefix__elm__poll1.txt" <<EOF
+2026-10-26 10:00:00      12345 restricted-resources-Edge_Lifecycle_Management-1.64.0.zip
+EOF
+echo "An error occurred (SlowDown): ${LISTING_SECRET}" > "${POLL_DATA_DIR}/prefix__elm__poll2.fail"
+
+run_with_fake_aws_poll "${CALL_COUNT_FILE}" \
+  --param obcName=x \
+  --param s3Prefix=prefix_ \
+  --param components="elm" \
+  --param pollSeconds=0
+
+[[ "${TASK_RC}" -eq 0 ]] || { echo "${TASK_OUT}"; fail "a failed final listing must not fail the task (rc ${TASK_RC})"; }
+[[ "$(folder_calls elm)" -eq 2 ]] || { echo "${TASK_OUT}"; fail "expected 1 poll + the final listing, got $(folder_calls elm) calls"; }
+grep -qF "⚠️  listing elm failed" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "failed final listing not reported"; }
+grep -qF "✅ All restricted-resources zips found" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "success not reported"; }
+! grep -qF "${LISTING_SECRET}" <<< "${TASK_OUT}" || fail "aws stderr printed in the task output"
+
+echo "✅ PASS: final_listing_failure_is_tolerated"
+
+# ----------------------------------------------------------------------------
+# Test: instructions_are_printed_verbatim
+# ----------------------------------------------------------------------------
+# The ROKS pipeline appends the upload plan of
+# ossm3-prepare-restricted-resources-prefix to the instructions; it holds shell
+# syntax ($(oc get secret ...), quotes) that must be printed, never run.
+echo ""
+echo "Test: instructions_are_printed_verbatim"
+echo "--------------------------------------------"
+
+python3 -I - "${TASK_YAML}" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    task = yaml.safe_load(f)
+step = task["spec"]["steps"][0]
+env = {e["name"]: e for e in step.get("env", [])}
+errors = []
+if env.get("INSTRUCTIONS") != {"name": "INSTRUCTIONS", "value": "$(params.instructions)"}:
+    errors.append(f"env INSTRUCTIONS must be $(params.instructions), got {env.get('INSTRUCTIONS')}")
+if "$(params.instructions)" in step["script"]:
+    errors.append("the script must read the instructions from the env, not paste $(params.instructions) into the script")
+if errors:
+    print("\n".join(errors))
+    sys.exit(1)
+PY
+
+POLL_DATA_DIR=$(tmp_dir)
+CALL_COUNT_FILE=$(tmp_file)
+echo "0" > "${CALL_COUNT_FILE}"
+for i in 1 2; do
+  cat > "${POLL_DATA_DIR}/prefix__elm__poll${i}.txt" <<EOF
+2026-10-26 10:00:00      12345 restricted-resources-Edge_Lifecycle_Management-1.64.0.zip
+EOF
+done
+
+MARKER_DIR=$(tmp_dir)
+PLAN_LINE="  export AWS_ACCESS_KEY_ID=\$(touch ${MARKER_DIR}/ran; echo key) # jsonpath='{.data.AWS_ACCESS_KEY_ID}' \"quoted\" \`touch ${MARKER_DIR}/ran2\`"
+PLAN="Upload the ELM zip to the elm/ folder below.
+Upload to bucket bkt (OBC x); [current contents]:
+${PLAN_LINE}"
+
+# Passed both ways: as the param (pasted into the script by the substitution)
+# and as the env value Tekton sets from it
+INSTRUCTIONS="${PLAN}" run_with_fake_aws_poll "${CALL_COUNT_FILE}" \
+  --param obcName=x \
+  --param s3Prefix=prefix_ \
+  --param components="elm" \
+  --param instructions="${PLAN}" \
+  --param pollSeconds=0
+
+[[ "${TASK_RC}" -eq 0 ]] || { echo "${TASK_OUT}"; fail "task failed with shell syntax in the instructions (rc ${TASK_RC})"; }
+[[ ! -e "${MARKER_DIR}/ran" && ! -e "${MARKER_DIR}/ran2" ]] || fail "shell syntax in the instructions was executed"
+grep -qxF -- "${PLAN_LINE}" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "instructions not printed verbatim"; }
+
+echo "✅ PASS: instructions_are_printed_verbatim"
 
 echo ""
 echo "✅ ALL TESTS PASSED"

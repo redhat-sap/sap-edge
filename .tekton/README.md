@@ -82,6 +82,7 @@ CI/CD pipelines for deploying and testing SAP Edge Integration Cell on ARO, ROSA
 - `ossm3-configure-mesh-task`: Deploy IstioCNI and Istio control plane
 - `ossm3-apply-rbac-task`: Apply RBAC permissions from SAP Note 3618713 resources
 - `ossm3-generate-sa-based-kubeconfig-task`: Generate SA-based restricted kubeconfig for ELM registration
+- `ossm3-wait-for-restricted-resources-task`: Wait until every given component folder under the run's S3 prefix holds a restricted-resources `.zip` (ROKS pipeline: `wait-elm-zip`, `wait-eic-zip`); prints the instructions with the upload plan once, retries failed listings
 
 ### Common Tasks
 - `endpoint-tests`: Test EIC API endpoints
@@ -553,7 +554,7 @@ tkn pipelinerun logs -f <pipelinerun-name>
 
 Cluster name: `redhat-roks-eic-pr<N>` (starts with `redhat-`, at most 30 characters).
 
-**Restricted-resources upload:** right after the run starts it creates the folders `restricted-resources/<clusterName>/elm/` and `restricted-resources/<clusterName>/edge-icell/` in the OBC bucket (archiving earlier zips of each component) and waits for the zips in two steps, `wait-elm-zip` and `wait-eic-zip` (tasks, not approvals). Upload the ELM zip to `elm/` first (new-format bundle with `apply-restricted-resources.sh`; `wait-elm-zip` shows the path and `aws s3 cp` command); once `apply-rbac-elm` applies it, register the Edge Node with the generated restricted kubeconfig and deploy EIC, then upload the EIC zip to `edge-icell/`. Each task reads only its own component folder under `restricted-resources/<clusterName>/`, never zips directly under `restricted-resources/`. The folders are named after the cluster (unique per run), and each run needs fresh uploads (earlier zips are archived).
+**Restricted-resources upload:** right after the run starts it creates the folders `restricted-resources/<clusterName>/elm/` and `restricted-resources/<clusterName>/edge-icell/` in the OBC bucket (archiving earlier zips of each component) and waits for the zips in two steps, `wait-elm-zip` and `wait-eic-zip` (tasks, not approvals). Upload the ELM zip to `elm/` first (new-format bundle with `apply-restricted-resources.sh`; the logs of `wait-elm-zip` and `wait-eic-zip` show the upload plan of `prepare-restricted-resources-prefix`: the folders, the console steps and the `aws s3 cp` command); once `apply-rbac-elm` applies it, register the Edge Node with the generated restricted kubeconfig and deploy EIC, then upload the EIC zip to `edge-icell/`. Each task reads only its own component folder under `restricted-resources/<clusterName>/`, never zips directly under `restricted-resources/`. The folders are named after the cluster (unique per run), and each run needs fresh uploads (earlier zips are archived).
 
 #### Browser automation (optional)
 

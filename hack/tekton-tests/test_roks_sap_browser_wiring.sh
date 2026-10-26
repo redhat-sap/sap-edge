@@ -504,6 +504,13 @@ apply_tasks = {n for n, t in tasks.items() if t.get("taskRef", {}).get("name") =
 check(apply_tasks == {"apply-rbac-elm", "apply-rbac-eic"}, f"unexpected apply tasks: {sorted(apply_tasks)}")
 check(not (ancestors("sap-browser-access") & apply_tasks),
       f"sap-browser-access must not run after an apply: ancestors {sorted(ancestors('sap-browser-access'))}")
+# ...and every apply waits for it, so a zip uploaded by hand before
+# sap-browser-access ran cannot be applied first (it has no `when`: no cascade)
+for name in sorted(apply_tasks):
+    check("sap-browser-access" in ancestors(name), f"{name} must run after sap-browser-access")
+check("sap-browser-access" in tasks.get("apply-rbac-elm", {}).get("runAfter", []),
+      "apply-rbac-elm must list sap-browser-access in runAfter")
+check("when" not in tasks.get("sap-browser-access", {}), "sap-browser-access must not carry a when (apply-rbac-elm waits for it)")
 check(not (ancestors("sap-browser-deploy") & apply_tasks),
       "sap-browser-deploy must start before the applies (it produces the zips)")
 
