@@ -1,0 +1,155 @@
+# SPDX-FileCopyrightText: 2026 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: ossm3-wait-for-restricted-resources
+spec:
+  description: >-
+    Wait for restricted-resources bundle zips to appear in S3 folders.
+    Polls each component folder under the prefix until all have at least one
+    .zip file. Used to gate pipeline steps that depend on manual or automated
+    uploads. Non-destructive: does not modify S3 content.
+  params:
+    - name: obcName
+      type: string
+      description: "Name of the ObjectBucketClaim (OBC) — used to look up the S3 credentials Secret and endpoint ConfigMap"
+      default: "sap-eic-restricted-cluster-config-resources"
+    - name: s3Prefix
+      type: string
+      description: "S3 key prefix of the deployment (e.g. restricted-resources/multi-eic/)"
+    - name: components
+      type: string
+      description: "Space-separated component folders to check under the prefix (e.g. 'elm edge-icell'). Must be non-empty."
+    - name: instructions
+      type: string
+      description: "Optional instructions to print once before waiting"
+      default: ""
+    - name: pollSeconds
+      type: string
+      description: "Seconds to wait between polls"
+      default: "30"
+  steps:
+    - name: wait-for-zips
+      image: registry.access.redhat.com/ubi9/ubi
+      env:
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: $(params.obcName)
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: $(params.obcName)
+              key: AWS_SECRET_ACCESS_KEY
+        - name: BUCKET_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: $(params.obcName)
+              key: BUCKET_HOST
+        - name: BUCKET_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: $(params.obcName)
+              key: BUCKET_PORT
+        - name: BUCKET_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: $(params.obcName)
+              key: BUCKET_NAME
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        S3_PREFIX="$(params.s3Prefix)"
+        COMPONENTS="$(params.components)"
+        INSTRUCTIONS="$(params.instructions)"
+        POLL_SECONDS="$(params.pollSeconds)"
+        PREFIX="${S3_PREFIX%/}/"
+
+        echo "=========================================="
+        echo "OSSM3 Wait for Restricted-Resources Zips"
+        echo "=========================================="
+        echo "S3 Bucket: ${BUCKET_NAME}"
+        echo "S3 Prefix: ${PREFIX}"
+        echo "Components: ${COMPONENTS}"
+        echo "=========================================="
+
+        # Validate components is non-empty
+        if [[ -z "${COMPONENTS}" ]]; then
+          echo "❌ Error: components parameter must be non-empty"
+          exit 1
+        fi
+
+        # Install required tools
+        echo "📦 Installing required packages..."
+        dnf install -y unzip > /dev/null 2>&1
+
+        echo "📦 Installing AWS CLI..."
+        curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+        unzip -q /tmp/awscliv2.zip -d /tmp
+        /tmp/aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli
+        rm -rf /tmp/awscliv2.zip /tmp/aws
+        aws --version
+
+        S3_ENDPOINT="https://${BUCKET_HOST}:${BUCKET_PORT}"
+        s3() { aws "$@" --endpoint-url "${S3_ENDPOINT}" --no-verify-ssl; }
+
+        # Print instructions once
+        if [[ -n "${INSTRUCTIONS}" ]]; then
+          echo ""
+          echo "${INSTRUCTIONS}"
+        fi
+
+        # Print target folders
+        echo ""
+        echo "Target folders:"
+        for C in ${COMPONENTS}; do
+          echo "  s3://${BUCKET_NAME}/${PREFIX}${C}/"
+        done
+
+        # Convert components to array
+        read -r -a COMPONENT_LIST <<< "${COMPONENTS}"
+
+        # Poll until all components have at least one .zip
+        POLL_COUNT=0
+        while true; do
+          POLL_COUNT=$((POLL_COUNT + 1))
+          MISSING=()
+
+          for C in "${COMPONENT_LIST[@]}"; do
+            # List all keys under the component folder, filter for .zip files
+            ZIP_COUNT=$(s3 s3 ls "s3://${BUCKET_NAME}/${PREFIX}${C}/" --recursive 2>/dev/null | awk '$4 ~ /\.zip$/ { print $4 }' | wc -l || echo "0")
+            if [[ "${ZIP_COUNT}" -eq 0 ]]; then
+              MISSING+=("${C}")
+            fi
+          done
+
+          if [[ ${#MISSING[@]} -eq 0 ]]; then
+            # All components have zips — success!
+            break
+          fi
+
+          # Print waiting message every 10 polls
+          if [[ $((POLL_COUNT % 10)) -eq 0 ]]; then
+            echo "⏳ still waiting for: ${MISSING[*]}"
+          fi
+
+          sleep "${POLL_SECONDS}"
+        done
+
+        # Print found keys
+        echo ""
+        echo "✅ All components have zips:"
+        for C in "${COMPONENT_LIST[@]}"; do
+          s3 s3 ls "s3://${BUCKET_NAME}/${PREFIX}${C}/" --recursive 2>/dev/null | awk '$4 ~ /\.zip$/ { print "  " $4 }'
+        done
+
+        echo ""
+        echo "=========================================="
+        echo "✅ All restricted-resources zips found"
+        echo "=========================================="
