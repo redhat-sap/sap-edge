@@ -8,7 +8,7 @@ kind: Pipeline
 metadata:
   name: roks-eic-full-test-pipeline
   annotations:
-    description: "Complete SAP Edge Integration Cell validation pipeline for ROKS (Red Hat OpenShift on IBM Cloud, VPC): deploys a ROKS cluster with Terraform in the resource group redhat-sap-edge-roks-ci (IBM Cloud Container Registry namespace for ELM, IBM Cloud Databases for PostgreSQL and Redis), sets up OSSM3 restricted access, pauses for ELM registration and EIC deployment, runs two rounds of endpoint tests, and tears down the infrastructure"
+    description: "Complete SAP Edge Integration Cell validation pipeline for ROKS (Red Hat OpenShift on IBM Cloud, VPC): deploys a ROKS cluster with Terraform in the resource group redhat-sap-edge-roks-ci (IBM Cloud Container Registry namespace for ELM, IBM Cloud Databases for PostgreSQL and Redis), pauses for the restricted-resources upload to the run's own S3 folders, sets up OSSM3 restricted access, pauses for ELM registration and EIC deployment, runs two rounds of endpoint tests, and tears down the infrastructure"
 spec:
   # Failure policy (as ROSA/ARO/HCP): no finally teardown. A failed or rejected
   # run leaves the cluster for debugging; destroy it from the Terraform state
@@ -117,10 +117,6 @@ spec:
       type: string
       description: "Name of the ObjectBucketClaim (OBC) for downloading restricted-access RBAC resources from S3"
       default: "sap-eic-restricted-cluster-config-resources"
-    - name: s3Prefix
-      type: string
-      description: "S3 key prefix holding the restricted-resources zip files directly (flat prefix; subfolders such as per-PR folders are ignored)"
-      default: "restricted-resources/"
   workspaces:
     - name: source
   tasks:
@@ -227,6 +223,57 @@ spec:
         - name: pullSecretName
           value: $(params.roksCredentialsSecretName)
 
+    # Create the run's restricted-resources folders in the OBC bucket,
+    # restricted-resources/<clusterName>/elm/ and .../edge-icell/, and render the
+    # upload instructions. Named after the cluster, which is already unique per
+    # run (Terraform state key, ICR namespace): two ROKS runs in one PR never
+    # share a folder, and a retest of the same run reuses the uploaded zips.
+    - name: prepare-restricted-resources-prefix
+      runAfter: [preflight-check]
+      taskRef: { name: ossm3-prepare-restricted-resources-prefix }
+      params:
+        - name: obcName
+          value: $(params.obcName)
+        - name: s3Prefix
+          value: restricted-resources/$(params.clusterName)/
+        - name: components
+          value: "elm edge-icell"
+
+    # Pause until the zips are uploaded (deploy-roks creates the cluster
+    # meanwhile; apply-rbac waits for this gate and for verify-operators)
+    - name: approval-upload-restricted-resources
+      runAfter: [prepare-restricted-resources-prefix]
+      taskRef:
+        apiVersion: openshift-pipelines.org/v1alpha1
+        kind: ApprovalTask
+      params:
+        - name: approvers
+          value:
+            - mjiao
+            - rbhandar
+            - ksatarin
+            - kubeadmin
+            - kube:admin
+            - system:admin
+        - name: description
+          value: |
+            Upload the restricted-resources zips for ROKS cluster $(params.clusterName),
+            one zip per folder as downloaded from SAP: the Edge Lifecycle Management
+            bundle to elm/, the Edge Integration Cell bundle to edge-icell/. apply-rbac
+            unzips each one and runs its apply-restricted-resources.sh (latest version
+            per folder wins; only new-format bundles that ship that script work).
+
+            $(tasks.prepare-restricted-resources-prefix.results.uploadPlan)
+
+            APPROVE: bundles uploaded; apply-rbac continues once the cluster is ready
+                     (it fails if a folder is still empty)
+            REJECT: abort the pipeline (the cluster is NOT torn down automatically:
+                    make roks-destroy CLUSTER=$(params.clusterName))
+        - name: numberOfApprovalsRequired
+          value: '1'
+        - name: timeout
+          value: '336h'
+
     # Install Service Mesh 3.x operator on target cluster
     - name: verify-operators
       runAfter: [validate-and-get-access]
@@ -242,9 +289,10 @@ spec:
         - name: source
           workspace: source
 
-    # Download and apply RBAC permissions from S3 (restricted-access resources)
+    # Download and apply the restricted-access resources from the run's folders
+    # (only elm/ and edge-icell/ under restricted-resources/<clusterName>/)
     - name: apply-rbac
-      runAfter: [verify-operators]
+      runAfter: [verify-operators, approval-upload-restricted-resources]
       taskRef: { name: ossm3-download-and-apply-rbac }
       params:
         - name: hostedClusterName
@@ -252,7 +300,9 @@ spec:
         - name: obcName
           value: $(params.obcName)
         - name: s3Prefix
-          value: $(params.s3Prefix)
+          value: restricted-resources/$(params.clusterName)/
+        - name: requiredComponents
+          value: "elm edge-icell"
         - name: useWorkspaceKubeconfig
           value: "true"
       workspaces:
