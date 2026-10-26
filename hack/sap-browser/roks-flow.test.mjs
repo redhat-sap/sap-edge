@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -18,10 +18,6 @@ test('fresh_run_order', async () => {
       async edgeNodeState(page, clusterName) {
         calls.push({ method: 'edgeNodeState', clusterName });
         return 'absent';
-      },
-      async edgeNodeId(page, clusterName) {
-        calls.push({ method: 'edgeNodeId', clusterName });
-        return 'cluster-123';
       },
       async addEdgeNode(page, { clusterName, registry }) {
         calls.push({ method: 'addEdgeNode', clusterName, registry });
@@ -44,14 +40,11 @@ test('fresh_run_order', async () => {
       async finishEicDeployment(page, { clusterName }) {
         calls.push({ method: 'finishEicDeployment', clusterName });
       },
-      async deleteEdgeNode(page, { clusterName }) {
-        calls.push({ method: 'deleteEdgeNode', clusterName });
-      },
     };
 
     const fakeS3 = {
       async put(file, key) {
-        calls.push({ s3: 'put', file, key });
+        calls.push({ s3put: { file, key } });
       },
     };
 
@@ -91,50 +84,27 @@ test('fresh_run_order', async () => {
     };
 
     const result = await runDeployFlow(ctx);
-
     assert.equal(result, 'deployed');
 
-    // Verify exact sequence of steps 1-10
-    const expectedMethods = [
-      'edgeNodeState',
-      'addEdgeNode',
-      'downloadElmZip',
-      { s3: 'put' },
+    // Verify exact ordered call log with full arguments
+    const expected = [
+      { method: 'edgeNodeState', clusterName: 'test-cluster' },
+      { method: 'addEdgeNode', clusterName: 'test-cluster', registry: inputs.registry },
+      { method: 'downloadElmZip', clusterName: 'test-cluster', dir },
+      { s3put: { file: join(dir, 'restricted-resources-elm.zip'), key: 'test-prefix/elm/restricted-resources-elm.zip' } },
       { waitForTask: 'generate-sa-based-kubeconfig' },
       { loadKubeconfig: true },
-      'setUpCloudConnector',
+      { method: 'setUpCloudConnector', clusterName: 'test-cluster', kubeconfigFile: join(dir, 'edgelm-kubeconfig.yaml'), password: 'test-password', dir },
       { fetchElm: dir },
-      { elmInit: {} },
-      'deployEic',
-      'downloadEicZip',
-      { s3: 'put' },
+      { elmInit: { elmPath: join(dir, 'elm'), contextFile: join(dir, 'context.yaml'), password: 'test-password', cwd: dir } },
+      { method: 'deployEic', clusterName: 'test-cluster', inputs, files: { postgresCA: join(dir, 'postgres-ca.crt'), redisCA: join(dir, 'redis-ca.crt') } },
+      { method: 'downloadEicZip', clusterName: 'test-cluster', dir },
+      { s3put: { file: join(dir, 'restricted-resources-eic.zip'), key: 'test-prefix/edge-icell/restricted-resources-eic.zip' } },
       { waitForTask: 'configure-mesh-eic' },
-      'finishEicDeployment',
+      { method: 'finishEicDeployment', clusterName: 'test-cluster' },
     ];
 
-    for (let i = 0; i < expectedMethods.length; i++) {
-      const expected = expectedMethods[i];
-      const actual = calls[i];
-      if (typeof expected === 'string') {
-        assert.equal(actual.method, expected, `Step ${i + 1} should be ${expected}`);
-      } else if (expected.s3) {
-        assert.equal(actual.s3, expected.s3, `Step ${i + 1} should be S3 ${expected.s3}`);
-      } else if (expected.waitForTask) {
-        assert.equal(actual.waitForTask, expected.waitForTask, `Step ${i + 1} should wait for ${expected.waitForTask}`);
-      } else if (expected.loadKubeconfig) {
-        assert.ok(actual.loadKubeconfig, `Step ${i + 1} should load kubeconfig`);
-      } else if (expected.fetchElm) {
-        assert.ok(actual.fetchElm, `Step ${i + 1} should fetch elm`);
-      } else if (expected.elmInit !== undefined) {
-        assert.ok(actual.elmInit, `Step ${i + 1} should run elmInit`);
-      }
-    }
-
-    // Verify uploads
-    const uploads = calls.filter(c => c.s3 === 'put');
-    assert.equal(uploads.length, 2);
-    assert.ok(uploads[0].key.includes('elm/restricted-resources-elm.zip'));
-    assert.ok(uploads[1].key.includes('edge-icell/restricted-resources-eic.zip'));
+    assert.deepEqual(calls, expected);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -153,33 +123,27 @@ test('resume_initialized_skips_sap_changes', async () => {
         calls.push({ method: 'edgeNodeId', clusterName });
         return 'cluster-123';
       },
-      async addEdgeNode(page, opts) {
-        calls.push({ method: 'addEdgeNode' });
-      },
       async downloadElmZip(page, { clusterName, dir }) {
-        calls.push({ method: 'downloadElmZip' });
+        calls.push({ method: 'downloadElmZip', clusterName, dir });
         return join(dir, 'restricted-resources-elm.zip');
       },
-      async setUpCloudConnector(page, opts) {
-        calls.push({ method: 'setUpCloudConnector' });
-        return join(dir, 'context.yaml');
-      },
-      async deployEic(page, opts) {
-        calls.push({ method: 'deployEic' });
+      async deployEic(page, { clusterName, inputs, files }) {
+        calls.push({ method: 'deployEic', clusterName, inputs, files });
       },
       async downloadEicZip(page, { clusterName, dir }) {
-        calls.push({ method: 'downloadEicZip' });
+        calls.push({ method: 'downloadEicZip', clusterName, dir });
         return join(dir, 'restricted-resources-eic.zip');
       },
-      async finishEicDeployment(page, opts) {
-        calls.push({ method: 'finishEicDeployment' });
-      },
-      async deleteEdgeNode(page, opts) {
-        calls.push({ method: 'deleteEdgeNode' });
+      async finishEicDeployment(page, { clusterName }) {
+        calls.push({ method: 'finishEicDeployment', clusterName });
       },
     };
 
-    const fakeS3 = { async put() { calls.push({ s3: 'put' }); } };
+    const fakeS3 = {
+      async put(file, key) {
+        calls.push({ s3put: { file, key } });
+      },
+    };
 
     const inputs = {
       clusterName: 'test-cluster',
@@ -197,10 +161,14 @@ test('resume_initialized_skips_sap_changes', async () => {
       s3: fakeS3,
       s3Prefix: 'test-prefix/',
       dir,
-      waitForTask: async () => { calls.push({ waitForTask: true }); },
+      waitForTask: async (pipelineTaskName) => {
+        calls.push({ waitForTask: pipelineTaskName });
+      },
       loadKubeconfig: async () => 'kubeconfig',
       fetchElm: async () => join(dir, 'elm'),
-      elmInit: async () => { calls.push({ elmInit: true }); },
+      elmInit: async (opts) => {
+        calls.push({ elmInit: opts });
+      },
       password: 'test-password',
       log: () => {},
     };
@@ -213,12 +181,21 @@ test('resume_initialized_skips_sap_changes', async () => {
     assert.ok(!calls.some(c => c.method === 'setUpCloudConnector'), 'Should not call setUpCloudConnector');
     assert.ok(!calls.some(c => c.elmInit), 'Should not call elmInit');
 
-    // Verify: deployEic and both uploads still happen
-    assert.ok(calls.some(c => c.method === 'deployEic'), 'Should call deployEic');
-    assert.ok(calls.some(c => c.method === 'downloadElmZip'), 'Should call downloadElmZip');
-    assert.ok(calls.some(c => c.method === 'downloadEicZip'), 'Should call downloadEicZip');
-    const uploads = calls.filter(c => c.s3 === 'put');
-    assert.equal(uploads.length, 2, 'Should upload both bundles');
+    // Verify exact ordered call log
+    const expected = [
+      { method: 'edgeNodeState', clusterName: 'test-cluster' },
+      { method: 'edgeNodeId', clusterName: 'test-cluster' },
+      { method: 'downloadElmZip', clusterName: 'test-cluster', dir },
+      { s3put: { file: join(dir, 'restricted-resources-elm.zip'), key: 'test-prefix/elm/restricted-resources-elm.zip' } },
+      { waitForTask: 'generate-sa-based-kubeconfig' },
+      { method: 'deployEic', clusterName: 'test-cluster', inputs, files: { postgresCA: join(dir, 'postgres-ca.crt'), redisCA: join(dir, 'redis-ca.crt') } },
+      { method: 'downloadEicZip', clusterName: 'test-cluster', dir },
+      { s3put: { file: join(dir, 'restricted-resources-eic.zip'), key: 'test-prefix/edge-icell/restricted-resources-eic.zip' } },
+      { waitForTask: 'configure-mesh-eic' },
+      { method: 'finishEicDeployment', clusterName: 'test-cluster' },
+    ];
+
+    assert.deepEqual(calls, expected);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -237,23 +214,24 @@ test('resume_eic_deployed_skips_deploy', async () => {
         calls.push({ method: 'edgeNodeId' });
         return 'cluster-123';
       },
-      async downloadElmZip(page, { dir }) {
-        calls.push({ method: 'downloadElmZip' });
+      async downloadElmZip(page, { clusterName, dir }) {
+        calls.push({ method: 'downloadElmZip', clusterName, dir });
         return join(dir, 'restricted-resources-elm.zip');
       },
-      async downloadEicZip(page, { dir }) {
-        calls.push({ method: 'downloadEicZip' });
+      async downloadEicZip(page, { clusterName, dir }) {
+        calls.push({ method: 'downloadEicZip', clusterName, dir });
         return join(dir, 'restricted-resources-eic.zip');
       },
-      async deployEic() {
-        calls.push({ method: 'deployEic' });
-      },
-      async finishEicDeployment() {
-        calls.push({ method: 'finishEicDeployment' });
+      async finishEicDeployment(page, { clusterName }) {
+        calls.push({ method: 'finishEicDeployment', clusterName });
       },
     };
 
-    const fakeS3 = { async put() { calls.push({ s3: 'put' }); } };
+    const fakeS3 = {
+      async put(file, key) {
+        calls.push({ s3put: { file, key } });
+      },
+    };
 
     const inputs = {
       clusterName: 'test-cluster',
@@ -268,7 +246,9 @@ test('resume_eic_deployed_skips_deploy', async () => {
       s3: fakeS3,
       s3Prefix: 'test-prefix/',
       dir,
-      waitForTask: async () => { calls.push({ waitForTask: true }); },
+      waitForTask: async (pipelineTaskName) => {
+        calls.push({ waitForTask: pipelineTaskName });
+      },
       loadKubeconfig: async () => 'kubeconfig',
       fetchElm: async () => join(dir, 'elm'),
       elmInit: async () => {},
@@ -281,8 +261,21 @@ test('resume_eic_deployed_skips_deploy', async () => {
 
     // Verify: deployEic is not called
     assert.ok(!calls.some(c => c.method === 'deployEic'), 'Should not call deployEic');
-    // Verify: finishEicDeployment is still called
-    assert.ok(calls.some(c => c.method === 'finishEicDeployment'), 'Should call finishEicDeployment');
+
+    // Verify exact ordered call log (both downloads/uploads and both waits still happen)
+    const expected = [
+      { method: 'edgeNodeState' },
+      { method: 'edgeNodeId' },
+      { method: 'downloadElmZip', clusterName: 'test-cluster', dir },
+      { s3put: { file: join(dir, 'restricted-resources-elm.zip'), key: 'test-prefix/elm/restricted-resources-elm.zip' } },
+      { waitForTask: 'generate-sa-based-kubeconfig' },
+      { method: 'downloadEicZip', clusterName: 'test-cluster', dir },
+      { s3put: { file: join(dir, 'restricted-resources-eic.zip'), key: 'test-prefix/edge-icell/restricted-resources-eic.zip' } },
+      { waitForTask: 'configure-mesh-eic' },
+      { method: 'finishEicDeployment', clusterName: 'test-cluster' },
+    ];
+
+    assert.deepEqual(calls, expected);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -304,30 +297,30 @@ test('leftover_node_is_recreated', async () => {
       async deleteEdgeNode(page, { clusterName }) {
         calls.push({ method: 'deleteEdgeNode', clusterName });
       },
-      async addEdgeNode(page, { clusterName }) {
-        calls.push({ method: 'addEdgeNode', clusterName });
+      async addEdgeNode(page, { clusterName, registry }) {
+        calls.push({ method: 'addEdgeNode', clusterName, registry });
       },
-      async downloadElmZip(page, { dir }) {
-        calls.push({ method: 'downloadElmZip' });
+      async downloadElmZip(page, { clusterName, dir }) {
+        calls.push({ method: 'downloadElmZip', clusterName, dir });
         return join(dir, 'restricted-resources-elm.zip');
       },
-      async setUpCloudConnector() {
-        calls.push({ method: 'setUpCloudConnector' });
+      async setUpCloudConnector(page, { clusterName, kubeconfigFile, password, dir }) {
+        calls.push({ method: 'setUpCloudConnector', clusterName, kubeconfigFile, password, dir });
         return join(dir, 'context.yaml');
       },
-      async deployEic() {
-        calls.push({ method: 'deployEic' });
+      async deployEic(page, { clusterName, inputs, files }) {
+        calls.push({ method: 'deployEic', clusterName, inputs, files });
       },
-      async downloadEicZip(page, { dir }) {
-        calls.push({ method: 'downloadEicZip' });
+      async downloadEicZip(page, { clusterName, dir }) {
+        calls.push({ method: 'downloadEicZip', clusterName, dir });
         return join(dir, 'restricted-resources-eic.zip');
       },
-      async finishEicDeployment() {
-        calls.push({ method: 'finishEicDeployment' });
+      async finishEicDeployment(page, { clusterName }) {
+        calls.push({ method: 'finishEicDeployment', clusterName });
       },
     };
 
-    const fakeS3 = { async put() { calls.push({ s3: 'put' }); } };
+    const fakeS3 = { async put() { calls.push({ s3put: true }); } };
 
     const inputs = {
       clusterName: 'test-cluster',
@@ -343,10 +336,10 @@ test('leftover_node_is_recreated', async () => {
       s3: fakeS3,
       s3Prefix: 'test-prefix/',
       dir,
-      waitForTask: async () => {},
-      loadKubeconfig: async () => 'kubeconfig',
-      fetchElm: async () => join(dir, 'elm'),
-      elmInit: async () => {},
+      waitForTask: async () => { calls.push({ waitForTask: true }); },
+      loadKubeconfig: async () => { calls.push({ loadKubeconfig: true }); return 'kubeconfig'; },
+      fetchElm: async () => { calls.push({ fetchElm: true }); return join(dir, 'elm'); },
+      elmInit: async () => { calls.push({ elmInit: true }); },
       password: 'test-password',
       log: () => {},
     };
@@ -360,47 +353,6 @@ test('leftover_node_is_recreated', async () => {
     assert.ok(deleteIndex >= 0, 'Should call deleteEdgeNode');
     assert.ok(addIndex >= 0, 'Should call addEdgeNode');
     assert.ok(deleteIndex < addIndex, 'deleteEdgeNode should be called before addEdgeNode');
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test('unknown_state_changes_nothing', async () => {
-  const calls = [];
-  const dir = await mkdtemp(join(tmpdir(), 'roks-flow-test-'));
-  try {
-    const fakeSteps = {
-      async edgeNodeState() {
-        calls.push({ method: 'edgeNodeState' });
-        return 'unknown';
-      },
-    };
-
-    const ctx = {
-      page: {},
-      steps: fakeSteps,
-      inputs: { clusterName: 'test-cluster' },
-      clusterEdgeNodeId: 'cluster-123',
-      s3: {},
-      s3Prefix: 'test-prefix/',
-      dir,
-      waitForTask: async () => {},
-      loadKubeconfig: async () => 'kubeconfig',
-      fetchElm: async () => join(dir, 'elm'),
-      elmInit: async () => {},
-      password: 'test-password',
-      log: () => {},
-    };
-
-    await assert.rejects(
-      async () => await runDeployFlow(ctx),
-      (err) => err instanceof SetupError && err.message.includes('unknown state'),
-      'Should reject with SetupError for unknown state'
-    );
-
-    // Verify: only edgeNodeState was called
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].method, 'edgeNodeState');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -454,17 +406,232 @@ test('unknown_cluster_id_never_deletes', async () => {
   }
 });
 
+test('empty_cluster_id_recreates_existing_node', async () => {
+  const calls = [];
+  const dir = await mkdtemp(join(tmpdir(), 'roks-flow-test-'));
+  try {
+    const fakeSteps = {
+      async edgeNodeState() {
+        calls.push({ method: 'edgeNodeState' });
+        return 'initialized';
+      },
+      async edgeNodeId() {
+        calls.push({ method: 'edgeNodeId' });
+        return '';
+      },
+      async deleteEdgeNode(page, { clusterName }) {
+        calls.push({ method: 'deleteEdgeNode', clusterName });
+      },
+      async addEdgeNode(page, { clusterName, registry }) {
+        calls.push({ method: 'addEdgeNode', clusterName, registry });
+      },
+      async downloadElmZip(page, { clusterName, dir }) {
+        calls.push({ method: 'downloadElmZip', clusterName, dir });
+        return join(dir, 'restricted-resources-elm.zip');
+      },
+      async setUpCloudConnector(page, { clusterName, kubeconfigFile, password, dir }) {
+        calls.push({ method: 'setUpCloudConnector', clusterName, kubeconfigFile, password, dir });
+        return join(dir, 'context.yaml');
+      },
+      async deployEic(page, { clusterName, inputs, files }) {
+        calls.push({ method: 'deployEic', clusterName, inputs, files });
+      },
+      async downloadEicZip(page, { clusterName, dir }) {
+        calls.push({ method: 'downloadEicZip', clusterName, dir });
+        return join(dir, 'restricted-resources-eic.zip');
+      },
+      async finishEicDeployment(page, { clusterName }) {
+        calls.push({ method: 'finishEicDeployment', clusterName });
+      },
+    };
+
+    const fakeS3 = { async put() { calls.push({ s3put: true }); } };
+
+    const inputs = {
+      clusterName: 'test-cluster',
+      registry: { server: 'reg', namespace: 'ns', username: 'u', password: 'p' },
+      attachments: { postgresCA: 'pg-ca', redisCA: 'redis-ca' },
+    };
+
+    const ctx = {
+      page: {},
+      steps: fakeSteps,
+      inputs,
+      clusterEdgeNodeId: '',
+      s3: fakeS3,
+      s3Prefix: 'test-prefix/',
+      dir,
+      waitForTask: async () => { calls.push({ waitForTask: true }); },
+      loadKubeconfig: async () => { calls.push({ loadKubeconfig: true }); return 'kubeconfig'; },
+      fetchElm: async () => { calls.push({ fetchElm: true }); return join(dir, 'elm'); },
+      elmInit: async () => { calls.push({ elmInit: true }); },
+      password: 'test-password',
+      log: () => {},
+    };
+
+    const result = await runDeployFlow(ctx);
+    assert.equal(result, 'deployed');
+
+    // Verify: deleteEdgeNode then addEdgeNode, then the full fresh path
+    const methods = calls.map(c => c.method).filter(Boolean);
+    assert.ok(methods.includes('deleteEdgeNode'), 'Should call deleteEdgeNode');
+    assert.ok(methods.includes('addEdgeNode'), 'Should call addEdgeNode');
+    assert.ok(methods.includes('setUpCloudConnector'), 'Should call setUpCloudConnector');
+    assert.ok(methods.includes('deployEic'), 'Should call deployEic');
+
+    const deleteIndex = methods.indexOf('deleteEdgeNode');
+    const addIndex = methods.indexOf('addEdgeNode');
+    assert.ok(deleteIndex < addIndex, 'deleteEdgeNode should be called before addEdgeNode');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('id_comparison_is_normalized', async () => {
+  const calls = [];
+  const dir = await mkdtemp(join(tmpdir(), 'roks-flow-test-'));
+  try {
+    const fakeSteps = {
+      async edgeNodeState() {
+        calls.push({ method: 'edgeNodeState' });
+        return 'initialized';
+      },
+      async edgeNodeId() {
+        calls.push({ method: 'edgeNodeId' });
+        return ' ABC-123 ';
+      },
+      async deleteEdgeNode() {
+        calls.push({ method: 'deleteEdgeNode' });
+      },
+      async downloadElmZip(page, { clusterName, dir }) {
+        calls.push({ method: 'downloadElmZip', clusterName, dir });
+        return join(dir, 'restricted-resources-elm.zip');
+      },
+      async deployEic(page, { clusterName, inputs, files }) {
+        calls.push({ method: 'deployEic', clusterName, inputs, files });
+      },
+      async downloadEicZip(page, { clusterName, dir }) {
+        calls.push({ method: 'downloadEicZip', clusterName, dir });
+        return join(dir, 'restricted-resources-eic.zip');
+      },
+      async finishEicDeployment(page, { clusterName }) {
+        calls.push({ method: 'finishEicDeployment', clusterName });
+      },
+    };
+
+    const fakeS3 = { async put() { calls.push({ s3put: true }); } };
+
+    const inputs = {
+      clusterName: 'test-cluster',
+      attachments: { postgresCA: 'pg-ca', redisCA: 'redis-ca' },
+    };
+
+    const ctx = {
+      page: {},
+      steps: fakeSteps,
+      inputs,
+      clusterEdgeNodeId: 'abc-123',
+      s3: fakeS3,
+      s3Prefix: 'test-prefix/',
+      dir,
+      waitForTask: async () => { calls.push({ waitForTask: true }); },
+      loadKubeconfig: async () => 'kubeconfig',
+      fetchElm: async () => join(dir, 'elm'),
+      elmInit: async () => {},
+      password: 'test-password',
+      log: () => {},
+    };
+
+    const result = await runDeployFlow(ctx);
+    assert.equal(result, 'deployed');
+
+    // Verify: no delete/add (IDs match after normalization)
+    assert.ok(!calls.some(c => c.method === 'deleteEdgeNode'), 'Should not call deleteEdgeNode');
+    assert.ok(!calls.some(c => c.method === 'addEdgeNode'), 'Should not call addEdgeNode');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('deploy_rejects_unexpected_state', async () => {
+  const calls = [];
+  const dir = await mkdtemp(join(tmpdir(), 'roks-flow-test-'));
+  try {
+    const fakeSteps = {
+      async edgeNodeState() {
+        calls.push('edgeNodeState');
+        return 'error';
+      },
+    };
+
+    const ctx = {
+      page: {},
+      steps: fakeSteps,
+      inputs: { clusterName: 'test-cluster' },
+      clusterEdgeNodeId: 'cluster-123',
+      s3: {},
+      s3Prefix: 'test-prefix/',
+      dir,
+      waitForTask: async () => {},
+      loadKubeconfig: async () => 'kubeconfig',
+      fetchElm: async () => join(dir, 'elm'),
+      elmInit: async () => {},
+      password: 'test-password',
+      log: () => {},
+    };
+
+    await assert.rejects(
+      async () => await runDeployFlow(ctx),
+      (err) => err instanceof SetupError && err.message.includes('unrecognised state'),
+      'Should reject with SetupError for unrecognised state'
+    );
+
+    // Verify: only edgeNodeState was called
+    assert.deepEqual(calls, ['edgeNodeState']);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('teardown_rejects_unexpected_state', async () => {
+  const calls = [];
+
+  const fakeSteps = {
+    async edgeNodeState() {
+      calls.push('edgeNodeState');
+      return undefined;
+    },
+  };
+
+  await assert.rejects(
+    async () => await runTeardownFlow({
+      page: {},
+      steps: fakeSteps,
+      clusterName: 'test-cluster',
+      log: () => {},
+    }),
+    (err) => err instanceof SetupError && err.message.includes('unrecognised state'),
+    'Should reject with SetupError for unrecognised state'
+  );
+
+  // Verify: only edgeNodeState was called
+  assert.deepEqual(calls, ['edgeNodeState']);
+});
+
 test('kubeconfig_file_private', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'roks-flow-test-'));
   try {
+    // Pre-create the kubeconfig file with wrong mode
+    const kubeconfigPath = join(dir, 'edgelm-kubeconfig.yaml');
+    await writeFile(kubeconfigPath, 'old-content', { mode: 0o644 });
+
     const fakeSteps = {
       async edgeNodeState() { return 'absent'; },
       async addEdgeNode() {},
       async downloadElmZip(page, { dir }) {
         return join(dir, 'restricted-resources-elm.zip');
       },
-      async setUpCloudConnector(page, { kubeconfigFile }) {
-        // Record the file path so we can check it later
+      async setUpCloudConnector() {
         return join(dir, 'context.yaml');
       },
       async deployEic() {},
@@ -479,7 +646,7 @@ test('kubeconfig_file_private', async () => {
     const inputs = {
       clusterName: 'test-cluster',
       registry: { server: 'reg', namespace: 'ns', username: 'u', password: 'p' },
-      attachments: { postgresCA: 'pg-ca', redisCA: 'redis-ca' },
+      attachments: { postgresCA: 'postgres-ca-content', redisCA: 'redis-ca-content' },
     };
 
     const kubeconfigContent = 'kubeconfig-test-content';
@@ -503,14 +670,25 @@ test('kubeconfig_file_private', async () => {
     await runDeployFlow(ctx);
 
     // Verify the kubeconfig file was created with correct mode and content
-    const kubeconfigPath = join(dir, 'edgelm-kubeconfig.yaml');
-    const stats = await stat(kubeconfigPath);
-    const content = await readFile(kubeconfigPath, 'utf8');
+    const kubeconfigStats = await stat(kubeconfigPath);
+    const kubeconfigActual = await readFile(kubeconfigPath, 'utf8');
+    assert.equal(kubeconfigActual, kubeconfigContent, 'Kubeconfig content should match');
 
-    assert.equal(content, kubeconfigContent, 'Kubeconfig content should match');
+    // Verify CA files
+    const postgresCAPath = join(dir, 'postgres-ca.crt');
+    const redisCAPath = join(dir, 'redis-ca.crt');
+    const postgresCAStats = await stat(postgresCAPath);
+    const redisCAStats = await stat(redisCAPath);
+    const postgresCAActual = await readFile(postgresCAPath, 'utf8');
+    const redisCAActual = await readFile(redisCAPath, 'utf8');
+
+    assert.equal(postgresCAActual, 'postgres-ca-content', 'Postgres CA content should match');
+    assert.equal(redisCAActual, 'redis-ca-content', 'Redis CA content should match');
+
     if (process.platform !== 'win32') {
-      const mode = stats.mode & 0o777;
-      assert.equal(mode, 0o600, 'Kubeconfig file should have mode 0600');
+      assert.equal(kubeconfigStats.mode & 0o777, 0o600, 'Kubeconfig file should have mode 0600');
+      assert.equal(postgresCAStats.mode & 0o777, 0o600, 'Postgres CA file should have mode 0600');
+      assert.equal(redisCAStats.mode & 0o777, 0o600, 'Redis CA file should have mode 0600');
     }
   } finally {
     await rm(dir, { recursive: true, force: true });
