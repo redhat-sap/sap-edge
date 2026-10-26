@@ -11,7 +11,8 @@ spec:
   description: >-
     Wait for restricted-resources bundle zips to appear in S3 folders.
     Polls each component folder under the prefix until all have at least one
-    .zip file. Used to gate pipeline steps that depend on manual or automated
+    .zip file; an empty folder keeps it waiting and a failed listing is
+    retried. Used to gate pipeline steps that depend on manual or automated
     uploads. Non-destructive: does not modify S3 content.
   params:
     - name: obcName
@@ -26,7 +27,7 @@ spec:
       description: "Space-separated component folders to check under the prefix (e.g. 'elm edge-icell'). Must be non-empty."
     - name: instructions
       type: string
-      description: "Optional instructions to print once before waiting"
+      description: "Optional instructions to print once before waiting (printed verbatim: shell syntax in them is not run)"
       default: ""
     - name: pollSeconds
       type: string
@@ -61,13 +62,17 @@ spec:
             configMapKeyRef:
               name: $(params.obcName)
               key: BUCKET_NAME
+        # From the env, not pasted into the script: the instructions can hold
+        # shell syntax (e.g. the upload plan's $(oc get secret ...) lines)
+        # that must be printed, never run
+        - name: INSTRUCTIONS
+          value: $(params.instructions)
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
 
         S3_PREFIX="$(params.s3Prefix)"
         COMPONENTS="$(params.components)"
-        INSTRUCTIONS="$(params.instructions)"
         POLL_SECONDS="$(params.pollSeconds)"
         PREFIX="${S3_PREFIX%/}/"
 
@@ -99,10 +104,29 @@ spec:
         S3_ENDPOINT="https://${BUCKET_HOST}:${BUCKET_PORT}"
         s3() { aws "$@" --endpoint-url "${S3_ENDPOINT}" --no-verify-ssl; }
 
-        # Print instructions once
-        if [[ -n "${INSTRUCTIONS}" ]]; then
+        # aws stderr goes to this file only: it could hold credentials
+        LIST_ERR=$(mktemp)
+        trap 'rm -f "${LIST_ERR}"' EXIT
+
+        # list_zips FOLDER: sets ZIP_KEYS to the .zip keys under the folder,
+        # one per line (keys may contain spaces: whole-line .zip match, the
+        # key is everything after the date, time and size fields), and
+        # LIST_FAILED=true when aws failed. aws s3 ls exits 1 with no output
+        # and no error for an empty folder: that is not a failure.
+        list_zips() {
+          local LISTING LIST_RC=0
+          LISTING=$(s3 s3 ls "s3://${BUCKET_NAME}/${PREFIX}$1/" --recursive 2>"${LIST_ERR}") || LIST_RC=$?
+          LIST_FAILED=false
+          if [[ "${LIST_RC}" -ne 0 ]] && { [[ "${LIST_RC}" -ne 1 ]] || [[ -n "${LISTING}" ]] || [[ -s "${LIST_ERR}" ]]; }; then
+            LIST_FAILED=true
+          fi
+          ZIP_KEYS=$(printf '%s\n' "${LISTING}" | awk '/\.zip$/ { sub(/^[^ ]+ +[^ ]+ +[^ ]+ +/, ""); print }')
+        }
+
+        # Print instructions once (verbatim, from the env)
+        if [[ -n "${INSTRUCTIONS:-}" ]]; then
           echo ""
-          echo "${INSTRUCTIONS}"
+          printf '%s\n' "${INSTRUCTIONS}"
         fi
 
         # Print target folders
@@ -115,16 +139,24 @@ spec:
         # Convert components to array
         read -r -a COMPONENT_LIST <<< "${COMPONENTS}"
 
-        # Poll until all components have at least one .zip
+        # Poll until all components have at least one .zip. A failed listing
+        # (network, credentials, endpoint) counts as "no zip yet" and is
+        # retried; it is reported for the 1st failure and then every 10th.
         POLL_COUNT=0
+        FAILED_LISTINGS=0
         while true; do
           POLL_COUNT=$((POLL_COUNT + 1))
           MISSING=()
 
           for C in "${COMPONENT_LIST[@]}"; do
-            # List all keys under the component folder, filter for .zip files
-            ZIP_COUNT=$(s3 s3 ls "s3://${BUCKET_NAME}/${PREFIX}${C}/" --recursive 2>/dev/null | awk '/\.zip$/ { sub(/^[^ ]+ +[^ ]+ +[^ ]+ +/, ""); print }' | wc -l || echo "0")
-            if [[ "${ZIP_COUNT}" -eq 0 ]]; then
+            list_zips "${C}"
+            if [[ "${LIST_FAILED}" == "true" ]]; then
+              FAILED_LISTINGS=$((FAILED_LISTINGS + 1))
+              if [[ $((FAILED_LISTINGS % 10)) -eq 1 ]]; then
+                echo "⚠️  listing ${C} failed (attempt ${POLL_COUNT}); retrying"
+              fi
+            fi
+            if [[ -z "${ZIP_KEYS}" ]]; then
               MISSING+=("${C}")
             fi
           done
@@ -146,7 +178,13 @@ spec:
         echo ""
         echo "✅ All components have zips:"
         for C in "${COMPONENT_LIST[@]}"; do
-          s3 s3 ls "s3://${BUCKET_NAME}/${PREFIX}${C}/" --recursive 2>/dev/null | awk '/\.zip$/ { sub(/^[^ ]+ +[^ ]+ +[^ ]+ +/, ""); print "  " $0 }'
+          list_zips "${C}"
+          if [[ -n "${ZIP_KEYS}" ]]; then
+            printf '%s\n' "${ZIP_KEYS}" | sed 's/^/  /'
+          fi
+          if [[ "${LIST_FAILED}" == "true" ]]; then
+            echo "  ⚠️  listing ${C} failed; its zips were found while polling"
+          fi
         done
 
         echo ""

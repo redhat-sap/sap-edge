@@ -8,7 +8,7 @@ kind: Pipeline
 metadata:
   name: roks-eic-full-test-pipeline
   annotations:
-    description: "Complete SAP Edge Integration Cell validation pipeline for ROKS (Red Hat OpenShift on IBM Cloud, VPC): deploys a ROKS cluster with Terraform in the resource group redhat-sap-edge-roks-ci (IBM Cloud Container Registry namespace for ELM, IBM Cloud Databases for PostgreSQL and Redis), pauses for the restricted-resources upload to the run's own S3 folders, sets up OSSM3 restricted access, optionally drives the ELM steps with a Playwright browser behind a Route (sapBrowserMode), pauses for ELM registration and EIC deployment, runs two rounds of endpoint tests, and tears down the infrastructure"
+    description: "Complete SAP Edge Integration Cell validation pipeline for ROKS (Red Hat OpenShift on IBM Cloud, VPC): deploys a ROKS cluster with Terraform in the resource group redhat-sap-edge-roks-ci (IBM Cloud Container Registry namespace for ELM, IBM Cloud Databases for PostgreSQL and Redis), waits for the restricted-resources uploads to the run's own S3 folders, sets up OSSM3 restricted access, optionally drives the ELM steps with a Playwright browser behind a Route (sapBrowserMode), pauses for ELM registration and EIC deployment, runs two rounds of endpoint tests, and tears down the infrastructure"
 spec:
   # Failure policy (as ROSA/ARO/HCP): a run that fails before the teardown
   # approval, or whose teardown approval is rejected, leaves the cluster for
@@ -260,7 +260,7 @@ spec:
 
     # Grant the runner ServiceAccount get on this run's three Secrets and read
     # the cluster's Edge Node ID label before any zip of this run is applied
-    # (nothing to do when the browser is off)
+    # (apply-rbac-elm runs after it; nothing to do when the browser is off)
     - name: sap-browser-access
       runAfter: [validate-and-get-access]
       taskRef: { name: roks-sap-browser-access }
@@ -357,7 +357,9 @@ spec:
         - name: archiveExisting
           value: "true"
 
-    # Wait for the ELM restricted-resources zip to be uploaded
+    # Wait for the ELM restricted-resources zip to be uploaded; the log shows
+    # the upload plan of prepare-restricted-resources-prefix (folders, console
+    # and aws s3 cp steps), which has no `when` (no skip cascade)
     - name: wait-elm-zip
       runAfter: [prepare-restricted-resources-prefix]
       taskRef: { name: ossm3-wait-for-restricted-resources }
@@ -371,6 +373,7 @@ spec:
         - name: instructions
           value: |
             Upload the Edge Lifecycle Management restricted-resources zip of Edge Node $(params.clusterName) (ELM: Add Edge Node with restricted access) to the elm/ folder below.
+            $(tasks.prepare-restricted-resources-prefix.results.uploadPlan)
 
     # Install Service Mesh 3.x operator on target cluster
     - name: verify-operators
@@ -387,9 +390,12 @@ spec:
         - name: source
           workspace: source
 
-    # Download and apply the ELM restricted-access resources
+    # Download and apply the ELM restricted-access resources. After
+    # sap-browser-access (no `when`, a no-op with the browser off), so the
+    # cluster's pre-run Edge Node ID is read before the ELM zip is applied,
+    # also when the zip was uploaded by hand early
     - name: apply-rbac-elm
-      runAfter: [verify-operators, wait-elm-zip]
+      runAfter: [verify-operators, wait-elm-zip, sap-browser-access]
       taskRef: { name: ossm3-download-and-apply-rbac }
       params:
         - name: hostedClusterName
@@ -445,7 +451,7 @@ spec:
         - name: source
           workspace: source
 
-    # Wait for the EIC restricted-resources zip to be uploaded
+    # Wait for the EIC restricted-resources zip to be uploaded (log: the upload plan)
     - name: wait-eic-zip
       runAfter: [generate-sa-based-kubeconfig]
       taskRef: { name: ossm3-wait-for-restricted-resources }
@@ -459,6 +465,7 @@ spec:
         - name: instructions
           value: |
             Register Edge Node $(params.clusterName) in ELM with the restricted kubeconfig in Secret edgelm-kubeconfig-generated-$(params.clusterName) (pipeline namespace), deploy Edge Integration Cell, then upload its restricted-resources zip to the edge-icell/ folder below.
+            $(tasks.prepare-restricted-resources-prefix.results.uploadPlan)
 
     # Download and apply the EIC restricted-access resources
     - name: apply-rbac-eic

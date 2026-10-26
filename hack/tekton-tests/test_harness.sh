@@ -112,6 +112,26 @@ fi
 
 echo "✅ PASS: fake oc logged call and followed rules correctly"
 
+# Stderr rules: printed to stderr, stdout stays separate
+FAKE_OC_STDERR_RULES=$(mktemp)
+trap 'rm -f "${FAKE_OC_LOG}" "${FAKE_OC_RULES}" "${FAKE_OC_STDERR_RULES}"' EXIT
+export FAKE_OC_STDERR_RULES
+printf 'get ns edgelm\t0\t{}\n' > "${FAKE_OC_RULES}"
+printf 'get ns edgelm\tWarning: noisy\n' > "${FAKE_OC_STDERR_RULES}"
+STDOUT_ONLY=$(fake-bin/oc get ns edgelm 2>/dev/null)
+STDERR_ONLY=$(fake-bin/oc get ns edgelm 2>&1 >/dev/null)
+if [[ "${STDOUT_ONLY}" != "{}" || "${STDERR_ONLY}" != "Warning: noisy" ]]; then
+  echo "❌ FAIL: fake oc should print the rule to stdout and the stderr rule to stderr, got '${STDOUT_ONLY}' / '${STDERR_ONLY}'"
+  exit 1
+fi
+# Without a matching stderr rule nothing goes to stderr
+if [[ -n "$(fake-bin/oc get ns other 2>&1 >/dev/null)" ]]; then
+  echo "❌ FAIL: fake oc printed to stderr without a matching stderr rule"
+  exit 1
+fi
+
+echo "✅ PASS: fake oc prints stderr rules to stderr"
+
 echo ""
 echo "============================================"
 echo "✅ ALL TESTS PASSED"

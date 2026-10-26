@@ -23,6 +23,18 @@ if [[ -n "${FAKE_OC_STDIN_DIR:-}" ]]; then
   fi
 fi
 
+# Print stderr first (oc prints warnings and errors before any output) if
+# FAKE_OC_STDERR_RULES is set: GLOB<TAB>STDERR, the first matching line wins
+if [[ -n "${FAKE_OC_STDERR_RULES:-}" ]] && [[ -f "${FAKE_OC_STDERR_RULES}" ]]; then
+  while IFS=$'\t' read -r GLOB STDERR; do
+    # shellcheck disable=SC2053
+    if [[ "$*" == ${GLOB} ]]; then
+      echo -e "${STDERR}" >&2
+      break
+    fi
+  done < "${FAKE_OC_STDERR_RULES}"
+fi
+
 # Apply rules if FAKE_OC_RULES is set
 if [[ -n "${FAKE_OC_RULES:-}" ]] && [[ -f "${FAKE_OC_RULES}" ]]; then
   while IFS=$'\t' read -r GLOB EXIT_CODE STDOUT; do

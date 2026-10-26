@@ -545,17 +545,26 @@ spec:
         else
           add_remaining "Secret ${GENERATED_KUBECONFIG_SECRET_NAME} on the pipeline cluster (oc delete failed)"
         fi
-        # roks-sap-browser-access creates the Role and RoleBinding on the pipeline cluster
-        if oc delete role "${BROWSER_ROLE_NAME}" --ignore-not-found=true; then
-          echo "✅ Role ${BROWSER_ROLE_NAME} deleted (pipeline cluster)"
-        else
-          add_remaining "Role ${BROWSER_ROLE_NAME} on the pipeline cluster (oc delete failed)"
-        fi
-        if oc delete rolebinding "${BROWSER_ROLE_NAME}" --ignore-not-found=true; then
-          echo "✅ RoleBinding ${BROWSER_ROLE_NAME} deleted (pipeline cluster)"
-        else
-          add_remaining "RoleBinding ${BROWSER_ROLE_NAME} on the pipeline cluster (oc delete failed)"
-        fi
+        # roks-sap-browser-access creates the Role and RoleBinding on the pipeline
+        # cluster. A pipeline ServiceAccount without RBAC verbs (the default
+        # without hack/sap-browser/roks-runner-rbac.yaml) cannot have created
+        # them either, so Forbidden is not something left behind.
+        BROWSER_RBAC_DELETED=true
+        delete_browser_rbac() {
+          local KIND="$1" LABEL="$2" DELETE_OUTPUT
+          if DELETE_OUTPUT=$(oc delete "${KIND}" "${BROWSER_ROLE_NAME}" --ignore-not-found=true 2>&1); then
+            echo "✅ ${LABEL} ${BROWSER_ROLE_NAME} deleted (pipeline cluster)"
+            return 0
+          fi
+          BROWSER_RBAC_DELETED=false
+          if grep -qF "(Forbidden)" <<< "${DELETE_OUTPUT}"; then
+            echo "ℹ️  the pipeline service account cannot manage ${LABEL}s, so roks-sap-browser-access cannot have created ${KIND}/${BROWSER_ROLE_NAME}; skipping"
+          else
+            add_remaining "${LABEL} ${BROWSER_ROLE_NAME} on the pipeline cluster (oc delete failed)"
+          fi
+        }
+        delete_browser_rbac role Role
+        delete_browser_rbac rolebinding RoleBinding
         # roks-validate-and-get-access / roks-registry-access write them on the hub if set
         if [[ "${HUB_UNREADABLE}" == "true" ]]; then
           add_remaining "Secrets ${CREDS_SECRET_NAME} and ${REGISTRY_SECRET_NAME} on the hub cluster (kubeconfig Secret ${HUB_KUBECONFIG_SECRET} unreadable)"
@@ -580,7 +589,11 @@ spec:
           else
             echo "  Leftover sweep:    nothing left of cluster ${CLUSTER_ID} in ${DEDICATED_RESOURCE_GROUP}"
           fi
-          echo "  Pipeline artifacts: ${CONFIGMAP_NAME}, ${GENERATED_KUBECONFIG_SECRET_NAME} (pipeline cluster), ${BROWSER_ROLE_NAME} Role and RoleBinding (pipeline cluster), ${CREDS_SECRET_NAME} and ${REGISTRY_SECRET_NAME} (${SECRETS_WHERE}) deleted"
+          BROWSER_RBAC_SUMMARY=""
+          if [[ "${BROWSER_RBAC_DELETED}" == "true" ]]; then
+            BROWSER_RBAC_SUMMARY="${BROWSER_ROLE_NAME} Role and RoleBinding (pipeline cluster), "
+          fi
+          echo "  Pipeline artifacts: ${CONFIGMAP_NAME}, ${GENERATED_KUBECONFIG_SECRET_NAME} (pipeline cluster), ${BROWSER_RBAC_SUMMARY}${CREDS_SECRET_NAME} and ${REGISTRY_SECRET_NAME} (${SECRETS_WHERE}) deleted"
           echo "=============================================="
         else
           echo "❌ Teardown of ${CLUSTER_NAME} incomplete; still present:"

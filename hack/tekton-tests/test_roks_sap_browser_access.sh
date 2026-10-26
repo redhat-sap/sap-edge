@@ -24,8 +24,9 @@ setup() {
 
   FAKE_OC_LOG=$(tmp_file)
   FAKE_OC_RULES=$(tmp_file)
+  FAKE_OC_STDERR_RULES=$(tmp_file)
   FAKE_OC_STDIN_DIR=$(tmp_dir)
-  export FAKE_OC_LOG FAKE_OC_RULES FAKE_OC_STDIN_DIR
+  export FAKE_OC_LOG FAKE_OC_RULES FAKE_OC_STDERR_RULES FAKE_OC_STDIN_DIR
 
   RESULTS_DIR=$(tmp_dir)
 
@@ -299,9 +300,13 @@ echo ""
 echo "Test: edge_node_id_unknown_on_read_error"
 echo "--------------------------------------------"
 setup
+# oc prints the error on stderr, nothing on stdout
 printf '%s\t%s\t%s\n' \
-  '--kubeconfig */kubeconfig get ns edgelm --ignore-not-found -o json' 1 'Error from server (Unauthorized): namespaces "edgelm" is forbidden: User "system:serviceaccount:default:cluster-admin-sa" cannot get resource "namespaces" in API group "" in the namespace "edgelm"' \
+  '--kubeconfig */kubeconfig get ns edgelm --ignore-not-found -o json' 1 '' \
   > "${FAKE_OC_RULES}"
+printf '%s\t%s\n' \
+  '--kubeconfig */kubeconfig get ns edgelm --ignore-not-found -o json' 'Error from server (Unauthorized): namespaces "edgelm" is forbidden: User "system:serviceaccount:default:cluster-admin-sa" cannot get resource "namespaces" in API group "" in the namespace "edgelm"' \
+  > "${FAKE_OC_STDERR_RULES}"
 TASK_CWD="${WS}" run_task "${TASK}" \
   --param clusterName="${CLUSTER_NAME}" \
   --param runnerServiceAccount="${RUNNER_SERVICE_ACCOUNT}" \
@@ -316,6 +321,65 @@ RESULT=$(cat "${RESULTS_DIR}/clusterEdgeNodeId")
 grep -q "⚠️.*Could not read namespace edgelm" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "warning not printed on read error"; }
 grep -q "Unauthorized" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "error category not printed"; }
 echo "✅ PASS: edge_node_id_unknown_on_read_error"
+
+# Run the task with one fake oc rule for the edgelm namespace read:
+# run_with_ns_read EXIT_CODE STDOUT [STDERR]
+run_with_ns_read() {
+  setup
+  printf '%s\t%s\t%s\n' \
+    '--kubeconfig */kubeconfig get ns edgelm --ignore-not-found -o json' "$1" "$2" \
+    > "${FAKE_OC_RULES}"
+  if [[ -n "${3:-}" ]]; then
+    printf '%s\t%s\n' '--kubeconfig */kubeconfig get ns edgelm --ignore-not-found -o json' "$3" \
+      > "${FAKE_OC_STDERR_RULES}"
+  fi
+  TASK_CWD="${WS}" run_task "${TASK}" \
+    --param clusterName="${CLUSTER_NAME}" \
+    --param runnerServiceAccount="${RUNNER_SERVICE_ACCOUNT}" \
+    --param mode="${SAP_BROWSER_MODE}" \
+    --param browserImage="${SAP_BROWSER_IMAGE}" \
+    --workspace-dir source="${WS}" \
+    --results-dir "${RESULTS_DIR}" \
+    --drop '# Install tools' 'echo "✅ Tools installed"'
+  expect_success
+  RESULT=$(cat "${RESULTS_DIR}/clusterEdgeNodeId")
+}
+
+# Test case: edge_node_id_ignores_stderr_noise
+# oc warnings on stderr (deprecations, client/server skew) must not end up in
+# the JSON that jq parses
+echo ""
+echo "Test: edge_node_id_ignores_stderr_noise"
+echo "--------------------------------------------"
+run_with_ns_read 0 '{"metadata":{"labels":{"edgelm.sap.com/edge-node-id":"abc-123"}}}' \
+  'Warning: the server version (v1.31) differs from the client version (v1.33) by more than one minor version'
+[[ "${RESULT}" == "abc-123" ]] || { echo "${TASK_OUT}"; fail "clusterEdgeNodeId should be 'abc-123' despite stderr noise, got '${RESULT}'"; }
+echo "✅ PASS: edge_node_id_ignores_stderr_noise"
+
+# Test case: edge_node_id_unknown_on_unparsable_output
+# "" means the namespace or label is truly absent (ruling R4); output that is
+# not JSON is "could not read", i.e. unknown
+echo ""
+echo "Test: edge_node_id_unknown_on_unparsable_output"
+echo "--------------------------------------------"
+run_with_ns_read 0 'this is not JSON'
+[[ "${RESULT}" == "unknown" ]] || { echo "${TASK_OUT}"; fail "clusterEdgeNodeId should be 'unknown' for non-JSON output, got '${RESULT}'"; }
+grep -q "⚠️.*Edge Node ID set to 'unknown'" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "warning not printed for non-JSON output"; }
+# A JSON value without metadata (e.g. a string) is no proof of absence either
+run_with_ns_read 0 '"edgelm"'
+[[ "${RESULT}" == "unknown" ]] || { echo "${TASK_OUT}"; fail "clusterEdgeNodeId should be 'unknown' for a non-object, got '${RESULT}'"; }
+echo "✅ PASS: edge_node_id_unknown_on_unparsable_output"
+
+# Test case: edge_node_id_read_error_category_from_stderr
+# On a failed read the category comes from stderr; the raw error is not printed
+echo ""
+echo "Test: edge_node_id_read_error_category_from_stderr"
+echo "--------------------------------------------"
+run_with_ns_read 1 '' 'Unable to connect to the server: dial tcp 10.0.0.1:6443: connect: connection refused (token sha256~FAKE-TOKEN-0123)'
+[[ "${RESULT}" == "unknown" ]] || { echo "${TASK_OUT}"; fail "clusterEdgeNodeId should be 'unknown' on a read error, got '${RESULT}'"; }
+grep -qF "Could not read namespace edgelm (connection refused)" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "error category not taken from stderr"; }
+! grep -qF "FAKE-TOKEN-0123" <<< "${TASK_OUT}" || fail "raw oc stderr printed"
+echo "✅ PASS: edge_node_id_read_error_category_from_stderr"
 
 # Test case: role_apply_failure_does_not_fail_task
 echo ""

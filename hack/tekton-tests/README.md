@@ -102,6 +102,7 @@ Mock `oc`/`kubectl` for testing:
 ```bash
 export FAKE_OC_LOG=/tmp/calls.log          # Log all calls
 export FAKE_OC_RULES=/tmp/rules.txt        # Response rules
+export FAKE_OC_STDERR_RULES=/tmp/stderr.txt # Optional stderr rules
 export FAKE_OC_STDIN_DIR=/tmp/applied      # Save applied YAML
 
 fake-bin/oc get pods
@@ -118,6 +119,20 @@ Example:
 ```
 get pods*	0	pod1\npod2
 delete pod foo	1	Error: not found
+```
+
+Stderr rules file format (tab-separated; the first matching line is printed
+to stderr before the response rule applies, as `oc` prints warnings and
+errors before any output):
+
+```
+GLOB<TAB>STDERR
+```
+
+Example:
+
+```
+get ns edgelm*	Warning: deprecated
 ```
 
 ## Testing Patterns

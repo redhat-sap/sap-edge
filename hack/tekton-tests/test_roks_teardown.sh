@@ -237,8 +237,9 @@ EOF
 
   FAKE_OC_LOG=$(tmp_file)
   FAKE_OC_RULES=$(tmp_file)
+  FAKE_OC_STDERR_RULES=$(tmp_file)
   printf 'get secret eic-kubeconfig -o jsonpath=*kubeconfig*\t0\t%s\n' "${HUB_KUBECONFIG_B64}" > "${FAKE_OC_RULES}"
-  export FAKE_OC_LOG FAKE_OC_RULES
+  export FAKE_OC_LOG FAKE_OC_RULES FAKE_OC_STDERR_RULES
 
   # Step env (params and Secrets, see the task's env list)
   export CLUSTER_NAME="${CLUSTER}"
@@ -817,6 +818,49 @@ expect_success
 assert_called "^delete role roks-sap-browser-${CLUSTER} --ignore-not-found=true$"
 assert_called "^delete rolebinding roks-sap-browser-${CLUSTER} --ignore-not-found=true$"
 echo "✅ PASS: teardown_deletes_browser_role"
+
+# Test case: browser_role_forbidden_is_not_left_over
+# Without roks-runner-rbac.yaml the pipeline ServiceAccount has no RBAC verbs:
+# roks-sap-browser-access cannot have created the Role or RoleBinding, so a
+# Forbidden delete is not something left behind (the browser may be off).
+echo ""
+echo "Test: browser_role_forbidden_is_not_left_over"
+echo "--------------------------------------------"
+setup
+# oc prints the error on stderr, nothing on stdout
+printf 'delete role roks-sap-browser-*\t1\t\n' >> "${FAKE_OC_RULES}"
+printf 'delete rolebinding roks-sap-browser-*\t1\t\n' >> "${FAKE_OC_RULES}"
+for KIND in roles rolebindings; do
+  printf '%s\t%s\n' "delete ${KIND%s} roks-sap-browser-*" \
+    "Error from server (Forbidden): ${KIND}.rbac.authorization.k8s.io \"roks-sap-browser-${CLUSTER}\" is forbidden: User \"system:serviceaccount:ci:pipeline\" cannot delete resource \"${KIND}\" in API group \"rbac.authorization.k8s.io\" in the namespace \"ci\"" \
+    >> "${FAKE_OC_STDERR_RULES}"
+done
+run_teardown
+expect_success
+grep -qF "ℹ️  the pipeline service account cannot manage Roles, so roks-sap-browser-access cannot have created role/roks-sap-browser-${CLUSTER}; skipping" <<< "${TASK_OUT}" \
+  || { echo "${TASK_OUT}"; fail "Forbidden Role delete not explained"; }
+grep -qF "ℹ️  the pipeline service account cannot manage RoleBindings, so roks-sap-browser-access cannot have created rolebinding/roks-sap-browser-${CLUSTER}; skipping" <<< "${TASK_OUT}" \
+  || { echo "${TASK_OUT}"; fail "Forbidden RoleBinding delete not explained"; }
+! grep -q "still present" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "Forbidden Role delete reported as remaining"; }
+! grep -q "Role and RoleBinding (pipeline cluster)" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "summary claims the undeletable Role was deleted"; }
+# The rest of the teardown still ran
+assert_called "^delete secret eic-credentials-roks-${CLUSTER} --ignore-not-found=true$"
+
+# Any other delete error is still reported as remaining
+setup
+printf 'delete role roks-sap-browser-*\t1\t\n' >> "${FAKE_OC_RULES}"
+printf 'delete rolebinding roks-sap-browser-*\t1\t\n' >> "${FAKE_OC_RULES}"
+printf 'delete role roks-sap-browser-*\tUnable to connect to the server: dial tcp 172.30.0.1:443: i/o timeout\n' >> "${FAKE_OC_STDERR_RULES}"
+printf 'delete rolebinding roks-sap-browser-*\tError from server (InternalError): Internal error occurred: the request timed out\n' >> "${FAKE_OC_STDERR_RULES}"
+run_teardown
+expect_failure
+REMAINING_SECTION=$(sed -n '/still present/,$p' <<< "${TASK_OUT}")
+grep -qF "Role roks-sap-browser-${CLUSTER} on the pipeline cluster (oc delete failed)" <<< "${REMAINING_SECTION}" \
+  || { echo "${TASK_OUT}"; fail "undeleted Role not reported"; }
+grep -qF "RoleBinding roks-sap-browser-${CLUSTER} on the pipeline cluster (oc delete failed)" <<< "${REMAINING_SECTION}" \
+  || { echo "${TASK_OUT}"; fail "undeleted RoleBinding not reported"; }
+! grep -q "cannot manage Role" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "non-Forbidden error explained as missing RBAC verbs"; }
+echo "✅ PASS: browser_role_forbidden_is_not_left_over"
 
 echo ""
 echo "============================================"

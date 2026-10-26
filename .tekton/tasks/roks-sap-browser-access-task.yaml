@@ -16,7 +16,7 @@ spec:
     roks-sap-browser-<clusterName>. Also reads the Edge Node ID label
     (edgelm.sap.com/edge-node-id) from the edgelm namespace on the ROKS cluster
     and returns it as a result (empty string if the namespace or label is
-    absent). Does nothing (empty result) when mode is disabled or
+    absent, "unknown" if it cannot be read). Does nothing (empty result) when mode is disabled or
     browserImage is empty, so the pipeline can run it without a `when`.
   params:
     - name: clusterName
@@ -37,7 +37,7 @@ spec:
       description: "Workspace with kubeconfig (token kubeconfig from roks-validate-and-get-access)"
   results:
     - name: clusterEdgeNodeId
-      description: "Edge Node ID label from the edgelm namespace on the ROKS cluster (empty if absent)"
+      description: "Edge Node ID label from the edgelm namespace on the ROKS cluster (empty if absent, unknown if unreadable)"
   steps:
     - name: grant-access-and-read-edge-node-id
       image: registry.access.redhat.com/ubi9/ubi
@@ -157,27 +157,32 @@ spec:
         # --- Read Edge Node ID from the ROKS cluster ---
         echo ""
         echo "📋 Reading Edge Node ID from ROKS cluster..."
+        # "" only when the namespace or the label is truly absent; anything
+        # that cannot be read or parsed is "unknown". stderr (warnings, errors)
+        # stays out of the JSON and is used only for the error category.
         EDGE_NODE_ID=""
-        set +e
-        NS_OUTPUT=$("${CLUSTER_OC[@]}" get ns edgelm --ignore-not-found -o json 2>&1)
-        NS_RC=$?
-        set -e
+        NS_ERR="${TMP_DIR}/ns-error.log"
+        NS_RC=0
+        NS_OUTPUT=$("${CLUSTER_OC[@]}" get ns edgelm --ignore-not-found -o json 2>"${NS_ERR}") || NS_RC=$?
         if [[ "${NS_RC}" -eq 0 ]]; then
-          if [[ -z "${NS_OUTPUT}" ]]; then
+          if [[ -z "${NS_OUTPUT//[[:space:]]/}" ]]; then
             echo "ℹ️  Namespace edgelm not found"
-          else
-            EDGE_NODE_ID=$(jq -r '.metadata.labels["edgelm.sap.com/edge-node-id"] // ""' <<< "${NS_OUTPUT}" 2>/dev/null || true)
+          elif EDGE_NODE_ID=$(jq -er '.metadata.labels["edgelm.sap.com/edge-node-id"] // ""' <<< "${NS_OUTPUT}" 2>/dev/null); then
             if [[ -n "${EDGE_NODE_ID}" ]]; then
               echo "✅ Edge Node ID: ${EDGE_NODE_ID}"
             else
               echo "ℹ️  Edge Node ID label not found"
             fi
+          else
+            EDGE_NODE_ID="unknown"
+            echo "⚠️  Could not parse namespace edgelm; Edge Node ID set to 'unknown'"
           fi
         else
           EDGE_NODE_ID="unknown"
-          # Extract error category (Unauthorized, Forbidden, connection refused, etc.)
-          ERROR_CATEGORY=$(echo "${NS_OUTPUT}" | grep -oE "(Unauthorized|Forbidden|connection refused|unable to connect|timeout)" || echo "read error")
-          echo "⚠️  Could not read namespace edgelm (${ERROR_CATEGORY}); Edge Node ID set to 'unknown'"
+          # Error category only (Unauthorized, Forbidden, connection refused, etc.), never the raw error
+          ERROR_CATEGORY=$(grep -m 1 -oE "(Unauthorized|Forbidden|connection refused|unable to connect|timeout)" "${NS_ERR}" || true)
+          ERROR_CATEGORY="${ERROR_CATEGORY%%$'\n'*}"
+          echo "⚠️  Could not read namespace edgelm (${ERROR_CATEGORY:-read error}); Edge Node ID set to 'unknown'"
         fi
 
         echo -n "${EDGE_NODE_ID}" > "$(results.clusterEdgeNodeId.path)"
