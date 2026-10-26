@@ -38,9 +38,9 @@ spec:
       type: string
       description: "Resource group of the run; leftovers are only swept in redhat-sap-edge-roks-ci"
       default: "redhat-sap-edge-roks-ci"
-    - name: roksIbmcloudSecretName
+    - name: roksCredentialsSecretName
       type: string
-      description: "Name of the Kubernetes Secret with the IBM Cloud API key (key IBMCLOUD_API_KEY)"
+      description: "Name of the Kubernetes Secret with the ROKS credentials; this task reads the keys IBMCLOUD_API_KEY, AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (COS HMAC keys of the state bucket)"
     - name: terraformStateBucket
       type: string
       description: "IBM Cloud Object Storage bucket holding the Terraform state"
@@ -48,9 +48,6 @@ spec:
       type: string
       description: "S3 endpoint of the Terraform state bucket"
       default: "https://s3.eu-de.cloud-object-storage.appdomain.cloud"
-    - name: terraformStateSecretName
-      type: string
-      description: "Name of the Kubernetes Secret with the COS HMAC keys of the state bucket (keys AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)"
     - name: hubKubeconfigSecretName
       type: string
       description: "Name of the Secret containing kubeconfig for hub cluster (optional); the credentials and registry Secrets are deleted there instead of on the pipeline cluster"
@@ -82,18 +79,18 @@ spec:
         - name: IBMCLOUD_API_KEY
           valueFrom:
             secretKeyRef:
-              name: $(params.roksIbmcloudSecretName)
+              name: $(params.roksCredentialsSecretName)
               key: IBMCLOUD_API_KEY
         # COS HMAC keys, read by the s3 backend
         - name: AWS_ACCESS_KEY_ID
           valueFrom:
             secretKeyRef:
-              name: $(params.terraformStateSecretName)
+              name: $(params.roksCredentialsSecretName)
               key: AWS_ACCESS_KEY_ID
         - name: AWS_SECRET_ACCESS_KEY
           valueFrom:
             secretKeyRef:
-              name: $(params.terraformStateSecretName)
+              name: $(params.roksCredentialsSecretName)
               key: AWS_SECRET_ACCESS_KEY
       script: |
         #!/usr/bin/env bash
@@ -171,8 +168,8 @@ spec:
         valid_cluster_name "${CLUSTER_NAME}" || fail "Invalid clusterName '${CLUSTER_NAME}': it must start with redhat- and be at most 30 characters of lowercase letters, digits and hyphens, ending with a letter or digit (e.g. redhat-roks-eic-pr123)"
         plain_value ibmcloudRegion "${IBMCLOUD_REGION}"
         plain_value ibmcloudResourceGroup "${IBMCLOUD_RESOURCE_GROUP}"
-        [[ -n "${IBMCLOUD_API_KEY:-}" ]] || fail "IBMCLOUD_API_KEY is empty (Secret from roksIbmcloudSecretName, key IBMCLOUD_API_KEY)"
-        [[ -n "${AWS_ACCESS_KEY_ID:-}" && -n "${AWS_SECRET_ACCESS_KEY:-}" ]] || fail "COS HMAC keys are empty (Secret from terraformStateSecretName, keys AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY)"
+        [[ -n "${IBMCLOUD_API_KEY:-}" ]] || fail "IBMCLOUD_API_KEY is empty (key IBMCLOUD_API_KEY of the Secret from roksCredentialsSecretName)"
+        [[ -n "${AWS_ACCESS_KEY_ID:-}" && -n "${AWS_SECRET_ACCESS_KEY:-}" ]] || fail "COS HMAC keys are empty (keys AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY of the Secret from roksCredentialsSecretName)"
         [[ -d "${TF_DIR}" ]] || fail "${TF_DIR} not found; is the repository checked out in the source workspace?"
         echo "✅ Inputs validated"
 

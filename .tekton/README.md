@@ -135,21 +135,18 @@ oc create secret generic rosa-postgres-admin-password \
   --from-literal=POSTGRES_ADMIN_PASSWORD="YourSecure-Password123!"
 ```
 
-**ROKS-specific secrets:**
+**ROKS-specific secrets** (one Secret, pipeline param `roksCredentialsSecretName`):
 ```bash
-# IBM Cloud API key (preferably a service ID's key scoped to the resource group)
-oc create secret generic roks-ibmcloud-api-key \
-  --from-literal=IBMCLOUD_API_KEY="your-ibmcloud-api-key"
-
-# COS HMAC credentials for Terraform state bucket
-oc create secret generic roks-terraform-state-hmac \
+# IBMCLOUD_API_KEY: IBM Cloud API key (preferably a service ID's key scoped to the resource group)
+# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY: COS HMAC credentials of the Terraform state bucket
+# POSTGRES_ADMIN_PASSWORD: PostgreSQL admin password for IBM Cloud Databases, only
+#   read when deployPostgres is "true" (leave the key out otherwise).
+#   IBM provider rule: 15-72 characters of letters, digits, - and _,
+#   with ≥1 lowercase, ≥1 uppercase, ≥1 digit, not starting with - or _
+oc create secret generic roks-ci-credentials \
+  --from-literal=IBMCLOUD_API_KEY="your-ibmcloud-api-key" \
   --from-literal=AWS_ACCESS_KEY_ID="your-hmac-access-key-id" \
-  --from-literal=AWS_SECRET_ACCESS_KEY="your-hmac-secret-access-key"
-
-# PostgreSQL admin password for IBM Cloud Databases
-# IBM provider rule: 15-72 characters of letters, digits, - and _,
-# with ≥1 lowercase, ≥1 uppercase, ≥1 digit, not starting with - or _
-oc create secret generic roks-postgres-admin-password \
+  --from-literal=AWS_SECRET_ACCESS_KEY="your-hmac-secret-access-key" \
   --from-literal=POSTGRES_ADMIN_PASSWORD="YourSecure-Password123"
 ```
 
@@ -515,11 +512,12 @@ ROKS pipelines deploy a VPC cluster with IBM Cloud Databases for PostgreSQL and 
    - **Container Registry** in `eu-de`: **Manager** service role (create namespaces) and **Administrator** platform role (create namespace access policies)
    - **IAM Identity Service**: **Operator** role (create service IDs and API keys for the per-run ICR access)
 
-   Store the API key in the Secret `roks-ibmcloud-api-key` (key `IBMCLOUD_API_KEY`).
+3. **COS bucket** for Terraform state (one state per cluster under `roks/<clusterName>/terraform.tfstate`) with HMAC credentials. Keep the bucket private: the state holds the cluster admin certificate, registry API keys and database passwords.
 
-3. **COS bucket** for Terraform state (one state per cluster under `roks/<clusterName>/terraform.tfstate`) and HMAC credentials stored in the Secret `roks-terraform-state-hmac` (keys `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`). Keep the bucket private: the state holds the cluster admin certificate, registry API keys and database passwords.
-
-4. **PostgreSQL admin password Secret** `roks-postgres-admin-password` (key `POSTGRES_ADMIN_PASSWORD`), meeting the IBM provider rule: 15–72 characters of letters, digits, `-`, `_`, with at least one lowercase letter, one uppercase letter and one digit, not starting with `-` or `_`.
+4. **One credentials Secret** `roks-ci-credentials` in the pipeline namespace (pipeline param `roksCredentialsSecretName`), see [ROKS-specific secrets](#1-create-required-secrets) for the `oc create secret` command:
+   - `IBMCLOUD_API_KEY`: the service ID's API key
+   - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`: the HMAC credentials of the state bucket
+   - `POSTGRES_ADMIN_PASSWORD`: only read when `deployPostgres` is `"true"` (the key may be left out otherwise), meeting the IBM provider rule: 15–72 characters of letters, digits, `-`, `_`, with at least one lowercase letter, one uppercase letter and one digit, not starting with `-` or `_`, and no trailing newline (`--from-literal` adds none).
 
 5. **Verify IBM Cloud Container Registry plan** in `eu-de` is not Lite (Lite = 500 MB storage, too small for EIC image mirroring):
    ```bash
@@ -537,7 +535,7 @@ ROKS pipelines deploy a VPC cluster with IBM Cloud Databases for PostgreSQL and 
 - Restricted kubeconfig Secret `edgelm-kubeconfig-generated-<cluster>` (pipeline namespace, pipeline cluster) for cluster registration
 - IBM Cloud Container Registry Secret `eic-registry-roks-<cluster>` (on the hub cluster when `hubKubeconfigSecretName` is set; the pipeline always sets it): keys `server` (`de.icr.io`), `namespace` (the cluster name), `username` (`iamapikey`) and `password` (API key of the run's ICR service ID). Terraform in `roks-deploy` creates the namespace and the service ID; `roks-registry-access` stores the Secret.
 - Secret `eic-credentials-roks-<cluster>` (on the hub cluster when configured): token kubeconfig, PostgreSQL/Redis connection data and `redis-password`
-- PostgreSQL admin password: key `POSTGRES_ADMIN_PASSWORD` of your Secret `roks-postgres-admin-password` (pipeline namespace, pipeline cluster)
+- PostgreSQL admin password: key `POSTGRES_ADMIN_PASSWORD` of your Secret `<roksCredentialsSecretName>` (default `roks-ci-credentials`; pipeline namespace, pipeline cluster)
 
 **Running:**
 

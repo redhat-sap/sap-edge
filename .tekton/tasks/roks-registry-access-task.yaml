@@ -31,9 +31,9 @@ spec:
       type: string
       description: "S3 endpoint of the Terraform state bucket"
       default: "https://s3.eu-de.cloud-object-storage.appdomain.cloud"
-    - name: terraformStateSecretName
+    - name: roksCredentialsSecretName
       type: string
-      description: "Name of the Kubernetes Secret with the COS HMAC keys of the state bucket (keys AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)"
+      description: "Name of the Kubernetes Secret with the ROKS credentials; this task reads only the COS HMAC keys of the state bucket (keys AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)"
     - name: hubKubeconfigSecretName
       type: string
       description: "Name of the Secret containing kubeconfig for hub cluster (optional); the registry Secret is stored there instead of on the pipeline cluster"
@@ -58,12 +58,12 @@ spec:
         - name: AWS_ACCESS_KEY_ID
           valueFrom:
             secretKeyRef:
-              name: $(params.terraformStateSecretName)
+              name: $(params.roksCredentialsSecretName)
               key: AWS_ACCESS_KEY_ID
         - name: AWS_SECRET_ACCESS_KEY
           valueFrom:
             secretKeyRef:
-              name: $(params.terraformStateSecretName)
+              name: $(params.roksCredentialsSecretName)
               key: AWS_SECRET_ACCESS_KEY
       script: |
         #!/usr/bin/env bash
@@ -98,7 +98,7 @@ spec:
 
         # --- Validate inputs before installing tools ---
         [[ "${CLUSTER_NAME}" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || fail "Invalid clusterName '${CLUSTER_NAME}': lowercase letters, digits and hyphens only"
-        [[ -n "${AWS_ACCESS_KEY_ID:-}" && -n "${AWS_SECRET_ACCESS_KEY:-}" ]] || fail "COS HMAC keys are empty (Secret from terraformStateSecretName)"
+        [[ -n "${AWS_ACCESS_KEY_ID:-}" && -n "${AWS_SECRET_ACCESS_KEY:-}" ]] || fail "COS HMAC keys are empty (keys AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY of the Secret from roksCredentialsSecretName)"
         [[ -d "${TF_DIR}" ]] || fail "${TF_DIR} not found; is the repository checked out in the source workspace?"
 
         # Install tools (jq, Terraform, oc)

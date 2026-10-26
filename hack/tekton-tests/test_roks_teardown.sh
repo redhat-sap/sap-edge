@@ -256,9 +256,8 @@ EOF
 run_teardown() {
   TASK_CWD="${WS}" run_task "${TASK}" \
     --param clusterName="${CLUSTER_NAME}" \
-    --param roksIbmcloudSecretName=roks-ibmcloud \
+    --param roksCredentialsSecretName=roks-ci-credentials \
     --param terraformStateBucket="${TERRAFORM_STATE_BUCKET}" \
-    --param terraformStateSecretName=roks-terraform-state \
     --workspace-dir source="${WS}" \
     --drop '# Install tools' 'echo "✅ Tools installed"'
 }
@@ -316,10 +315,9 @@ expected_defaults = {
     "clusterName": None,
     "ibmcloudRegion": "eu-de",
     "ibmcloudResourceGroup": "redhat-sap-edge-roks-ci",
-    "roksIbmcloudSecretName": None,
+    "roksCredentialsSecretName": None,
     "terraformStateBucket": None,
     "terraformStateEndpoint": "https://s3.eu-de.cloud-object-storage.appdomain.cloud",
-    "terraformStateSecretName": None,
     "hubKubeconfigSecretName": "",
 }
 if params != expected_defaults:
@@ -338,10 +336,12 @@ expected_values = {
     "TERRAFORM_STATE_ENDPOINT": "$(params.terraformStateEndpoint)",
     "HUB_KUBECONFIG_SECRET": "$(params.hubKubeconfigSecretName)",
 }
+# The API key and the COS HMAC keys of the credentials Secret (no Postgres
+# password: destroy works from the state)
 expected_secrets = {
-    "IBMCLOUD_API_KEY": ("$(params.roksIbmcloudSecretName)", "IBMCLOUD_API_KEY"),
-    "AWS_ACCESS_KEY_ID": ("$(params.terraformStateSecretName)", "AWS_ACCESS_KEY_ID"),
-    "AWS_SECRET_ACCESS_KEY": ("$(params.terraformStateSecretName)", "AWS_SECRET_ACCESS_KEY"),
+    "IBMCLOUD_API_KEY": ("$(params.roksCredentialsSecretName)", "IBMCLOUD_API_KEY"),
+    "AWS_ACCESS_KEY_ID": ("$(params.roksCredentialsSecretName)", "AWS_ACCESS_KEY_ID"),
+    "AWS_SECRET_ACCESS_KEY": ("$(params.roksCredentialsSecretName)", "AWS_SECRET_ACCESS_KEY"),
 }
 for name, value in expected_values.items():
     if env.get(name, {}).get("value") != value:

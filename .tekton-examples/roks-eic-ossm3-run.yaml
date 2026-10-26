@@ -13,34 +13,33 @@
 # marked PLACEHOLDER are examples: create them under these names or change the
 # values to the names you used.
 #
-# 1. IBM Cloud API key Secret (roksIbmcloudSecretName), key IBMCLOUD_API_KEY.
-#    Preferably the API key of a service ID (e.g. redhat-sap-edge-roks-ci)
-#    with access to VPC Infrastructure Services, Kubernetes Service, Cloud
-#    Object Storage and Databases in the resource group, Container Registry
-#    (Manager, Administrator) in eu-de and IAM Identity Service (Operator):
-#      oc create secret generic roks-ibmcloud-api-key \
-#        --from-literal=IBMCLOUD_API_KEY=<API key>
-# 2. An IBM Cloud Object Storage bucket for the Terraform state
+# 1. An IBM Cloud Object Storage bucket for the Terraform state
 #    (terraformStateBucket; one state per cluster under
-#    roks/<clusterName>/terraform.tfstate) and HMAC credentials for it as a
-#    Secret (terraformStateSecretName). Keep the bucket private: the state
-#    holds the cluster admin certificate, the registry API key and the
-#    database passwords.
-#      oc create secret generic roks-terraform-state-hmac \
+#    roks/<clusterName>/terraform.tfstate) with HMAC credentials. Keep the
+#    bucket private: the state holds the cluster admin certificate, the
+#    registry API key and the database passwords.
+# 2. One credentials Secret (roksCredentialsSecretName) with the keys
+#    - IBMCLOUD_API_KEY: preferably the API key of a service ID (e.g.
+#      redhat-sap-edge-roks-ci) with access to VPC Infrastructure Services,
+#      Kubernetes Service, Cloud Object Storage and Databases in the resource
+#      group, Container Registry (Manager, Administrator) in eu-de and IAM
+#      Identity Service (Operator);
+#    - AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY: the HMAC credentials of the
+#      state bucket from step 1;
+#    - POSTGRES_ADMIN_PASSWORD: read only when deployPostgres is "true" (leave
+#      it out otherwise). The IBM provider rule: 15-72 characters of letters,
+#      digits, - and _, with at least one lower case letter, one upper case
+#      letter and one digit, not starting with - or _, and no trailing newline.
+#      oc create secret generic roks-ci-credentials \
+#        --from-literal=IBMCLOUD_API_KEY=<API key> \
 #        --from-literal=AWS_ACCESS_KEY_ID=<HMAC access key ID> \
-#        --from-literal=AWS_SECRET_ACCESS_KEY=<HMAC secret access key>
-# 3. PostgreSQL admin password Secret (postgresAdminPasswordSecretName), key
-#    POSTGRES_ADMIN_PASSWORD, read only when deployPostgres is "true". The
-#    IBM provider rule: 15-72 characters of letters, digits, - and _, with at
-#    least one lower case letter, one upper case letter and one digit, not
-#    starting with - or _, and no trailing newline:
-#      oc create secret generic roks-postgres-admin-password \
+#        --from-literal=AWS_SECRET_ACCESS_KEY=<HMAC secret access key> \
 #        --from-literal=POSTGRES_ADMIN_PASSWORD=<password>
-# 4. As for the other EIC runs: the ObjectBucketClaim
+# 3. As for the other EIC runs: the ObjectBucketClaim
 #    sap-eic-restricted-cluster-config-resources with the restricted-resources
 #    zip files under restricted-resources/, the EIC auth Secret, the Jira
 #    Secret and the hub kubeconfig Secret <hubClusterName>-kubeconfig.
-# 5. Add 172.17.0.0/18 (ROKS pod network) and 10.0.0.0/16 (VPC) to the IP
+# 4. Add 172.17.0.0/18 (ROKS pod network) and 10.0.0.0/16 (VPC) to the IP
 #    filter allowlist of the httpbinipfilter iFlow (otherwise
 #    test-httpbinipfilter fails).
 #
@@ -98,17 +97,13 @@ spec:
       value: "bx2.16x64"
     - name: workersPerZone
       value: "1"
-    - name: roksIbmcloudSecretName
-      value: "roks-ibmcloud-api-key"            # PLACEHOLDER: Secret from setup step 1
+    - name: roksCredentialsSecretName
+      value: "roks-ci-credentials"              # PLACEHOLDER: Secret from setup step 2
     - name: terraformStateBucket
-      value: "redhat-sap-edge-roks-ci-tfstate"  # PLACEHOLDER: COS bucket from setup step 2
+      value: "redhat-sap-edge-roks-ci-tfstate"  # PLACEHOLDER: COS bucket from setup step 1
     - name: terraformStateEndpoint
       value: "https://s3.eu-de.cloud-object-storage.appdomain.cloud"  # S3 endpoint of the bucket's region
-    - name: terraformStateSecretName
-      value: "roks-terraform-state-hmac"        # PLACEHOLDER: HMAC Secret from setup step 2
     # --- IBM Cloud Databases ---
-    - name: postgresAdminPasswordSecretName
-      value: "roks-postgres-admin-password"     # PLACEHOLDER: Secret from setup step 3
     - name: deployPostgres
       value: "true"
     - name: deployRedis
