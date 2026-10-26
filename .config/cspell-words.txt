@@ -37,6 +37,7 @@ approvaltask
 approvaltasks
 argjson
 arorp
+awscliv
 bootstrapper
 bpersistentvolumeclaims
 bruhl
@@ -104,6 +105,7 @@ kubeadmin
 kubeconfig
 kubeconfigs
 kubevirt
+lassign
 machineconfig
 machineconfigpools
 machineconfigs
@@ -162,6 +164,7 @@ rladmin
 rolebinding
 rolebindings
 sailoperator
+SAPCAR
 sapeic
 saponrhel
 schedulable
@@ -175,6 +178,7 @@ servicemeshoperator
 servicemonitor
 shellcheck
 slvredis
+spawnid
 sslmode
 startswith
 statefulset
