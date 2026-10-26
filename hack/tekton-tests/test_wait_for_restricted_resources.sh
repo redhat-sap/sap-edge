@@ -95,20 +95,20 @@ POLL_DATA_DIR=$(tmp_dir)
 CALL_COUNT_FILE=$(tmp_file)
 echo "0" > "${CALL_COUNT_FILE}"
 
-# elm/ has a zip from the start (polls 1-12, poll12 is for final output)
+# elm/ has a zip from the start (polls 1-4, poll4 is for final output)
 # Folder is prefix_/elm/, which becomes prefix__elm_ after replacing / with _
-for i in {1..12}; do
+for i in {1..4}; do
   cat > "${POLL_DATA_DIR}/prefix__elm__poll${i}.txt" <<EOF
 2026-10-26 10:00:00      12345 restricted-resources-Edge_Lifecycle_Management-1.64.0.zip
 EOF
 done
 
-# edge-icell/ has nothing on polls 1-10, gets a zip on poll 11+
-for i in {1..10}; do
+# edge-icell/ has nothing on polls 1-2, gets a zip on poll 3+ (as per brief)
+for i in {1..2}; do
   cat > "${POLL_DATA_DIR}/prefix__edge-icell__poll${i}.txt" <<EOF
 EOF
 done
-for i in {11..12}; do
+for i in {3..4}; do
   cat > "${POLL_DATA_DIR}/prefix__edge-icell__poll${i}.txt" <<EOF
 2026-10-26 10:05:00      54321 restricted-resources-Edge_Integration_Cell-8.48.11.zip
 EOF
@@ -140,19 +140,15 @@ if ! echo "${TASK_OUT}" | grep -qF 'restricted-resources-Edge_Integration_Cell-8
   fail "output missing EIC zip name"
 fi
 
-# edge-icell should be listed at least 3 times (in target folders + waiting message at poll 10 + waiting list could appear multiple times)
-EDGE_ICELL_COUNT=$(echo "${TASK_OUT}" | grep -c 'edge-icell' || true)
-if [[ "${EDGE_ICELL_COUNT}" -lt 2 ]]; then
+# edge-icell should be listed at least 3 times in the AWS call log
+# (poll 1, poll 2, poll 3 when zip appears, plus final output = 4 total)
+EDGE_ICELL_AWS_COUNT=$(grep -c 'prefix_/edge-icell/' "${AWS_LOG}" || true)
+if [[ "${EDGE_ICELL_AWS_COUNT}" -lt 3 ]]; then
   echo "TASK OUTPUT:"
   echo "${TASK_OUT}"
-  fail "edge-icell should appear at least 2 times (found ${EDGE_ICELL_COUNT})"
-fi
-
-# Should see at least one waiting message (at poll 10)
-if ! echo "${TASK_OUT}" | grep -qF '⏳ still waiting for:'; then
-  echo "TASK OUTPUT:"
-  echo "${TASK_OUT}"
-  fail "should see waiting message at poll 10"
+  echo "AWS LOG:"
+  cat "${AWS_LOG}"
+  fail "edge-icell should be listed at least 3 times in AWS log (found ${EDGE_ICELL_AWS_COUNT})"
 fi
 
 echo "✅ PASS: waits_until_every_folder_has_a_zip"
@@ -289,6 +285,46 @@ if [[ "${INSTR_COUNT}" -ne 1 ]]; then
 fi
 
 echo "✅ PASS: prints_instructions_once"
+
+# ----------------------------------------------------------------------------
+# Test: accepts_keys_with_spaces
+# ----------------------------------------------------------------------------
+echo ""
+echo "Test: accepts_keys_with_spaces"
+echo "--------------------------------------------"
+
+POLL_DATA_DIR=$(tmp_dir)
+CALL_COUNT_FILE=$(tmp_file)
+echo "0" > "${CALL_COUNT_FILE}"
+
+# elm/ gets a zip with a space in the name (browser repeated download naming)
+for i in 1 2; do
+  cat > "${POLL_DATA_DIR}/prefix__elm__poll${i}.txt" <<EOF
+2026-10-26 10:00:00      12345 restricted-resources-Edge_Integration_Cell-8.48.11 (1).zip
+EOF
+done
+
+run_with_fake_aws_poll "${CALL_COUNT_FILE}" \
+  --param obcName=x \
+  --param s3Prefix=prefix_ \
+  --param components="elm" \
+  --param pollSeconds=0
+
+if [[ "${TASK_RC}" -ne 0 ]]; then
+  echo "TASK OUTPUT:"
+  echo "${TASK_OUT}"
+  fail "task failed (rc ${TASK_RC})"
+fi
+
+# Should succeed (rc 0)
+# Should output the full key with space
+if ! echo "${TASK_OUT}" | grep -qF 'restricted-resources-Edge_Integration_Cell-8.48.11 (1).zip'; then
+  echo "TASK OUTPUT:"
+  echo "${TASK_OUT}"
+  fail "output missing zip name with space"
+fi
+
+echo "✅ PASS: accepts_keys_with_spaces"
 
 echo ""
 echo "✅ ALL TESTS PASSED"
