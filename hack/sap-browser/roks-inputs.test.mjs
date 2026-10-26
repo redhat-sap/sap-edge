@@ -95,6 +95,9 @@ test('maps_roks_keys', async () => {
 
 test('never_reads_admin_kubeconfig', async () => {
   const objects = roksResources('c1');
+  // Use invalid base64 that would throw if decoded
+  objects['secret/eic-credentials-roks-c1'].data.kubeconfig = 'INVALID-BASE64!!!';
+
   const inputs = await loadRoksInputs(reader(objects), 'run-1', {
     expectedRunUID: 'run-uid',
     expectedClusterName: 'c1',
@@ -104,6 +107,7 @@ test('never_reads_admin_kubeconfig', async () => {
   // Admin kubeconfig should never appear in the result
   const serialized = JSON.stringify(inputs);
   assert.ok(!serialized.includes('ADMIN-KUBECONFIG-MUST-NOT-BE-READ'));
+  // If the invalid base64 was decoded, it would have thrown
 });
 
 test('rejects_other_pipeline', async () => {
@@ -152,7 +156,6 @@ test('restricted_kubeconfig_only_from_generated_secret', async () => {
   const kubeconfig = await loadRestrictedKubeconfig(trackingReader, 'c1');
 
   assert.equal(kubeconfig, 'RESTRICTED-KUBECONFIG');
-  assert.ok(reads.includes('secret/edgelm-kubeconfig-generated-c1'));
-  // Should only read the generated secret, not the admin one
-  assert.ok(!reads.includes('secret/eic-credentials-roks-c1'));
+  // Should read exactly one secret: the generated kubeconfig
+  assert.deepEqual(reads, ['secret/edgelm-kubeconfig-generated-c1']);
 });

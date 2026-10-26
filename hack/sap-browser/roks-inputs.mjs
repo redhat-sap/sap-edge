@@ -68,9 +68,19 @@ export async function loadRoksInputs(read, pipelineRun, {
     }
   }
 
-  // Read credentials from Secrets
+  // Read credentials from Secrets, only decode the 10 listed keys (never the admin kubeconfig)
   const credentialsSecret = await read('secret', `eic-credentials-roks-${clusterName}`);
-  const credentialsData = decodeSecret(credentialsSecret);
+  const allowedKeys = [
+    'postgres-host', 'postgres-port', 'postgres-database', 'postgres-username', 'postgres-ca',
+    'redis-host', 'redis-port', 'redis-username', 'redis-password', 'redis-ca',
+  ];
+  const filteredCredentials = { data: {} };
+  for (const key of allowedKeys) {
+    if (credentialsSecret.data?.[key]) {
+      filteredCredentials.data[key] = credentialsSecret.data[key];
+    }
+  }
+  const credentialsData = decodeSecret(filteredCredentials);
 
   const registrySecret = await read('secret', `eic-registry-roks-${clusterName}`);
   const registryData = decodeSecret(registrySecret);
