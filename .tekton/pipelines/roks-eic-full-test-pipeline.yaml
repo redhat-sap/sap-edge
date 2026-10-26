@@ -227,7 +227,8 @@ spec:
     # restricted-resources/<clusterName>/elm/ and .../edge-icell/, and render the
     # upload instructions. Named after the cluster, which is already unique per
     # run (Terraform state key, ICR namespace): two ROKS runs in one PR never
-    # share a folder, and a retest of the same run reuses the uploaded zips.
+    # share a folder. Archive earlier zips before creating the folder markers
+    # (each run needs fresh uploads).
     - name: prepare-restricted-resources-prefix
       runAfter: [preflight-check]
       taskRef: { name: ossm3-prepare-restricted-resources-prefix }
@@ -238,41 +239,23 @@ spec:
           value: restricted-resources/$(params.clusterName)/
         - name: components
           value: "elm edge-icell"
+        - name: archiveExisting
+          value: "true"
 
-    # Pause until the zips are uploaded (deploy-roks creates the cluster
-    # meanwhile; apply-rbac waits for this gate and for verify-operators)
-    - name: approval-upload-restricted-resources
+    # Wait for the ELM restricted-resources zip to be uploaded
+    - name: wait-elm-zip
       runAfter: [prepare-restricted-resources-prefix]
-      taskRef:
-        apiVersion: openshift-pipelines.org/v1alpha1
-        kind: ApprovalTask
+      taskRef: { name: ossm3-wait-for-restricted-resources }
       params:
-        - name: approvers
-          value:
-            - mjiao
-            - rbhandar
-            - ksatarin
-            - kubeadmin
-            - kube:admin
-            - system:admin
-        - name: description
+        - name: obcName
+          value: $(params.obcName)
+        - name: s3Prefix
+          value: restricted-resources/$(params.clusterName)/
+        - name: components
+          value: "elm"
+        - name: instructions
           value: |
-            Upload the restricted-resources zips for ROKS cluster $(params.clusterName),
-            one zip per folder as downloaded from SAP: the Edge Lifecycle Management
-            bundle to elm/, the Edge Integration Cell bundle to edge-icell/. apply-rbac
-            unzips each one and runs its apply-restricted-resources.sh (latest version
-            per folder wins; only new-format bundles that ship that script work).
-
-            $(tasks.prepare-restricted-resources-prefix.results.uploadPlan)
-
-            APPROVE: bundles uploaded; apply-rbac continues once the cluster is ready
-                     (it fails if a folder is still empty)
-            REJECT: abort the pipeline (the cluster is NOT torn down automatically:
-                    make roks-destroy CLUSTER=$(params.clusterName))
-        - name: numberOfApprovalsRequired
-          value: '1'
-        - name: timeout
-          value: '336h'
+            Upload the Edge Lifecycle Management restricted-resources zip of Edge Node $(params.clusterName) (ELM: Add Edge Node with restricted access) to the elm/ folder below.
 
     # Install Service Mesh 3.x operator on target cluster
     - name: verify-operators
@@ -289,10 +272,9 @@ spec:
         - name: source
           workspace: source
 
-    # Download and apply the restricted-access resources from the run's folders
-    # (only elm/ and edge-icell/ under restricted-resources/<clusterName>/)
-    - name: apply-rbac
-      runAfter: [verify-operators, approval-upload-restricted-resources]
+    # Download and apply the ELM restricted-access resources
+    - name: apply-rbac-elm
+      runAfter: [verify-operators, wait-elm-zip]
       taskRef: { name: ossm3-download-and-apply-rbac }
       params:
         - name: hostedClusterName
@@ -302,7 +284,7 @@ spec:
         - name: s3Prefix
           value: restricted-resources/$(params.clusterName)/
         - name: requiredComponents
-          value: "elm edge-icell"
+          value: "elm"
         - name: useWorkspaceKubeconfig
           value: "true"
       workspaces:
@@ -311,7 +293,7 @@ spec:
 
     # Prepare namespaces with labels and SCC annotations
     - name: prepare-namespaces
-      runAfter: [apply-rbac]
+      runAfter: [apply-rbac-elm]
       taskRef: { name: ossm3-prepare-namespaces }
       params:
         - name: hostedClusterName
@@ -348,13 +330,74 @@ spec:
         - name: source
           workspace: source
 
+    # Wait for the EIC restricted-resources zip to be uploaded
+    - name: wait-eic-zip
+      runAfter: [generate-sa-based-kubeconfig]
+      taskRef: { name: ossm3-wait-for-restricted-resources }
+      params:
+        - name: obcName
+          value: $(params.obcName)
+        - name: s3Prefix
+          value: restricted-resources/$(params.clusterName)/
+        - name: components
+          value: "edge-icell"
+        - name: instructions
+          value: |
+            Register Edge Node $(params.clusterName) in ELM with the restricted kubeconfig in Secret edgelm-kubeconfig-generated-$(params.clusterName) (pipeline namespace), deploy Edge Integration Cell, then upload its restricted-resources zip to the edge-icell/ folder below.
+
+    # Download and apply the EIC restricted-access resources
+    - name: apply-rbac-eic
+      runAfter: [wait-eic-zip]
+      taskRef: { name: ossm3-download-and-apply-rbac }
+      params:
+        - name: hostedClusterName
+          value: $(params.clusterName)
+        - name: obcName
+          value: $(params.obcName)
+        - name: s3Prefix
+          value: restricted-resources/$(params.clusterName)/
+        - name: requiredComponents
+          value: "edge-icell"
+        - name: useWorkspaceKubeconfig
+          value: "true"
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Prepare namespaces with labels and SCC annotations (EIC)
+    - name: prepare-namespaces-eic
+      runAfter: [apply-rbac-eic]
+      taskRef: { name: ossm3-prepare-namespaces }
+      params:
+        - name: hostedClusterName
+          value: $(params.clusterName)
+        - name: useWorkspaceKubeconfig
+          value: "true"
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Configure OpenShift Service Mesh 3.x (EIC; re-applies mesh labels in case
+    # the EIC bundle's namespace manifests replaced them)
+    - name: configure-mesh-eic
+      runAfter: [prepare-namespaces-eic]
+      taskRef: { name: ossm3-configure-mesh }
+      params:
+        - name: hostedClusterName
+          value: $(params.clusterName)
+        - name: useWorkspaceKubeconfig
+          value: "true"
+      workspaces:
+        - name: source
+          workspace: source
+
     # =============================================
     # Manual ELM/EIC Deployment + Tests
     # =============================================
 
     # Manual approval gate after OSSM3 setup and ICR registry access (no `when`)
     - name: approval-elm-eic-iflow-deployed
-      runAfter: [generate-sa-based-kubeconfig, registry-access]
+      runAfter: [configure-mesh-eic, registry-access]
       taskRef:
         apiVersion: openshift-pipelines.org/v1alpha1
         kind: ApprovalTask
@@ -369,13 +412,11 @@ spec:
             - system:admin
         - name: description
           value: |
-            ROKS cluster (Red Hat OpenShift on IBM Cloud), IBM Cloud Container Registry access, IBM Cloud Databases and OSSM3 restricted-access setup are complete.
+            ROKS cluster (Red Hat OpenShift on IBM Cloud), IBM Cloud Container Registry access, IBM Cloud Databases and OSSM3 restricted-access setup are complete. ELM registration and EIC deployment happened before this gate (the pipeline applied the restricted-resources zips in two passes: ELM first, then EIC after the restricted kubeconfig was generated).
 
             Cluster: $(params.clusterName)
             IBM Cloud: region $(params.ibmcloudRegion), resource group $(params.ibmcloudResourceGroup)
             OpenShift: $(params.openshiftVersion), $(params.workersPerZone) x $(params.workerFlavor) per zone (3 zones)
-
-            Restricted kubeconfig stored as Secret 'edgelm-kubeconfig-generated-$(params.clusterName)' in the pipeline namespace on the pipeline cluster.
 
             The Secrets 'eic-registry-roks-$(params.clusterName)' and 'eic-credentials-roks-$(params.clusterName)' below are in the pipeline namespace on the pipeline cluster, or on the hub cluster when hubKubeconfigSecretName is set (hubKubeconfigSecretName: '$(params.hubKubeconfigSecretName)').
 
@@ -392,10 +433,7 @@ spec:
 
             One-time (if not done yet): the httpbinipfilter iFlow's IP filter must allow 172.17.0.0/18 (ROKS pod network) and 10.0.0.0/16 (VPC), otherwise test-httpbinipfilter fails.
 
-            Please complete the following manually:
-            1. Register the cluster in ELM (use restricted kubeconfig, check "Restricted Access") and add the container registry above
-            2. Deploy Edge Integration Cell (EIC) with the PostgreSQL and Redis above
-            3. Deploy iFlows for testing
+            Please deploy iFlows for testing if not already done.
 
             After deployment is complete and istio-ingressgateway has a LoadBalancer address (ROKS VPC load balancers expose a hostname):
             APPROVE: Continue to create ConfigMap and run endpoint tests

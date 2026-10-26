@@ -39,9 +39,9 @@
 #    sap-eic-restricted-cluster-config-resources, the EIC auth Secret and the
 #    Jira Secret. The zips are not uploaded in advance: the run creates
 #    restricted-resources/<clusterName>/elm/ and .../edge-icell/ in the OBC
-#    bucket and pauses at approval-upload-restricted-resources until you have
-#    uploaded the ELM zip to elm/ and the EIC zip to edge-icell/ (the approval
-#    shows the paths and commands). A retest reuses the uploaded zips.
+#    bucket (archiving earlier zips) and waits at two gates. Upload the ELM
+#    zip to elm/ first; once applied, register the Edge Node and deploy EIC,
+#    then upload the EIC zip to edge-icell/. Each run needs fresh uploads.
 #    No hub cluster is needed: the Secrets eic-credentials-roks-<cluster>
 #    and eic-registry-roks-<cluster> go to the pipeline namespace unless
 #    hubKubeconfigSecretName is set (see below).
