@@ -24,6 +24,7 @@ roks/terraform/.terraform.lock.hcl
 roks/terraform/.kube/*
 !roks/terraform/.kube/.gitkeep
 
+.superpowers/
 CLAUDE.md
 .claude/
 .tekton/kba*.md
