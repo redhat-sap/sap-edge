@@ -98,6 +98,7 @@ test('rejects_when_run_finished_without_task', async () => {
 
 test('honors_abort', async () => {
   const abort = new AbortController();
+  const reason = new Error('Test abort reason');
   const reader = async (kind, name) => {
     if (kind === 'pipelinerun' && name === 'run-1') return runWithTask();
     if (kind === 'taskrun' && name === 'task-1') {
@@ -117,9 +118,62 @@ test('honors_abort', async () => {
     intervalMs: 100,
   });
 
-  // Abort after a short delay
+  // Abort after a short delay (during the wait)
   await delay(20);
-  abort.abort(new Error('Test abort'));
+  abort.abort(reason);
 
-  await assert.rejects(waitPromise, /abort/i);
+  await assert.rejects(waitPromise, (e) => e === reason);
+});
+
+test('rejects_when_task_skipped', async () => {
+  const reader = async (kind, name) => {
+    if (kind === 'pipelinerun' && name === 'run-1') {
+      return {
+        metadata: { uid: 'run-uid' },
+        status: {
+          skippedTasks: [{ name: 'generate-sa-based-kubeconfig' }],
+          childReferences: [],
+        },
+      };
+    }
+    throw new Error(`Unexpected read: ${kind}/${name}`);
+  };
+
+  await assert.rejects(
+    waitForPipelineTask(reader, {
+      pipelineRun: 'run-1',
+      pipelineRunUID: 'run-uid',
+      pipelineTaskName: 'generate-sa-based-kubeconfig',
+      intervalMs: 10,
+    }),
+    /skipped/i
+  );
+});
+
+test('rejects_when_run_stopping', async () => {
+  for (const reason of ['PipelineRunStopping', 'Stopping', 'Cancelled', 'CancelledRunFinally', 'StoppedRunFinally']) {
+    const reader = async (kind, name) => {
+      if (kind === 'pipelinerun' && name === 'run-1') {
+        return {
+          metadata: { uid: 'run-uid' },
+          status: {
+            conditions: [{ type: 'Succeeded', status: 'Unknown', reason }],
+            childReferences: [],
+          },
+        };
+      }
+      throw new Error(`Unexpected read: ${kind}/${name}`);
+    };
+
+    await assert.rejects(
+      waitForPipelineTask(reader, {
+        pipelineRun: 'run-1',
+        pipelineRunUID: 'run-uid',
+        pipelineTaskName: 'generate-sa-based-kubeconfig',
+        intervalMs: 10,
+      }),
+      /stopping/i,
+      `Should reject for reason: ${reason}`
+    );
+  }
 });

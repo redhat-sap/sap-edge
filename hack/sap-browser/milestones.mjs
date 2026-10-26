@@ -21,19 +21,38 @@ export async function waitForPipelineTask(read, {
     // Read the PipelineRun
     const run = await read('pipelinerun', pipelineRun);
 
+    // Check if aborted after async read
+    if (signal?.aborted) {
+      throw signal.reason || new Error('Wait aborted');
+    }
+
     // Verify UID
     if (run.metadata?.uid !== pipelineRunUID) {
       throw new SetupError('PipelineRun UID does not match the expected run.');
+    }
+
+    // Check if the task was skipped
+    const skipped = run.status?.skippedTasks?.some((task) => task.name === pipelineTaskName);
+    if (skipped) {
+      throw new SetupError(`Pipeline task ${pipelineTaskName} was skipped.`);
+    }
+
+    // Check if the run is stopping/cancelled
+    const succeededCondition = run.status?.conditions?.find((cond) => cond.type === 'Succeeded');
+    if (succeededCondition?.status === 'Unknown') {
+      const stoppingReasons = ['PipelineRunStopping', 'Stopping', 'Cancelled', 'CancelledRunFinally', 'StoppedRunFinally'];
+      if (stoppingReasons.includes(succeededCondition.reason)) {
+        throw new SetupError(`PipelineRun is stopping: ${succeededCondition.reason}`);
+      }
     }
 
     // Find the TaskRun for the requested pipeline task
     const taskRef = run.status?.childReferences?.find((child) =>
       child.pipelineTaskName === pipelineTaskName && child.kind === 'TaskRun');
 
-    // Check if the run finished but the task was never created
+    // Check if the run finished without creating the task
     const runFinished = run.status?.conditions?.some((condition) =>
       condition.type === 'Succeeded' && (condition.status === 'True' || condition.status === 'False'));
-
     if (!taskRef && runFinished) {
       throw new SetupError(`PipelineRun finished without creating pipeline task: ${pipelineTaskName}`);
     }
@@ -41,6 +60,11 @@ export async function waitForPipelineTask(read, {
     if (taskRef) {
       // Read the TaskRun to check its status
       const task = await read('taskrun', taskRef.name);
+
+      // Check if aborted after async read
+      if (signal?.aborted) {
+        throw signal.reason || new Error('Wait aborted');
+      }
 
       // Verify ownership
       const ownedByRun = task.metadata?.ownerReferences?.some((owner) => owner.uid === pipelineRunUID);
@@ -65,10 +89,17 @@ export async function waitForPipelineTask(read, {
     }
 
     // Wait for the next poll, but respect abort signal
-    if (signal) {
-      await delay(intervalMs, undefined, { signal });
-    } else {
-      await delay(intervalMs);
+    try {
+      if (signal) {
+        await delay(intervalMs, undefined, { signal });
+      } else {
+        await delay(intervalMs);
+      }
+    } catch (e) {
+      if (signal?.aborted) {
+        throw signal.reason || new Error('Wait aborted');
+      }
+      throw e;
     }
   }
 }
