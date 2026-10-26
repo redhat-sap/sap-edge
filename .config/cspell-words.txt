@@ -158,6 +158,7 @@ redisenterprisedatabase
 redisenterprisedatabases
 redislabs
 rediss
+redirectreference
 requirepass
 resourcegroupstaggingapi
 retarget
