@@ -22,8 +22,11 @@ spec:
   #
   # ApprovalTasks ignore `when` on this cluster, so no gate carries one (and
   # ROSA's switch for skipping the whole EIC validation, which relies on it,
-  # does not exist here). Regular tasks skipped by `when` do not block the
-  # tasks that runAfter them.
+  # does not exist here). A regular task skipped by its own `when` does not
+  # block the tasks that runAfter it. A task skipped because a result it
+  # consumes is missing (its producer was skipped) or because a parent was
+  # skipped that way does block them: that skip cascades. So no task with a
+  # `when` produces a result that another task consumes.
   params:
     # --- Git parameters ---
     - name: repoUrl
@@ -131,11 +134,11 @@ spec:
       default: "disabled"
     - name: sapBrowserImage
       type: string
-      description: "SAP browser runner image built from hack/sap-browser/Containerfile; required unless sapBrowserMode is disabled"
+      description: "SAP browser runner image built from hack/sap-browser/Containerfile; empty (default) skips the browser tasks like sapBrowserMode disabled"
       default: ""
     - name: sapElmUrl
       type: string
-      description: "Direct SAP Edge Lifecycle Management HTTPS URL; required unless sapBrowserMode is disabled"
+      description: "Direct SAP Edge Lifecycle Management HTTPS URL; required when the browser tasks run (sapBrowserMode not disabled and sapBrowserImage set; an empty sapBrowserImage skips them)"
       default: ""
     - name: sapBrowserSessionMinutes
       type: string
@@ -244,29 +247,30 @@ spec:
     # =============================================
     # SAP browser automation (optional, sapBrowserMode)
     # =============================================
-    # Skipped tasks (sapBrowserMode disabled, or no sapBrowserImage: a pod
-    # without an image would fail the run) do not block the tasks that
-    # runAfter them. The browser tasks always succeed and report their
-    # outcome in a result, so the manual path and teardown-roks continue after
-    # any browser failure. No retries: a rerun could repeat SAP actions. No
-    # task timeout: a timed-out task would fail the run; each session ends on
-    # its own after sapBrowserSessionMinutes.
+    # sap-browser-deploy and sap-browser-teardown are skipped by their own
+    # `when` (sapBrowserMode disabled, or no sapBrowserImage: a pod without an
+    # image would fail the run), which does not block the tasks after them.
+    # sap-browser-access has no `when` because sap-browser-deploy consumes its
+    # result; with the browser off it does nothing. The browser step always
+    # exits 0 and reports its outcome in a result, so the manual path and
+    # teardown-roks continue after any failure inside the browser (pod-level
+    # failures still fail the task). No retries: a rerun could repeat SAP
+    # actions. No task timeout: a timed-out task would fail the run; each
+    # session ends on its own after sapBrowserSessionMinutes.
 
     # Grant the runner ServiceAccount get on this run's three Secrets and read
     # the cluster's Edge Node ID label before any zip of this run is applied
+    # (nothing to do when the browser is off)
     - name: sap-browser-access
       runAfter: [validate-and-get-access]
-      when:
-        - input: $(params.sapBrowserMode)
-          operator: notin
-          values: [disabled]
-        - input: $(params.sapBrowserImage)
-          operator: notin
-          values: [""]
       taskRef: { name: roks-sap-browser-access }
       params:
         - name: clusterName
           value: $(params.clusterName)
+        - name: mode
+          value: $(params.sapBrowserMode)
+        - name: browserImage
+          value: $(params.sapBrowserImage)
       workspaces:
         - name: source
           workspace: source

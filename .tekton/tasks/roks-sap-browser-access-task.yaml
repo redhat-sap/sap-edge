@@ -16,7 +16,8 @@ spec:
     roks-sap-browser-<clusterName>. Also reads the Edge Node ID label
     (edgelm.sap.com/edge-node-id) from the edgelm namespace on the ROKS cluster
     and returns it as a result (empty string if the namespace or label is
-    absent).
+    absent). Does nothing (empty result) when mode is disabled or
+    browserImage is empty, so the pipeline can run it without a `when`.
   params:
     - name: clusterName
       type: string
@@ -25,6 +26,12 @@ spec:
       type: string
       description: "ServiceAccount for the browser task"
       default: "roks-sap-browser-runner"
+    - name: mode
+      type: string
+      description: "sapBrowserMode of the run: with disabled the task does nothing"
+    - name: browserImage
+      type: string
+      description: "sapBrowserImage of the run: when empty the task does nothing (the browser tasks are skipped)"
   workspaces:
     - name: source
       description: "Workspace with kubeconfig (token kubeconfig from roks-validate-and-get-access)"
@@ -40,9 +47,22 @@ spec:
           value: "$(params.clusterName)"
         - name: RUNNER_SERVICE_ACCOUNT
           value: "$(params.runnerServiceAccount)"
+        - name: SAP_BROWSER_MODE
+          value: "$(params.mode)"
+        - name: SAP_BROWSER_IMAGE
+          value: "$(params.browserImage)"
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
+
+        # The pipeline runs this task without a `when`: sap-browser-deploy
+        # consumes its result, and a skipped producer would skip every later
+        # task. With the browser off it does nothing (no tools, no oc calls).
+        if [[ "${SAP_BROWSER_MODE}" == "disabled" || -z "${SAP_BROWSER_IMAGE}" ]]; then
+          echo "ℹ️  SAP browser automation disabled; nothing to do"
+          printf '' > "$(results.clusterEdgeNodeId.path)"
+          exit 0
+        fi
 
         WORKSPACE_DIR="$(workspaces.source.path)"
         WORKSPACE_KUBECONFIG="${WORKSPACE_DIR}/kubeconfig"
