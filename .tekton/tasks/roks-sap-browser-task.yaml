@@ -14,9 +14,11 @@ spec:
     in the task pod; the user reaches it through a per-run Route behind the
     OpenShift OAuth proxy (only users allowed to create pods/portforward in the
     pipeline namespace get through) and logs in to OpenShift and SAP. The Route
-    link is printed in the log. The task always succeeds: its result outcome
-    tells what happened, and after any failure the run continues on the manual
-    path. Needs the ServiceAccount roks-sap-browser-runner
+    link is printed in the log. The step always exits 0: its result outcome
+    tells what happened, and after any failure inside the browser the run
+    continues on the manual path (pod-level failures, such as a wrong image
+    or a missing ServiceAccount, still fail the task). Needs the
+    ServiceAccount roks-sap-browser-runner
     (hack/sap-browser/roks-runner-rbac.yaml) via taskRunSpecs.
   params:
     - name: mode
@@ -93,7 +95,10 @@ spec:
   sidecars:
     # Listens on :4180 for the per-run Route (created by the browser step) and
     # forwards authenticated requests to noVNC on 127.0.0.1:6080. The cookie
-    # secret is new for every pod and stays in memory.
+    # secret is new for every pod and stays in memory. oauth-proxy runs as a
+    # child and the sidecar always exits 0: with restartPolicy Never a sidecar
+    # exiting non-zero can turn the pod, and so the TaskRun, Failed. Without
+    # oauth-proxy the user cannot log in and the session ends as failed.
     - name: oauth-proxy
       image: $(params.oauthProxyImage)
       command:
@@ -102,8 +107,14 @@ spec:
         - |
           set -euo pipefail
           umask 077
-          head -c 24 /dev/urandom | base64 | tr -d '\n' > /run/oauth-proxy/cookie-secret
-          exec oauth-proxy "$@"
+          if ! head -c 24 /dev/urandom | base64 | tr -d '\n' > /run/oauth-proxy/cookie-secret; then
+            echo "oauth-proxy not started: cannot write the cookie secret" >&2
+            exit 0
+          fi
+          status=0
+          oauth-proxy "$@" || status=$?
+          echo "oauth-proxy exited with status ${status}" >&2
+          exit 0
         - oauth-proxy
       args:
         - --provider=openshift

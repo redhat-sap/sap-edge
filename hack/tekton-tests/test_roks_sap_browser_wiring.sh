@@ -244,9 +244,12 @@ if command[:2] != ["/bin/bash", "-c"] or len(command) != 4:
     script = ""
 else:
     script = command[2]
-for needle in ("set -euo pipefail", "/dev/urandom", 'exec oauth-proxy "$@"'):
+for needle in ("set -euo pipefail", "/dev/urandom", 'oauth-proxy "$@" || status=$?', "exit 0"):
     if needle not in script:
         errors.append(f"sidecar script must contain {needle!r}")
+# A sidecar exiting non-zero can fail the pod (restartPolicy Never): no exec
+if "exec " in script:
+    errors.append("sidecar script must run oauth-proxy as a child, not exec it")
 
 # The cookie secret lives in a Memory volume mounted only into the sidecar
 volumes = {v["name"]: v for v in spec.get("volumes", [])}
@@ -285,12 +288,13 @@ mkdir "${SIDECAR_DIR}/bin"
 cat > "${SIDECAR_DIR}/bin/oauth-proxy" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "${FAKE_OAUTH_PROXY_ARGS}"
+exit "${FAKE_OAUTH_PROXY_EXIT:-0}"
 EOF
 chmod +x "${SIDECAR_DIR}/bin/oauth-proxy"
 SIDECAR_ARGS=()
 while IFS= read -r ARG; do SIDECAR_ARGS+=("${ARG}"); done < "${SIDECAR_DIR}/args"
 FAKE_OAUTH_PROXY_ARGS="${SIDECAR_DIR}/received-args" PATH="${SIDECAR_DIR}/bin:${PATH}" \
-  bash -c "$(cat "${SIDECAR_DIR}/script.sh")" oauth-proxy "${SIDECAR_ARGS[@]}" \
+  bash -c "$(cat "${SIDECAR_DIR}/script.sh")" oauth-proxy "${SIDECAR_ARGS[@]}" 2>/dev/null \
   || fail "sidecar script failed"
 cmp -s "${SIDECAR_DIR}/args" "${SIDECAR_DIR}/received-args" \
   || fail "oauth-proxy did not receive the sidecar args unchanged: $(cat "${SIDECAR_DIR}/received-args")"
@@ -303,9 +307,24 @@ COOKIE_MODE=$(stat -c '%a' "${COOKIE}" 2>/dev/null || stat -f '%Lp' "${COOKIE}")
 FIRST_COOKIE=$(cat "${COOKIE}")
 rm -f "${COOKIE}"
 FAKE_OAUTH_PROXY_ARGS="${SIDECAR_DIR}/received-args" PATH="${SIDECAR_DIR}/bin:${PATH}" \
-  bash -c "$(cat "${SIDECAR_DIR}/script.sh")" oauth-proxy "${SIDECAR_ARGS[@]}" \
+  bash -c "$(cat "${SIDECAR_DIR}/script.sh")" oauth-proxy "${SIDECAR_ARGS[@]}" 2>/dev/null \
   || fail "sidecar script failed on the second run"
 [[ "$(cat "${COOKIE}")" != "${FIRST_COOKIE}" ]] || fail "cookie secret must be random per start"
+
+# oauth-proxy ending with an error must not fail the sidecar (and the pod)
+SIDECAR_RC=0
+SIDECAR_ERR=$(FAKE_OAUTH_PROXY_EXIT=7 FAKE_OAUTH_PROXY_ARGS="${SIDECAR_DIR}/received-args" PATH="${SIDECAR_DIR}/bin:${PATH}" \
+  bash -c "$(cat "${SIDECAR_DIR}/script.sh")" oauth-proxy "${SIDECAR_ARGS[@]}" 2>&1 >/dev/null) || SIDECAR_RC=$?
+[[ "${SIDECAR_RC}" -eq 0 ]] || fail "sidecar must exit 0 when oauth-proxy fails, got ${SIDECAR_RC}"
+grep -qF "oauth-proxy exited with status 7" <<< "${SIDECAR_ERR}" || fail "sidecar must log the oauth-proxy status, got: ${SIDECAR_ERR}"
+
+# Nor may a cookie secret that cannot be written
+SIDECAR_RC=0
+SIDECAR_ERR=$(FAKE_OAUTH_PROXY_ARGS="${SIDECAR_DIR}/received-args" PATH="${SIDECAR_DIR}/bin:${PATH}" \
+  bash -c "$(sed "s|${SIDECAR_DIR}/cookie-secret|${SIDECAR_DIR}/missing-dir/cookie-secret|" "${SIDECAR_DIR}/script.sh")" \
+  oauth-proxy "${SIDECAR_ARGS[@]}" 2>&1 >/dev/null) || SIDECAR_RC=$?
+[[ "${SIDECAR_RC}" -eq 0 ]] || fail "sidecar must exit 0 when the cookie secret cannot be written, got ${SIDECAR_RC}"
+grep -qF "oauth-proxy not started" <<< "${SIDECAR_ERR}" || fail "sidecar must log why oauth-proxy did not start, got: ${SIDECAR_ERR}"
 echo "✅ PASS: oauth_proxy_sidecar"
 
 # Test case: pipeline_wiring
@@ -314,6 +333,7 @@ echo "Test: pipeline_wiring"
 echo "--------------------------------------------"
 python3 -I - "${PIPELINE}" ../.. <<'PY'
 import os
+import re
 import sys
 import yaml
 
@@ -373,15 +393,21 @@ browser_params = {
     "loginMinutes": "$(params.sapBrowserLoginMinutes)",
 }
 expected = {
+    # No `when`: sap-browser-deploy consumes its result, and a result missing
+    # from a skipped task would skip every task after it (and teardown-roks).
+    # With the browser off the task does nothing.
     "sap-browser-access": {
         "taskRef": "roks-sap-browser-access",
+        "when": None,
         "runAfter": {"validate-and-get-access"},
-        "params": {"clusterName": "$(params.clusterName)"},
+        "params": {"clusterName": "$(params.clusterName)", "mode": "$(params.sapBrowserMode)",
+                   "browserImage": "$(params.sapBrowserImage)"},
         # needs the ROKS kubeconfig at the workspace root
         "workspaces": full_workspace,
     },
     "sap-browser-deploy": {
         "taskRef": "roks-sap-browser",
+        "when": when_enabled,
         "runAfter": {"sap-browser-access", "registry-access"},
         "params": {**browser_params, "phase": "deploy",
                    "clusterEdgeNodeId": "$(tasks.sap-browser-access.results.clusterEdgeNodeId)"},
@@ -389,6 +415,7 @@ expected = {
     },
     "sap-browser-teardown": {
         "taskRef": "roks-sap-browser",
+        "when": when_enabled,
         "runAfter": {"approval-teardown"},
         "params": {**browser_params, "phase": "teardown"},
         "workspaces": helper_code_only,
@@ -400,7 +427,7 @@ for name, want in expected.items():
     if task is None:
         continue
     check(task.get("taskRef") == {"name": want["taskRef"]}, f"{name}: taskRef should be {want['taskRef']}, got {task.get('taskRef')}")
-    check(task.get("when") == when_enabled, f"{name}: when must be exactly sapBrowserMode notin [disabled] and sapBrowserImage notin [\"\"], got {task.get('when')}")
+    check(task.get("when") == want["when"], f"{name}: when should be {want['when']}, got {task.get('when')}")
     check(set(task.get("runAfter", [])) == want["runAfter"], f"{name}: runAfter should be {sorted(want['runAfter'])}, got {task.get('runAfter')}")
     got_params = {p["name"]: p["value"] for p in task.get("params", [])}
     check(got_params == want["params"], f"{name}: params differ:\n  got      {got_params}\n  expected {want['params']}")
@@ -446,6 +473,18 @@ for name, task in tasks.items():
     if name != "sap-browser-deploy":
         check("sap-browser-access.results" not in str(task.get("params", [])),
               f"{name} must not consume sap-browser-access results")
+RESULT_REF = re.compile(r"\$\(tasks\.([^.]+)\.results\.")
+deploy_sources = set(RESULT_REF.findall(str(tasks.get("sap-browser-deploy", {}))))
+check(deploy_sources == {"sap-browser-access"},
+      f"sap-browser-deploy should read results of sap-browser-access only, got {sorted(deploy_sources)}")
+
+# A task skipped by its own `when` does not block its dependents, but a task
+# whose result is missing is skipped too, and that skip cascades. So no task
+# with a `when` may have its results consumed by another task.
+for name, task in {**tasks, **finally_tasks}.items():
+    for source in set(RESULT_REF.findall(str(task))):
+        producer = tasks.get(source, finally_tasks.get(source, {}))
+        check("when" not in producer, f"{name} consumes results of {source}, which has a when (its skip would cascade)")
 
 
 # sap-browser-access reads the cluster's Edge Node ID label before this run

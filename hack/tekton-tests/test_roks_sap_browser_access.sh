@@ -31,6 +31,8 @@ setup() {
 
   export CLUSTER_NAME="${CLUSTER}"
   export RUNNER_SERVICE_ACCOUNT="roks-sap-browser-runner"
+  export SAP_BROWSER_MODE="auto"
+  export SAP_BROWSER_IMAGE="example.com/sap-browser:test"
 }
 
 # Captured manifest (FAKE_OC_STDIN_DIR) of the object with this metadata.name
@@ -54,6 +56,8 @@ run_browser_access() {
   TASK_CWD="${WS}" run_task "${TASK}" \
     --param clusterName="${CLUSTER_NAME}" \
     --param runnerServiceAccount="${RUNNER_SERVICE_ACCOUNT}" \
+    --param mode="${SAP_BROWSER_MODE}" \
+    --param browserImage="${SAP_BROWSER_IMAGE}" \
     --workspace-dir source="${WS}" \
     --results-dir "${RESULTS_DIR}" \
     --drop '# Install tools' 'echo "✅ Tools installed"'
@@ -84,6 +88,8 @@ params = {p["name"]: p.get("default") for p in task["spec"]["params"]}
 expected_defaults = {
     "clusterName": None,
     "runnerServiceAccount": "roks-sap-browser-runner",
+    "mode": None,
+    "browserImage": None,
 }
 if params != expected_defaults:
     errors.append(f"params/defaults differ: {params}")
@@ -101,6 +107,8 @@ env = {e["name"]: e for e in step.get("env", [])}
 expected_values = {
     "CLUSTER_NAME": "$(params.clusterName)",
     "RUNNER_SERVICE_ACCOUNT": "$(params.runnerServiceAccount)",
+    "SAP_BROWSER_MODE": "$(params.mode)",
+    "SAP_BROWSER_IMAGE": "$(params.browserImage)",
 }
 for name, value in expected_values.items():
     if env.get(name, {}).get("value") != value:
@@ -258,6 +266,8 @@ printf '%s\t%s\t%s\n' \
 TASK_CWD="${WS}" run_task "${TASK}" \
   --param clusterName="${CLUSTER_NAME}" \
   --param runnerServiceAccount="${RUNNER_SERVICE_ACCOUNT}" \
+  --param mode="${SAP_BROWSER_MODE}" \
+  --param browserImage="${SAP_BROWSER_IMAGE}" \
   --workspace-dir source="${WS}" \
   --results-dir "${RESULTS_DIR}" \
   --drop '# Install tools' 'echo "✅ Tools installed"'
@@ -273,6 +283,8 @@ printf '%s\t%s\t%s\n' \
 TASK_CWD="${WS}" run_task "${TASK}" \
   --param clusterName="${CLUSTER_NAME}" \
   --param runnerServiceAccount="${RUNNER_SERVICE_ACCOUNT}" \
+  --param mode="${SAP_BROWSER_MODE}" \
+  --param browserImage="${SAP_BROWSER_IMAGE}" \
   --workspace-dir source="${WS}" \
   --results-dir "${RESULTS_DIR}" \
   --drop '# Install tools' 'echo "✅ Tools installed"'
@@ -293,6 +305,8 @@ printf '%s\t%s\t%s\n' \
 TASK_CWD="${WS}" run_task "${TASK}" \
   --param clusterName="${CLUSTER_NAME}" \
   --param runnerServiceAccount="${RUNNER_SERVICE_ACCOUNT}" \
+  --param mode="${SAP_BROWSER_MODE}" \
+  --param browserImage="${SAP_BROWSER_IMAGE}" \
   --workspace-dir source="${WS}" \
   --results-dir "${RESULTS_DIR}" \
   --drop '# Install tools' 'echo "✅ Tools installed"'
@@ -315,6 +329,8 @@ printf '%s\t%s\t%s\n' \
 TASK_CWD="${WS}" run_task "${TASK}" \
   --param clusterName="${CLUSTER_NAME}" \
   --param runnerServiceAccount="${RUNNER_SERVICE_ACCOUNT}" \
+  --param mode="${SAP_BROWSER_MODE}" \
+  --param browserImage="${SAP_BROWSER_IMAGE}" \
   --workspace-dir source="${WS}" \
   --results-dir "${RESULTS_DIR}" \
   --drop '# Install tools' 'echo "✅ Tools installed"'
@@ -322,6 +338,55 @@ expect_success
 grep -q "❌.*Failed to create.*the browser will not be able to read this run's Secrets" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "error message not printed on RBAC apply failure"; }
 grep -q "Kubernetes RBAC escalation check" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "escalation check explanation not printed"; }
 echo "✅ PASS: role_apply_failure_does_not_fail_task"
+
+# The pipeline runs this task without a `when` (sap-browser-deploy consumes its
+# result; a result missing from a skipped task would skip every later task),
+# so with the browser off it must do nothing: no tools, no oc, no kubeconfig.
+run_switched_off() {
+  setup
+  rm -f "${WS}/kubeconfig"
+  FAKE_TOOLS_DIR=$(tmp_dir)
+  FAKE_TOOLS_LOG=$(tmp_file)
+  export FAKE_TOOLS_LOG
+  for TOOL in dnf curl tar; do
+    cat > "${FAKE_TOOLS_DIR}/${TOOL}" <<'EOF'
+#!/usr/bin/env bash
+echo "$(basename "$0") $*" >> "${FAKE_TOOLS_LOG}"
+exit 1
+EOF
+    chmod +x "${FAKE_TOOLS_DIR}/${TOOL}"
+  done
+  export SAP_BROWSER_MODE="$1"
+  export SAP_BROWSER_IMAGE="$2"
+  # No --drop: the install section must not be reached either
+  PATH="${FAKE_TOOLS_DIR}:${PATH}" TASK_CWD="${WS}" run_task "${TASK}" \
+    --param clusterName="${CLUSTER_NAME}" \
+    --param runnerServiceAccount="${RUNNER_SERVICE_ACCOUNT}" \
+    --param mode="${SAP_BROWSER_MODE}" \
+    --param browserImage="${SAP_BROWSER_IMAGE}" \
+    --workspace-dir source="${WS}" \
+    --results-dir "${RESULTS_DIR}"
+  expect_success
+  [[ -f "${RESULTS_DIR}/clusterEdgeNodeId" ]] || fail "clusterEdgeNodeId result not written"
+  [[ ! -s "${RESULTS_DIR}/clusterEdgeNodeId" ]] || fail "clusterEdgeNodeId should be empty, got '$(cat "${RESULTS_DIR}/clusterEdgeNodeId")'"
+  [[ ! -s "${FAKE_OC_LOG}" ]] || fail "oc must not be called: $(cat "${FAKE_OC_LOG}")"
+  [[ ! -s "${FAKE_TOOLS_LOG}" ]] || fail "no tools may be installed: $(cat "${FAKE_TOOLS_LOG}")"
+  grep -qF "browser automation disabled; nothing to do" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "disabled message not printed"; }
+}
+
+# Test case: disabled_mode_does_nothing
+echo ""
+echo "Test: disabled_mode_does_nothing"
+echo "--------------------------------------------"
+run_switched_off disabled "example.com/sap-browser:test"
+echo "✅ PASS: disabled_mode_does_nothing"
+
+# Test case: empty_image_does_nothing
+echo ""
+echo "Test: empty_image_does_nothing"
+echo "--------------------------------------------"
+run_switched_off auto ""
+echo "✅ PASS: empty_image_does_nothing"
 
 echo ""
 echo "============================================"

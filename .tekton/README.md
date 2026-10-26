@@ -64,8 +64,8 @@ CI/CD pipelines for deploying and testing SAP Edge Integration Cell on ARO, ROSA
 - `roks-validate-and-get-access-task`: Validate cluster access, switch the workspace to a ServiceAccount token kubeconfig and store it with the database connection data in the Secret `eic-credentials-roks-<cluster>` (on the hub cluster when `hubKubeconfigSecretName` is set)
 - `roks-validate-and-create-configmap-task`: Find EIC host and ingress address for tests
 - `roks-registry-access-task`: Store the ICR access for ELM (server, namespace, user, API key from the Terraform state) in the Secret `eic-registry-roks-<cluster>` (on the hub cluster when `hubKubeconfigSecretName` is set), and the Redis password in `eic-credentials-roks-<cluster>`
-- `roks-sap-browser-access-task`: Optional browser automation: let the runner ServiceAccount read this run's three Secrets (per-run Role) and read the cluster's Edge Node ID label
-- `roks-sap-browser-task`: Optional browser automation: Playwright browser for the ELM steps (deploy or teardown phase) behind a per-run Route with the OpenShift OAuth proxy; always succeeds and reports its result `outcome`
+- `roks-sap-browser-access-task`: Optional browser automation: let the runner ServiceAccount read this run's three Secrets (per-run Role) and read the cluster's Edge Node ID label; does nothing when the browser is off (`sapBrowserMode` disabled or no `sapBrowserImage`)
+- `roks-sap-browser-task`: Optional browser automation: Playwright browser for the ELM steps (deploy or teardown phase) behind a per-run Route with the OpenShift OAuth proxy; the step always exits 0 and reports the result `outcome` (pod-level failures still fail the task)
 - `roks-teardown-task`: Destroy infrastructure and clean up artifacts
 
 ### HCP Tasks
@@ -557,7 +557,7 @@ Cluster name: `redhat-roks-eic-pr<N>` (starts with `redhat-`, at most 30 charact
 
 #### Browser automation (optional)
 
-With `sapBrowserMode` other than `disabled`, the run starts a Chromium browser in a task pod for the SAP ELM steps (Edge Node, zips, Embedded Cloud Connector, EIC deployment, and the Edge Node deletion at teardown). You reach it through a per-run Route protected by the OpenShift OAuth proxy: only users allowed to create `pods/portforward` in the pipeline namespace get in. Default `disabled`: the browser tasks are skipped and everything is done by hand as described above.
+With `sapBrowserMode` other than `disabled`, the run starts a Chromium browser in a task pod for the SAP ELM steps (Edge Node, zips, Embedded Cloud Connector, EIC deployment, and the Edge Node deletion at teardown). You reach it through a per-run Route protected by the OpenShift OAuth proxy: only users allowed to create `pods/portforward` in the pipeline namespace get in. Default `disabled` (or an empty `sapBrowserImage`): the browser tasks are skipped and everything is done by hand as described above.
 
 **One-time setup** (pipeline namespace):
 
@@ -567,7 +567,7 @@ With `sapBrowserMode` other than `disabled`, the run starts a Chromium browser i
 
 Failures before the browser starts (a wrong or unreachable image, or no ServiceAccount because `roks-runner-rbac.yaml` was not applied) fail the browser task's pod and stop the run, unlike failures inside the browser. Try `sapBrowserMode: inspect` first; a rerun reuses the cluster.
 
-**Enable it** in the run file: set `sapBrowserMode` to `inspect` or `auto`, uncomment `sapBrowserImage` (your image) and `sapElmUrl` (the direct ELM URL), and uncomment `taskRunSpecs` (the browser tasks must run as `roks-sap-browser-runner`). `sapBrowserSessionMinutes` (default 180, at most 240) limits each browser session including login, pipeline waits and the hand-over; `sapBrowserLoginMinutes` (default 30) limits the login. The browser does not support a hub cluster: with `hubKubeconfigSecretName` set it stops at once (outcome `skipped-hub`).
+**Enable it** in the run file: set `sapBrowserMode` to `inspect` or `auto`, uncomment `sapBrowserImage` (your image) and `sapElmUrl` (the direct ELM URL), and uncomment `taskRunSpecs` (the browser tasks must run as `roks-sap-browser-runner`). An empty `sapBrowserImage` skips the browser tasks, as `disabled` does. `sapBrowserSessionMinutes` (default 180, at most 240) limits each browser session including login, pipeline waits and the hand-over; `sapBrowserLoginMinutes` (default 30) limits the login. The browser does not support a hub cluster: with `hubKubeconfigSecretName` set it stops at once (outcome `skipped-hub`).
 
 **What you do:**
 
@@ -577,7 +577,7 @@ Failures before the browser starts (a wrong or unreachable image, or no ServiceA
 
 The approvals stay as they are; iFlows are still deployed by hand.
 
-**Outcomes** (result `outcome` of each browser task, e.g. `tkn taskrun describe <taskrun>`): `deployed`, `edge-node-deleted` or `nothing-to-delete` (done); `inspection-finished` (inspect mode); `handed-over` (the automation stopped and you finished by hand); `failed` (setup, login or session failure); `skipped-hub`. The browser tasks always succeed, so check the outcome rather than the task status.
+**Outcomes** (result `outcome` of each browser task, e.g. `tkn taskrun describe <taskrun>`): `deployed`, `edge-node-deleted` or `nothing-to-delete` (done); `inspection-finished` (inspect mode); `handed-over` (the automation stopped and you finished by hand); `failed` (setup, login or session failure); `skipped-hub`. The browser step always exits 0, so check the outcome rather than the task status (only pod-level failures, see the one-time setup, fail the task).
 
 **Manual fallback:** whatever happens in the browser, the run continues. On a hand-over the browser stays open with the reason in the log: finish the steps there or in your own browser, then close Chromium or run the `oc exec ... -c step-browser -- node /opt/sap-browser/control.mjs finish` command from the log. Without the browser (`failed`), do the steps by hand: upload the zips to `elm/` and `edge-icell/` (`wait-elm-zip` and `wait-eic-zip` wait for them either way), and at teardown delete the Edge Node in ELM yourself.
 
