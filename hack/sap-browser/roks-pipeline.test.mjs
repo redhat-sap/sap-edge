@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { SetupError } from './inputs.mjs';
-import { main, roksPipelineOptions } from './roks-pipeline.mjs';
+import { chromiumLaunchOptions, main, roksPipelineOptions } from './roks-pipeline.mjs';
 import { finishSession } from './session.mjs';
 
 const ELM = 'https://elm.example.com/';
@@ -191,6 +191,31 @@ test('options_validation', async () => folderTest(async (directory) => {
   for (const id of ['', 'unknown', 'Edge-Node-42']) {
     assert.equal(roksPipelineOptions(environment(directory, { CLUSTER_EDGE_NODE_ID: id })).clusterEdgeNodeId, id);
   }
+}));
+
+test('chromium_env_is_minimal', async () => folderTest(async (directory) => {
+  const display = {
+    DISPLAY: ':99',
+    PATH: '/usr/local/bin:/usr/bin:/bin',
+    HOME: '/home/runner',
+    XDG_RUNTIME_DIR: '/tmp/sap-browser-session/xdg-runtime',
+    XDG_CONFIG_HOME: '/tmp/sap-browser-session/xdg-config',
+    XDG_CACHE_HOME: '/tmp/sap-browser-session/xdg-cache',
+    TMPDIR: '/tmp/sap-browser-session',
+    LANG: 'C.UTF-8',
+  };
+  const options = chromiumLaunchOptions({ ...environment(directory), ...display });
+  // Exactly the display/locale keys that are set; no credentials, URLs or run metadata.
+  assert.deepEqual(options.env, display);
+  for (const key of ['AWS_SECRET_ACCESS_KEY', 'AWS_ACCESS_KEY_ID', 'POSTGRES_ADMIN_PASSWORD', 'SAP_ELM_URL']) {
+    assert.ok(!Object.hasOwn(options.env, key), `${key} reaches Chromium`);
+  }
+  assert.ok(!Object.values(options.env).some((value) => SECRETS.includes(value)));
+  assert.equal(options.headless, false);
+  assert.deepEqual(options.args, ['--window-size=1440,900']);
+  // LC_ALL and TZ pass through only when set.
+  assert.deepEqual(chromiumLaunchOptions({ ...display, LC_ALL: 'C.UTF-8', TZ: 'UTC' }).env,
+    { ...display, LC_ALL: 'C.UTF-8', TZ: 'UTC' });
 }));
 
 test('hub_skips_without_browser', async () => folderTest(async (directory) => {

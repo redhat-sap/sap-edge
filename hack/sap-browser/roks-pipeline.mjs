@@ -75,6 +75,19 @@ export function roksPipelineOptions(env) {
   };
 }
 
+// Chromium gets only what it needs for the virtual display. Playwright would otherwise pass
+// process.env, and anyone viewing the shared noVNC session could open file:///proc/self/environ
+// and show the bucket key and the Postgres admin password.
+const chromiumEnvKeys = ['DISPLAY', 'PATH', 'HOME', 'XDG_RUNTIME_DIR', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'TZ'];
+
+export function chromiumLaunchOptions(env = process.env) {
+  const browserEnv = {};
+  for (const key of chromiumEnvKeys) {
+    if (env[key] !== undefined) browserEnv[key] = env[key];
+  }
+  return { headless: false, args: ['--window-size=1440,900'], env: browserEnv };
+}
+
 // A failure inside the deploy/teardown flow: the browser stays open for the user.
 class FlowFailure extends Error {
   constructor(cause) { super('Browser flow failed.', { cause }); }
@@ -111,7 +124,7 @@ async function runSession(env, deps, log, logError) {
   const options = roksPipelineOptions(env);
   const {
     openRoute: openRouteFor = openRoute,
-    launchBrowser = () => chromium.launch({ headless: false, args: ['--window-size=1440,900'] }),
+    launchBrowser = () => chromium.launch(chromiumLaunchOptions()),
     s3Factory = s3Client,
     flows = { deploy: runDeployFlow, teardown: runTeardownFlow },
     steps = elmPages,
