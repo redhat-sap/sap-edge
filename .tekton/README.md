@@ -61,9 +61,9 @@ CI/CD pipelines for deploying and testing SAP Edge Integration Cell on ARO, ROSA
 
 ### ROKS Tasks
 - `roks-deploy-task`: Deploy ROKS with Terraform (VPC, cluster, ICR namespace and service ID, PostgreSQL/Redis via IBM Cloud Databases) and fetch the admin kubeconfig into the workspace
-- `roks-validate-and-get-access-task`: Validate cluster access, switch the workspace to a ServiceAccount token kubeconfig and store it with the database connection data in the Secret `eic-credentials-roks-<cluster>` (on the hub cluster when configured)
+- `roks-validate-and-get-access-task`: Validate cluster access, switch the workspace to a ServiceAccount token kubeconfig and store it with the database connection data in the Secret `eic-credentials-roks-<cluster>` (on the hub cluster when `hubKubeconfigSecretName` is set)
 - `roks-validate-and-create-configmap-task`: Find EIC host and ingress address for tests
-- `roks-registry-access-task`: Store the ICR access for ELM (server, namespace, user, API key from the Terraform state) in the Secret `eic-registry-roks-<cluster>` (on the hub cluster when configured), and the Redis password in `eic-credentials-roks-<cluster>`
+- `roks-registry-access-task`: Store the ICR access for ELM (server, namespace, user, API key from the Terraform state) in the Secret `eic-registry-roks-<cluster>` (on the hub cluster when `hubKubeconfigSecretName` is set), and the Redis password in `eic-credentials-roks-<cluster>`
 - `roks-teardown-task`: Destroy infrastructure and clean up artifacts
 
 ### HCP Tasks
@@ -528,13 +528,13 @@ ROKS pipelines deploy a VPC cluster with IBM Cloud Databases for PostgreSQL and 
 
 6. **SAP `httpbinipfilter` iFlow allowlist** (one-time addition): add `172.17.0.0/18` (ROKS pod network) and `10.0.0.0/16` (VPC) so endpoint tests can reach the iFlow.
 
-7. The existing `eic-auth-secret` and hub kubeconfig Secrets (shared with other pipelines).
+7. The existing `eic-auth-secret` (shared with other pipelines). No hub cluster is needed. Only if the credentials and registry Secrets should go to a hub cluster: a Secret in the pipeline namespace with the hub kubeconfig (key `kubeconfig`, `config` or `value`), passed as the optional pipeline param `hubKubeconfigSecretName` (default empty).
 
-**What the pipeline produces for ELM:**
+**What the pipeline produces for ELM** (the Secrets `eic-registry-roks-<cluster>` and `eic-credentials-roks-<cluster>` are in the pipeline namespace on the pipeline cluster, or on the hub cluster when `hubKubeconfigSecretName` is set; `roks-teardown` deletes them from the same place):
 
 - Restricted kubeconfig Secret `edgelm-kubeconfig-generated-<cluster>` (pipeline namespace, pipeline cluster) for cluster registration
-- IBM Cloud Container Registry Secret `eic-registry-roks-<cluster>` (on the hub cluster when `hubKubeconfigSecretName` is set; the pipeline always sets it): keys `server` (`de.icr.io`), `namespace` (the cluster name), `username` (`iamapikey`) and `password` (API key of the run's ICR service ID). Terraform in `roks-deploy` creates the namespace and the service ID; `roks-registry-access` stores the Secret.
-- Secret `eic-credentials-roks-<cluster>` (on the hub cluster when configured): token kubeconfig, PostgreSQL/Redis connection data and `redis-password`
+- IBM Cloud Container Registry Secret `eic-registry-roks-<cluster>`: keys `server` (`de.icr.io`), `namespace` (the cluster name), `username` (`iamapikey`) and `password` (API key of the run's ICR service ID). Terraform in `roks-deploy` creates the namespace and the service ID; `roks-registry-access` stores the Secret.
+- Secret `eic-credentials-roks-<cluster>`: token kubeconfig, PostgreSQL/Redis connection data and `redis-password`
 - PostgreSQL admin password: key `POSTGRES_ADMIN_PASSWORD` of your Secret `<roksCredentialsSecretName>` (default `roks-ci-credentials`; pipeline namespace, pipeline cluster)
 
 **Running:**
