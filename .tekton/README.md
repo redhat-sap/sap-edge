@@ -551,6 +551,8 @@ tkn pipelinerun logs -f <pipelinerun-name>
 
 Cluster name: `redhat-roks-eic-pr<N>` (starts with `redhat-`, at most 30 characters).
 
+**Restricted-resources upload:** right after the run starts it creates the folders `restricted-resources/<clusterName>/elm/` and `restricted-resources/<clusterName>/edge-icell/` in the OBC bucket and pauses at `approval-upload-restricted-resources` (the cluster is created meanwhile). Upload the ELM zip to `elm/` and the EIC zip to `edge-icell/`, one zip each as downloaded from SAP (new-format bundles with `apply-restricted-resources.sh`; the approval shows the paths and the `aws s3 cp` commands), then approve. `apply-rbac` reads only these two folders, never the zips directly under `restricted-resources/`. The folders are named after the cluster, so two ROKS runs in one PR (they need different cluster names anyway) never share one, and a retest of the same run reuses the uploaded zips.
+
 **Failed or rejected runs** leave the cluster for debugging (billable). Clean up with:
 
 ```bash

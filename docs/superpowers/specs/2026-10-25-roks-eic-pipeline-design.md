@@ -40,7 +40,8 @@ down.
 - Reuse every cloud-agnostic task unchanged, wired exactly as in the ROSA
   pipeline (against the workspace kubeconfig, `useWorkspaceKubeconfig: "true"`):
   `ossm3-preflight-check`, `ossm3-verify-operators`,
-  `ossm3-download-and-apply-rbac` (flat `restricted-resources/` prefix),
+  `ossm3-download-and-apply-rbac` (per-run folders, see "Changed by the user
+  (2026-10-26)"),
   `ossm3-prepare-namespaces`, `ossm3-configure-mesh` (shared mesh),
   `ossm3-generate-sa-based-kubeconfig`, `endpoint-tests`, `rate-limit-test`,
   `jira-add-comment-custom`, `git-clone`, and the ApprovalTasks.
@@ -143,6 +144,20 @@ down.
 - **Postgres and Redis stay IBM Cloud Databases** and are on by default in
   the pipeline (`deployPostgres`/`deployRedis` `"true"`); there is no
   `deployQuay`.
+
+## Changed by the user (2026-10-26)
+
+- **Per-run restricted-resources folders with an upload gate** (as the HCP
+  topology A/B pipelines), instead of the flat `restricted-resources/` prefix
+  shared with ROSA/ARO: the first run picked up a leftover old-format
+  IstioGateways zip there and aborted. `ossm3-prepare-restricted-resources-prefix`
+  creates `restricted-resources/<clusterName>/elm/` and `.../edge-icell/`,
+  `approval-upload-restricted-resources` pauses (in parallel with
+  `deploy-roks`) until the user has uploaded one zip per folder, and
+  `apply-rbac` waits for the gate and downloads only those two folders
+  (`requiredComponents`). The folder is derived from `clusterName` in the
+  pipeline (no `s3Prefix` param) because the cluster name is already unique
+  per run, so two ROKS PipelineRuns in one PR never share a folder.
 
 ## My calls (the user delegated these)
 

@@ -36,9 +36,13 @@
 #        --from-literal=AWS_SECRET_ACCESS_KEY=<HMAC secret access key> \
 #        --from-literal=POSTGRES_ADMIN_PASSWORD=<password>
 # 3. As for the other EIC runs: the ObjectBucketClaim
-#    sap-eic-restricted-cluster-config-resources with the restricted-resources
-#    zip files under restricted-resources/, the EIC auth Secret and the Jira
-#    Secret. No hub cluster is needed: the Secrets eic-credentials-roks-<cluster>
+#    sap-eic-restricted-cluster-config-resources, the EIC auth Secret and the
+#    Jira Secret. The zips are not uploaded in advance: the run creates
+#    restricted-resources/<clusterName>/elm/ and .../edge-icell/ in the OBC
+#    bucket and pauses at approval-upload-restricted-resources until you have
+#    uploaded the ELM zip to elm/ and the EIC zip to edge-icell/ (the approval
+#    shows the paths and commands). A retest reuses the uploaded zips.
+#    No hub cluster is needed: the Secrets eic-credentials-roks-<cluster>
 #    and eic-registry-roks-<cluster> go to the pipeline namespace unless
 #    hubKubeconfigSecretName is set (see below).
 # 4. Add 172.17.0.0/18 (ROKS pod network) and 10.0.0.0/16 (VPC) to the IP
@@ -133,8 +137,6 @@ spec:
       value: "stable-3.3"
     - name: obcName
       value: "sap-eic-restricted-cluster-config-resources"
-    - name: s3Prefix
-      value: "restricted-resources/"
   workspaces:
     - name: source
       volumeClaimTemplate:
