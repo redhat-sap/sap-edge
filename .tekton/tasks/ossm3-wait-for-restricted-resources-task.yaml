@@ -123,7 +123,7 @@ spec:
 
           for C in "${COMPONENT_LIST[@]}"; do
             # List all keys under the component folder, filter for .zip files
-            ZIP_COUNT=$(s3 s3 ls "s3://${BUCKET_NAME}/${PREFIX}${C}/" --recursive 2>/dev/null | awk '$4 ~ /\.zip$/ { print $4 }' | wc -l || echo "0")
+            ZIP_COUNT=$(s3 s3 ls "s3://${BUCKET_NAME}/${PREFIX}${C}/" --recursive 2>/dev/null | awk '/\.zip$/ { sub(/^[^ ]+ +[^ ]+ +[^ ]+ +/, ""); print }' | wc -l || echo "0")
             if [[ "${ZIP_COUNT}" -eq 0 ]]; then
               MISSING+=("${C}")
             fi
@@ -146,7 +146,7 @@ spec:
         echo ""
         echo "✅ All components have zips:"
         for C in "${COMPONENT_LIST[@]}"; do
-          s3 s3 ls "s3://${BUCKET_NAME}/${PREFIX}${C}/" --recursive 2>/dev/null | awk '$4 ~ /\.zip$/ { print "  " $4 }'
+          s3 s3 ls "s3://${BUCKET_NAME}/${PREFIX}${C}/" --recursive 2>/dev/null | awk '/\.zip$/ { sub(/^[^ ]+ +[^ ]+ +[^ ]+ +/, ""); print "  " $0 }'
         done
 
         echo ""
