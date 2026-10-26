@@ -239,7 +239,7 @@ setup() {
   export TERRAFORM_STATE_ENDPOINT=https://s3.eu-de.cloud-object-storage.appdomain.cloud
   export DEPLOY_POSTGRES=true
   export DEPLOY_REDIS=true
-  export POSTGRES_ADMIN_PASSWORD_SECRET_NAME=roks-postgres-admin-password
+  export ROKS_CREDENTIALS_SECRET_NAME=roks-ci-credentials
   export IBMCLOUD_API_KEY="${FAKE_API_KEY}"
   export AWS_ACCESS_KEY_ID="${FAKE_HMAC_ACCESS}"
   export AWS_SECRET_ACCESS_KEY="${FAKE_HMAC_SECRET}"
@@ -250,9 +250,8 @@ setup() {
 run_deploy() {
   TASK_CWD="${WS}" run_task "${TASK}" \
     --param clusterName="${CLUSTER_NAME}" \
-    --param roksIbmcloudSecretName=roks-ibmcloud \
+    --param roksCredentialsSecretName="${ROKS_CREDENTIALS_SECRET_NAME}" \
     --param terraformStateBucket="${TERRAFORM_STATE_BUCKET}" \
-    --param terraformStateSecretName=roks-terraform-state \
     --workspace-dir source="${WS}" \
     --drop '# Install tools' 'echo "✅ Tools installed"'
 }
@@ -293,11 +292,9 @@ expected_defaults = {
     "openshiftVersion": "4.21_openshift",
     "workerFlavor": "bx2.16x64",
     "workersPerZone": "1",
-    "roksIbmcloudSecretName": None,
+    "roksCredentialsSecretName": None,
     "terraformStateBucket": None,
     "terraformStateEndpoint": "https://s3.eu-de.cloud-object-storage.appdomain.cloud",
-    "terraformStateSecretName": None,
-    "postgresAdminPasswordSecretName": "roks-postgres-admin-password",
     "deployPostgres": "true",
     "deployRedis": "true",
 }
@@ -319,14 +316,18 @@ expected_values = {
     "TERRAFORM_STATE_ENDPOINT": "$(params.terraformStateEndpoint)",
     "DEPLOY_POSTGRES": "$(params.deployPostgres)",
     "DEPLOY_REDIS": "$(params.deployRedis)",
-    "POSTGRES_ADMIN_PASSWORD_SECRET_NAME": "$(params.postgresAdminPasswordSecretName)",
+    "ROKS_CREDENTIALS_SECRET_NAME": "$(params.roksCredentialsSecretName)",
 }
+# All four keys of the one credentials Secret; the Postgres password is optional
 expected_secrets = {
-    "IBMCLOUD_API_KEY": ("$(params.roksIbmcloudSecretName)", "IBMCLOUD_API_KEY", False),
-    "AWS_ACCESS_KEY_ID": ("$(params.terraformStateSecretName)", "AWS_ACCESS_KEY_ID", False),
-    "AWS_SECRET_ACCESS_KEY": ("$(params.terraformStateSecretName)", "AWS_SECRET_ACCESS_KEY", False),
-    "POSTGRES_ADMIN_PASSWORD": ("$(params.postgresAdminPasswordSecretName)", "POSTGRES_ADMIN_PASSWORD", True),
+    "IBMCLOUD_API_KEY": ("$(params.roksCredentialsSecretName)", "IBMCLOUD_API_KEY", False),
+    "AWS_ACCESS_KEY_ID": ("$(params.roksCredentialsSecretName)", "AWS_ACCESS_KEY_ID", False),
+    "AWS_SECRET_ACCESS_KEY": ("$(params.roksCredentialsSecretName)", "AWS_SECRET_ACCESS_KEY", False),
+    "POSTGRES_ADMIN_PASSWORD": ("$(params.roksCredentialsSecretName)", "POSTGRES_ADMIN_PASSWORD", True),
 }
+secret_envs = {n for n, e in env.items() if "valueFrom" in e}
+if secret_envs != set(expected_secrets):
+    errors.append(f"env from Secrets should be exactly {sorted(expected_secrets)}, got {sorted(secret_envs)}")
 for name, value in expected_values.items():
     if env.get(name, {}).get("value") != value:
         errors.append(f"env {name} should be {value}, got {env.get(name)}")
@@ -426,9 +427,11 @@ done
 # The kubeconfig directory exists (the IBM provider fails otherwise)
 [[ -d "${WS}/roks/terraform/.kube" ]] || fail "kubeconfig directory not created"
 
-# Flags off (any case), no Postgres password needed or written
+# Flags off (any case), no Postgres password needed or written; the
+# optional key is missing from the Secret, so the variable is unset
 setup
-export DEPLOY_POSTGRES=False DEPLOY_REDIS=FALSE POSTGRES_ADMIN_PASSWORD="" PR_NUMBER=""
+export DEPLOY_POSTGRES=False DEPLOY_REDIS=FALSE PR_NUMBER=""
+unset POSTGRES_ADMIN_PASSWORD
 run_deploy
 expect_success
 TFVARS="${WS}/roks/terraform/terraform.tfvars"
@@ -648,9 +651,26 @@ for PASSWORD in "" "Short1abc" "-StartsWithDash1234" "lower-case-only-123" "UPPE
   if [[ -n "${FIRST_LINE}" ]]; then
     ! grep -qF -- "${FIRST_LINE}" <<< "${TASK_OUT}" || fail "invalid Postgres password printed"
   fi
-  grep -q "roks-postgres-admin-password" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "error does not name the Secret"; }
+  grep -qF "key POSTGRES_ADMIN_PASSWORD of Secret 'roks-ci-credentials'" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "error does not name the Secret and key"; }
 done
 echo "✅ PASS: invalid_postgres_password_fails"
+
+# Test case: missing_postgres_password_fails
+# POSTGRES_ADMIN_PASSWORD is an optional key of the credentials Secret: when it
+# is missing the variable is unset, and deployPostgres=true must fail before
+# any terraform or ibmcloud call, naming the Secret and the key.
+echo ""
+echo "Test: missing_postgres_password_fails"
+echo "--------------------------------------------"
+setup
+export ROKS_CREDENTIALS_SECRET_NAME=my-roks-credentials
+unset POSTGRES_ADMIN_PASSWORD
+run_deploy
+[[ "${TASK_RC}" -ne 0 ]] || { echo "${TASK_OUT}"; fail "missing Postgres password accepted with deployPostgres=true"; }
+[[ ! -s "${STUB_TF_LOG}" ]] || fail "terraform called despite the missing Postgres password"
+[[ ! -s "${STUB_IC_LOG}" ]] || fail "ibmcloud called despite the missing Postgres password"
+grep -qF "deployPostgres is true but key POSTGRES_ADMIN_PASSWORD of Secret 'my-roks-credentials' is missing" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "error does not say that the key is missing from the Secret"; }
+echo "✅ PASS: missing_postgres_password_fails"
 
 # Test case: state_lock_prints_unlock_guidance
 echo ""

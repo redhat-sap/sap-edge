@@ -177,7 +177,7 @@ run_registry_access() {
     --param clusterName="${CLUSTER_NAME}" \
     --param terraformStateBucket="${TERRAFORM_STATE_BUCKET}" \
     --param terraformStateEndpoint="${TERRAFORM_STATE_ENDPOINT}" \
-    --param terraformStateSecretName=roks-terraform-state \
+    --param roksCredentialsSecretName=roks-ci-credentials \
     --param hubKubeconfigSecretName="${HUB_KUBECONFIG_SECRET}" \
     --workspace-dir source="${WS}" \
     --drop '# Install tools' 'echo "✅ Tools installed"'
@@ -204,23 +204,73 @@ expected_defaults = {
     "clusterName": None,
     "terraformStateBucket": None,
     "terraformStateEndpoint": "https://s3.eu-de.cloud-object-storage.appdomain.cloud",
-    "terraformStateSecretName": None,
+    "roksCredentialsSecretName": None,
     "hubKubeconfigSecretName": "",
 }
 if params != expected_defaults:
     errors.append(f"params/defaults differ: {params}")
-env = {e["name"] for e in task["spec"]["steps"][0]["env"]}
+env_list = task["spec"]["steps"][0]["env"]
+env = {e["name"] for e in env_list}
 expected_env = {
     "CLUSTER_NAME", "TERRAFORM_STATE_BUCKET", "TERRAFORM_STATE_ENDPOINT",
     "HUB_KUBECONFIG_SECRET", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
 }
 if env != expected_env:
     errors.append(f"env names differ: {sorted(env)}")
+# Only the two COS HMAC keys of the credentials Secret (no API key, no password)
+refs = {
+    e["name"]: e["valueFrom"]["secretKeyRef"]
+    for e in env_list
+    if "secretKeyRef" in e.get("valueFrom", {})
+}
+expected_refs = {
+    "AWS_ACCESS_KEY_ID": {"name": "$(params.roksCredentialsSecretName)", "key": "AWS_ACCESS_KEY_ID"},
+    "AWS_SECRET_ACCESS_KEY": {"name": "$(params.roksCredentialsSecretName)", "key": "AWS_SECRET_ACCESS_KEY"},
+}
+if refs != expected_refs:
+    errors.append(f"secretKeyRefs should be {expected_refs} (required), got {refs}")
 if errors:
     print("\n".join(errors))
     sys.exit(1)
 PY
 echo "✅ PASS: params_and_env"
+
+# Test case: pipeline_credentials_wiring
+# roks-eic-full-test-pipeline: one credentials Secret (roksCredentialsSecretName,
+# default roks-ci-credentials) for every ROKS task that reads credentials and
+# for the preflight check; the three former Secret params are gone.
+echo ""
+echo "Test: pipeline_credentials_wiring"
+echo "--------------------------------------------"
+python3 -I - ../../.tekton/pipelines/roks-eic-full-test-pipeline.yaml <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as f:
+    pipeline = yaml.safe_load(f)
+
+errors = []
+params = {p["name"]: p.get("default") for p in pipeline["spec"]["params"]}
+if params.get("roksCredentialsSecretName") != "roks-ci-credentials":
+    errors.append(f"roksCredentialsSecretName should default to roks-ci-credentials, got {params.get('roksCredentialsSecretName')!r}")
+for old in ("roksIbmcloudSecretName", "terraformStateSecretName", "postgresAdminPasswordSecretName"):
+    if old in params:
+        errors.append(f"pipeline param {old} should be gone")
+tasks = {t["name"]: {p["name"]: p.get("value") for p in t.get("params", [])} for t in pipeline["spec"]["tasks"]}
+expected = {
+    "deploy-roks": "roksCredentialsSecretName",
+    "registry-access": "roksCredentialsSecretName",
+    "teardown-roks": "roksCredentialsSecretName",
+    "preflight-check": "pullSecretName",
+}
+for task, param in expected.items():
+    if tasks.get(task, {}).get(param) != "$(params.roksCredentialsSecretName)":
+        errors.append(f"{task}.{param} should be $(params.roksCredentialsSecretName), got {tasks.get(task, {}).get(param)!r}")
+if errors:
+    print("\n".join(errors))
+    sys.exit(1)
+PY
+echo "✅ PASS: pipeline_credentials_wiring"
 
 # Test case: registry_secret_created
 echo ""

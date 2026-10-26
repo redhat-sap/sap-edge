@@ -160,6 +160,12 @@ the OpenShift default `10.128.0.0/14` used on ROSA/ARO is not possible; the
    for the EIC images): `ibmcloud cr region-set eu-central`, `ibmcloud cr plan`,
    and `ibmcloud cr plan-upgrade standard` if needed.
 
+The pipeline reads these credentials from one Secret in its namespace
+(`roksCredentialsSecretName`, default `roks-ci-credentials`) with the keys
+`IBMCLOUD_API_KEY`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and, when
+`deployPostgres` is `"true"`, `POSTGRES_ADMIN_PASSWORD`; see the ROKS section
+of `.tekton/README.md`.
+
 ## Terraform state (COS through the s3 backend)
 
 `provider.tf` declares an empty `backend "s3" {}`; the settings are passed at

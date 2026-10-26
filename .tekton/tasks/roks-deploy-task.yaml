@@ -48,9 +48,9 @@ spec:
       type: string
       description: "Workers per zone (3 zones)"
       default: "1"
-    - name: roksIbmcloudSecretName
+    - name: roksCredentialsSecretName
       type: string
-      description: "Name of the Kubernetes Secret with the IBM Cloud API key (key IBMCLOUD_API_KEY)"
+      description: "Name of the Kubernetes Secret with the credentials: keys IBMCLOUD_API_KEY, AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (COS HMAC keys of the state bucket) and POSTGRES_ADMIN_PASSWORD (optional, only read when deployPostgres is true)"
     - name: terraformStateBucket
       type: string
       description: "IBM Cloud Object Storage bucket holding the Terraform state"
@@ -58,13 +58,6 @@ spec:
       type: string
       description: "S3 endpoint of the Terraform state bucket"
       default: "https://s3.eu-de.cloud-object-storage.appdomain.cloud"
-    - name: terraformStateSecretName
-      type: string
-      description: "Name of the Kubernetes Secret with the COS HMAC keys of the state bucket (keys AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)"
-    - name: postgresAdminPasswordSecretName
-      type: string
-      description: "Name of the Kubernetes Secret with the PostgreSQL admin password (key POSTGRES_ADMIN_PASSWORD; only read when deployPostgres is true)"
-      default: "roks-postgres-admin-password"
     - name: deployPostgres
       type: string
       description: "Whether to create IBM Cloud Databases for PostgreSQL (true/false)"
@@ -106,30 +99,31 @@ spec:
           value: "$(params.deployPostgres)"
         - name: DEPLOY_REDIS
           value: "$(params.deployRedis)"
-        - name: POSTGRES_ADMIN_PASSWORD_SECRET_NAME
-          value: "$(params.postgresAdminPasswordSecretName)"
+        # Only for error messages
+        - name: ROKS_CREDENTIALS_SECRET_NAME
+          value: "$(params.roksCredentialsSecretName)"
         # Read by the ibm Terraform provider and used for ibmcloud login
         - name: IBMCLOUD_API_KEY
           valueFrom:
             secretKeyRef:
-              name: $(params.roksIbmcloudSecretName)
+              name: $(params.roksCredentialsSecretName)
               key: IBMCLOUD_API_KEY
         # COS HMAC keys, read by the s3 backend
         - name: AWS_ACCESS_KEY_ID
           valueFrom:
             secretKeyRef:
-              name: $(params.terraformStateSecretName)
+              name: $(params.roksCredentialsSecretName)
               key: AWS_ACCESS_KEY_ID
         - name: AWS_SECRET_ACCESS_KEY
           valueFrom:
             secretKeyRef:
-              name: $(params.terraformStateSecretName)
+              name: $(params.roksCredentialsSecretName)
               key: AWS_SECRET_ACCESS_KEY
-        # Optional: only needed (and checked) when deployPostgres is true
+        # Optional key: only needed (and checked) when deployPostgres is true
         - name: POSTGRES_ADMIN_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: $(params.postgresAdminPasswordSecretName)
+              name: $(params.roksCredentialsSecretName)
               key: POSTGRES_ADMIN_PASSWORD
               optional: true
       script: |
@@ -207,10 +201,12 @@ spec:
         plain_value workerFlavor "${WORKER_FLAVOR}"
         DEPLOY_POSTGRES_TF=$(lower_bool deployPostgres "${DEPLOY_POSTGRES}")
         DEPLOY_REDIS_TF=$(lower_bool deployRedis "${DEPLOY_REDIS}")
-        [[ -n "${IBMCLOUD_API_KEY:-}" ]] || fail "IBMCLOUD_API_KEY is empty (Secret from roksIbmcloudSecretName, key IBMCLOUD_API_KEY)"
-        [[ -n "${AWS_ACCESS_KEY_ID:-}" && -n "${AWS_SECRET_ACCESS_KEY:-}" ]] || fail "COS HMAC keys are empty (Secret from terraformStateSecretName, keys AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY)"
+        [[ -n "${IBMCLOUD_API_KEY:-}" ]] || fail "IBMCLOUD_API_KEY is empty (key IBMCLOUD_API_KEY of Secret '${ROKS_CREDENTIALS_SECRET_NAME}')"
+        [[ -n "${AWS_ACCESS_KEY_ID:-}" && -n "${AWS_SECRET_ACCESS_KEY:-}" ]] || fail "COS HMAC keys are empty (keys AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY of Secret '${ROKS_CREDENTIALS_SECRET_NAME}')"
         if [[ "${DEPLOY_POSTGRES_TF}" == "true" ]]; then
-          valid_postgres_password "${POSTGRES_ADMIN_PASSWORD:-}" || fail "deployPostgres is true but POSTGRES_ADMIN_PASSWORD from Secret '${POSTGRES_ADMIN_PASSWORD_SECRET_NAME}' is missing or invalid: it must be 15-72 characters of letters, digits, - and _ (no trailing newline), with at least one lower case letter, one upper case letter and one digit, not starting with - or _"
+          # The key is optional in the Secret (unset when missing)
+          [[ -n "${POSTGRES_ADMIN_PASSWORD:-}" ]] || fail "deployPostgres is true but key POSTGRES_ADMIN_PASSWORD of Secret '${ROKS_CREDENTIALS_SECRET_NAME}' is missing or empty: add the key to the Secret, or set deployPostgres to false"
+          valid_postgres_password "${POSTGRES_ADMIN_PASSWORD}" || fail "deployPostgres is true but key POSTGRES_ADMIN_PASSWORD of Secret '${ROKS_CREDENTIALS_SECRET_NAME}' is invalid: it must be 15-72 characters of letters, digits, - and _ (no trailing newline), with at least one lower case letter, one upper case letter and one digit, not starting with - or _"
         fi
         [[ -d "${TF_DIR}" ]] || fail "${TF_DIR} not found; is the repository checked out in the source workspace?"
         echo "✅ Inputs validated"
@@ -255,7 +251,7 @@ spec:
         # The CLI reads the API key from IBMCLOUD_API_KEY, so it is never in
         # argv; no stdin, so that it fails instead of prompting.
         ibmcloud login -r "${IBMCLOUD_REGION}" -g "${IBMCLOUD_RESOURCE_GROUP}" < /dev/null ||
-          fail "ibmcloud login failed (API key from Secret roksIbmcloudSecretName, key IBMCLOUD_API_KEY)"
+          fail "ibmcloud login failed (API key: key IBMCLOUD_API_KEY of Secret '${ROKS_CREDENTIALS_SECRET_NAME}')"
 
         # Claims (not the token) of the session's IAM token
         jwt_claims() {

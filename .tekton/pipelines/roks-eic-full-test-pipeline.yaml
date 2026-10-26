@@ -56,10 +56,10 @@ spec:
       type: string
       description: "Workers per zone (3 zones)"
       default: "1"
-    - name: roksIbmcloudSecretName
+    - name: roksCredentialsSecretName
       type: string
-      description: "Name of the Kubernetes Secret with the IBM Cloud API key (key IBMCLOUD_API_KEY)"
-      default: "roks-ibmcloud-api-key"
+      description: "Name of the Kubernetes Secret (pipeline namespace) with the ROKS credentials: keys IBMCLOUD_API_KEY, AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (COS HMAC keys of the Terraform state bucket) and POSTGRES_ADMIN_PASSWORD (only read when deployPostgres is true)"
+      default: "roks-ci-credentials"
     - name: terraformStateBucket
       type: string
       description: "IBM Cloud Object Storage bucket holding the Terraform state (key roks/<clusterName>/terraform.tfstate)"
@@ -68,16 +68,8 @@ spec:
       type: string
       description: "S3 endpoint of the Terraform state bucket"
       default: "https://s3.eu-de.cloud-object-storage.appdomain.cloud"
-    - name: terraformStateSecretName
-      type: string
-      description: "Name of the Kubernetes Secret with the COS HMAC keys of the state bucket (keys AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)"
-      default: "roks-terraform-state-hmac"
 
     # --- IBM Cloud Databases parameters ---
-    - name: postgresAdminPasswordSecretName
-      type: string
-      description: "Name of the Kubernetes Secret with the PostgreSQL admin password (key POSTGRES_ADMIN_PASSWORD; only read when deployPostgres is true)"
-      default: "roks-postgres-admin-password"
     - name: deployPostgres
       type: string
       description: "Whether to create IBM Cloud Databases for PostgreSQL (true/false)"
@@ -168,16 +160,12 @@ spec:
           value: $(params.workerFlavor)
         - name: workersPerZone
           value: $(params.workersPerZone)
-        - name: roksIbmcloudSecretName
-          value: $(params.roksIbmcloudSecretName)
+        - name: roksCredentialsSecretName
+          value: $(params.roksCredentialsSecretName)
         - name: terraformStateBucket
           value: $(params.terraformStateBucket)
         - name: terraformStateEndpoint
           value: $(params.terraformStateEndpoint)
-        - name: terraformStateSecretName
-          value: $(params.terraformStateSecretName)
-        - name: postgresAdminPasswordSecretName
-          value: $(params.postgresAdminPasswordSecretName)
         - name: deployPostgres
           value: $(params.deployPostgres)
         - name: deployRedis
@@ -214,8 +202,8 @@ spec:
           value: $(params.terraformStateBucket)
         - name: terraformStateEndpoint
           value: $(params.terraformStateEndpoint)
-        - name: terraformStateSecretName
-          value: $(params.terraformStateSecretName)
+        - name: roksCredentialsSecretName
+          value: $(params.roksCredentialsSecretName)
         - name: hubKubeconfigSecretName
           value: $(params.hubClusterName)-kubeconfig
       workspaces:
@@ -227,14 +215,14 @@ spec:
     # =============================================
 
     # Pre-flight validation (runs in parallel with fetch-repository); there is no
-    # Red Hat pull secret on ROKS, so it checks the IBM Cloud API key Secret
+    # Red Hat pull secret on ROKS, so it checks that the ROKS credentials Secret exists
     - name: preflight-check
       taskRef: { name: ossm3-preflight-check }
       params:
         - name: obcName
           value: $(params.obcName)
         - name: pullSecretName
-          value: $(params.roksIbmcloudSecretName)
+          value: $(params.roksCredentialsSecretName)
 
     # Install Service Mesh 3.x operator on target cluster
     - name: verify-operators
@@ -344,7 +332,7 @@ spec:
 
             IBM Cloud Databases (deployPostgres=$(params.deployPostgres), deployRedis=$(params.deployRedis); public endpoints, TLS only, reachable from the cluster):
             - Connection data in Secret 'eic-credentials-roks-$(params.clusterName)' on the hub cluster '$(params.hubClusterName)'; the endpoints are also printed by validate-and-get-access
-            - PostgreSQL: keys postgres-host, postgres-port, postgres-database, postgres-username, postgres-ca.crt; password: key POSTGRES_ADMIN_PASSWORD of Secret '$(params.postgresAdminPasswordSecretName)' in the pipeline namespace on the pipeline cluster
+            - PostgreSQL: keys postgres-host, postgres-port, postgres-database, postgres-username, postgres-ca.crt; password: key POSTGRES_ADMIN_PASSWORD of Secret '$(params.roksCredentialsSecretName)' in the pipeline namespace on the pipeline cluster
             - Redis: keys redis-host, redis-port, redis-username, redis-password, redis-ca.crt
 
             One-time (if not done yet): the httpbinipfilter iFlow's IP filter must allow 172.17.0.0/18 (ROKS pod network) and 10.0.0.0/16 (VPC), otherwise test-httpbinipfilter fails.
@@ -717,14 +705,12 @@ spec:
           value: $(params.ibmcloudRegion)
         - name: ibmcloudResourceGroup
           value: $(params.ibmcloudResourceGroup)
-        - name: roksIbmcloudSecretName
-          value: $(params.roksIbmcloudSecretName)
+        - name: roksCredentialsSecretName
+          value: $(params.roksCredentialsSecretName)
         - name: terraformStateBucket
           value: $(params.terraformStateBucket)
         - name: terraformStateEndpoint
           value: $(params.terraformStateEndpoint)
-        - name: terraformStateSecretName
-          value: $(params.terraformStateSecretName)
         - name: hubKubeconfigSecretName
           value: $(params.hubClusterName)-kubeconfig
       workspaces:

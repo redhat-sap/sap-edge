@@ -198,12 +198,15 @@ down.
   with the 4.21 line the account already runs), cluster name
   `redhat-roks-eic-pr{{ pull_request_number }}`, OSSM channel as in the ROSA
   run, hub `eic`, `deployPostgres`/`deployRedis` `"true"` (no `deployQuay`).
-- **Credentials (Secrets in the pipeline namespace):** IBM Cloud API key
-  (`roksIbmcloudSecretName`, key `IBMCLOUD_API_KEY`) — preferably a service
-  ID's key with access scoped to `redhat-sap-edge-roks-ci`, so it is not tied
-  to a person — and COS HMAC keys for the state bucket
-  (`terraformStateSecretName`, keys `AWS_ACCESS_KEY_ID` /
-  `AWS_SECRET_ACCESS_KEY`). Postgres admin password Secret as in ROSA.
+- **Credentials (one Secret in the pipeline namespace,
+  `roksCredentialsSecretName`, default `roks-ci-credentials`):** key
+  `IBMCLOUD_API_KEY` — preferably a service ID's key with access scoped to
+  `redhat-sap-edge-roks-ci`, so it is not tied to a person — keys
+  `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (COS HMAC keys of the state
+  bucket) and key `POSTGRES_ADMIN_PASSWORD` (optional, only read when
+  `deployPostgres` is `"true"`). Each task references only the keys it needs:
+  `roks-deploy` all four, `roks-registry-access` the HMAC keys,
+  `roks-teardown` the API key and the HMAC keys.
 
 ## One-time setup the user does (documented in the README section)
 
@@ -217,8 +220,9 @@ down.
   to create the service ID and its API key).
 - The ICR plan in `eu-de` is not Lite (`ibmcloud cr region-set eu-central`,
   `ibmcloud cr plan`; `ibmcloud cr plan-upgrade standard` if needed).
-- A COS bucket for Terraform state plus HMAC credentials, stored as the state
-  Secret; the API-key Secret.
+- A COS bucket for Terraform state plus HMAC credentials; the credentials
+  Secret `roks-ci-credentials` with the API key, the HMAC keys and the
+  PostgreSQL admin password.
 
 ## Left to the builder
 
