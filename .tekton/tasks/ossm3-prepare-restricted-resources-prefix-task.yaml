@@ -28,6 +28,10 @@ spec:
       type: string
       description: "Space-separated component folders to create under the prefix (e.g. 'elm edge-icell-1 edge-icell-2'). Empty = flat prefix, nothing is created."
       default: ""
+    - name: archiveExisting
+      type: string
+      description: "When 'true' and components is non-empty, move earlier *.zip files to archive/<timestamp>/ before creating the folder markers"
+      default: "false"
   results:
     - name: bucketName
       description: "Name of the OBC bucket"
@@ -112,6 +116,20 @@ spec:
         S3_ROUTE=$(oc get route s3 -n openshift-storage -o jsonpath='{.spec.host}' 2>/dev/null || true)
         if [[ -z "${S3_ROUTE}" ]]; then
           S3_ROUTE="\$(oc get route s3 -n openshift-storage -o jsonpath='{.spec.host}')"
+        fi
+
+        # ========================================
+        # Archive earlier zips (opt-in)
+        # ========================================
+        ARCHIVE_EXISTING="$(params.archiveExisting)"
+        if [[ "${ARCHIVE_EXISTING}" == "true" ]] && [[ -n "${COMPONENTS}" ]]; then
+          STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+          echo ""
+          echo "📦 Archiving earlier zips..."
+          for C in ${COMPONENTS}; do
+            s3 s3 mv "s3://${BUCKET_NAME}/${PREFIX}${C}/" "s3://${BUCKET_NAME}/${PREFIX}archive/${STAMP}/${C}/" --recursive --exclude '*' --include '*.zip'
+            echo "   📦 Archived earlier zips of ${C}/ to archive/${STAMP}/${C}/"
+          done
         fi
 
         # ========================================
