@@ -412,7 +412,9 @@ spec:
         - name: source
           workspace: source
 
-    # Prepare namespaces with labels and SCC annotations
+    # Labels and SCC annotations for the namespaces the ELM bundle created
+    # (edgelm); the EIC namespaces do not exist yet and are skipped — they are
+    # configured after the EIC bundle (prepare-namespaces-eic)
     - name: prepare-namespaces
       runAfter: [apply-rbac-elm]
       taskRef: { name: ossm3-prepare-namespaces }
@@ -425,7 +427,8 @@ spec:
         - name: source
           workspace: source
 
-    # Configure OpenShift Service Mesh 3.x
+    # Configure OpenShift Service Mesh 3.x: control plane, and edgelm joins the
+    # mesh before elm init starts the ELM pods (EIC namespaces: configure-mesh-eic)
     - name: configure-mesh
       runAfter: [prepare-namespaces]
       taskRef: { name: ossm3-configure-mesh }
@@ -486,7 +489,7 @@ spec:
         - name: source
           workspace: source
 
-    # Prepare namespaces with labels and SCC annotations (EIC)
+    # Labels and SCC annotations for the EIC namespaces the EIC bundle created
     - name: prepare-namespaces-eic
       runAfter: [apply-rbac-eic]
       taskRef: { name: ossm3-prepare-namespaces }
@@ -499,8 +502,8 @@ spec:
         - name: source
           workspace: source
 
-    # Configure OpenShift Service Mesh 3.x (EIC; re-applies mesh labels in case
-    # the EIC bundle's namespace manifests replaced them)
+    # EIC namespaces join the mesh; confirm the applied EIC resources in ELM
+    # only after this task, so the EIC pods get their sidecars
     - name: configure-mesh-eic
       runAfter: [prepare-namespaces-eic]
       taskRef: { name: ossm3-configure-mesh }

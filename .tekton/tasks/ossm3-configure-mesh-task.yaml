@@ -187,12 +187,26 @@ spec:
         oc label namespace istio-system istio-discovery=enabled --overwrite
 
         # --- Label application namespaces to join the mesh ---
+        # The SAP restricted-resources bundles create these namespaces; one
+        # that does not exist yet (EIC before its bundle is applied) is skipped.
         echo "🏷️ Labeling application namespaces for mesh discovery and injection..."
         APP_NAMESPACES=(edgelm edge-icell edge-icell-services edge-icell-secrets edge-icell-ela istio-gateways)
+        LABELED=0
         for NS in "${APP_NAMESPACES[@]}"; do
+          # --ignore-not-found: empty output means absent; a failing oc is a real error
+          FOUND=$(oc get namespace "${NS}" --ignore-not-found -o name)
+          if [[ -z "${FOUND}" ]]; then
+            echo "   ⏭️  ${NS}: not created yet, skipped (a later SAP bundle creates it)"
+            continue
+          fi
           echo "   Labeling ${NS} with istio-discovery=enabled and istio-injection=enabled"
           oc label namespace "${NS}" istio-discovery=enabled istio-injection=enabled --overwrite
+          LABELED=$((LABELED + 1))
         done
+        if [[ "${LABELED}" -eq 0 ]]; then
+          echo "❌ None of the SAP namespaces exist: apply the SAP restricted-resources bundles first (apply-rbac)"
+          exit 1
+        fi
         echo "✅ Namespace labels applied"
 
         # --- Wait for Service Mesh control plane to be ready ---
