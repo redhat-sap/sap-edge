@@ -9,9 +9,13 @@ metadata:
   name: ossm3-prepare-namespaces
 spec:
   description: >-
-    Create and configure the required namespaces for SAP Edge Lifecycle
-    Management with restricted-access RBAC model. Applies service mesh
-    injection labels and SCC security annotations.
+    Configure the namespaces of SAP Edge Lifecycle Management and Edge
+    Integration Cell for the restricted-access model: Service Mesh injection
+    labels and SCC security annotations. The namespaces themselves are created
+    by the SAP restricted-resources bundles (with their ownership labels), so
+    this task never creates one: it configures the ones that exist and skips
+    the others until a later bundle creates them (e.g. the EIC namespaces
+    while only the ELM bundle is applied).
   params:
     - name: hostedClusterName
       type: string
@@ -117,16 +121,32 @@ spec:
           echo "✅ Successfully connected to hosted cluster"
         fi
 
-        # --- Create all required namespaces ---
-        echo ""
-        echo "📦 Creating required namespaces..."
+        # --- Overlay labels and annotations on the namespaces the SAP bundles created ---
+        # The restricted-resources bundles create these namespaces with their
+        # edgelm.sap.com/edge-node-id ownership labels; creating them here
+        # ahead of a bundle would leave namespaces that the bundle must claim.
         NAMESPACES=(edgelm istio-gateways edge-icell edge-icell-secrets edge-icell-ela edge-icell-services)
 
+        echo ""
+        echo "🔍 Checking which namespaces exist..."
+        PRESENT=" "
+        SKIPPED=0
         for NS in "${NAMESPACES[@]}"; do
-          echo "   Creating namespace: ${NS}"
-          oc create namespace "${NS}" --dry-run=client -o yaml | oc apply -f -
+          # --ignore-not-found: empty output means absent; a failing oc is a real error
+          FOUND=$(oc get namespace "${NS}" --ignore-not-found -o name)
+          if [[ -n "${FOUND}" ]]; then
+            PRESENT="${PRESENT}${NS} "
+            echo "   ✅ ${NS}"
+          else
+            SKIPPED=$((SKIPPED + 1))
+            echo "   ⏭️  ${NS}: not created yet, skipped (a later SAP bundle creates it)"
+          fi
         done
-        echo "✅ All namespaces created"
+        if [[ "${PRESENT}" == " " ]]; then
+          echo "❌ None of the SAP namespaces exist: apply the SAP restricted-resources bundles first (apply-rbac)"
+          exit 1
+        fi
+        present() { [[ "${PRESENT}" == *" $1 "* ]]; }
 
         # --- Label namespaces for Service Mesh auto-injection ---
         echo ""
@@ -135,13 +155,16 @@ spec:
         # Namespaces with both istio-injection and edgelm product label
         MESH_NAMESPACES=(edgelm edge-icell edge-icell-ela edge-icell-services istio-gateways)
         for NS in "${MESH_NAMESPACES[@]}"; do
+          present "${NS}" || continue
           echo "   Labeling ${NS} with istio-injection=enabled and edgelm.sap.com/product=edgelm"
           oc label namespace "${NS}" istio-injection=enabled edgelm.sap.com/product=edgelm --overwrite
         done
 
         # edge-icell-secrets gets only the product label (no istio injection)
-        echo "   Labeling edge-icell-secrets with edgelm.sap.com/product=edgelm (no istio injection)"
-        oc label namespace edge-icell-secrets edgelm.sap.com/product=edgelm --overwrite
+        if present edge-icell-secrets; then
+          echo "   Labeling edge-icell-secrets with edgelm.sap.com/product=edgelm (no istio injection)"
+          oc label namespace edge-icell-secrets edgelm.sap.com/product=edgelm --overwrite
+        fi
 
         echo "✅ Namespace labels applied"
 
@@ -149,28 +172,39 @@ spec:
         echo ""
         echo "🔐 Applying SCC security annotations..."
 
-        echo "   edgelm: supplemental-groups=67000/1000"
-        oc annotate namespace edgelm openshift.io/sa.scc.supplemental-groups="67000/1000" --overwrite
+        if present edgelm; then
+          echo "   edgelm: supplemental-groups=67000/1000"
+          oc annotate namespace edgelm openshift.io/sa.scc.supplemental-groups="67000/1000" --overwrite
+        fi
 
-        echo "   edge-icell: uid-range=10000/100, supplemental-groups=1000/100"
-        oc annotate namespace edge-icell openshift.io/sa.scc.uid-range="10000/100" --overwrite
-        oc annotate namespace edge-icell openshift.io/sa.scc.supplemental-groups="1000/100" --overwrite
+        if present edge-icell; then
+          echo "   edge-icell: uid-range=10000/100, supplemental-groups=1000/100"
+          oc annotate namespace edge-icell openshift.io/sa.scc.uid-range="10000/100" --overwrite
+          oc annotate namespace edge-icell openshift.io/sa.scc.supplemental-groups="1000/100" --overwrite
+        fi
 
-        echo "   edge-icell-ela: uid-range=100000/1000, supplemental-groups=100002/1000"
-        oc annotate namespace edge-icell-ela openshift.io/sa.scc.uid-range="100000/1000" --overwrite
-        oc annotate namespace edge-icell-ela openshift.io/sa.scc.supplemental-groups="100002/1000" --overwrite
+        if present edge-icell-ela; then
+          echo "   edge-icell-ela: uid-range=100000/1000, supplemental-groups=100002/1000"
+          oc annotate namespace edge-icell-ela openshift.io/sa.scc.uid-range="100000/1000" --overwrite
+          oc annotate namespace edge-icell-ela openshift.io/sa.scc.supplemental-groups="100002/1000" --overwrite
+        fi
 
-        echo "   edge-icell-services: uid-range=1000000/1000, supplemental-groups=1000002/1000"
-        oc annotate namespace edge-icell-services openshift.io/sa.scc.uid-range="1000000/1000" --overwrite
-        oc annotate namespace edge-icell-services openshift.io/sa.scc.supplemental-groups="1000002/1000" --overwrite
+        if present edge-icell-services; then
+          echo "   edge-icell-services: uid-range=1000000/1000, supplemental-groups=1000002/1000"
+          oc annotate namespace edge-icell-services openshift.io/sa.scc.uid-range="1000000/1000" --overwrite
+          oc annotate namespace edge-icell-services openshift.io/sa.scc.supplemental-groups="1000002/1000" --overwrite
+        fi
 
         echo "✅ SCC annotations applied"
 
-        # --- Verify all namespaces are Active ---
+        # --- Verify the configured namespaces are Active ---
         echo ""
         echo "🔍 Verifying namespace status..."
         ALL_ACTIVE=true
+        CONFIGURED=0
         for NS in "${NAMESPACES[@]}"; do
+          present "${NS}" || continue
+          CONFIGURED=$((CONFIGURED + 1))
           STATUS=$(oc get namespace "${NS}" -o jsonpath='{.status.phase}')
           if [[ "${STATUS}" == "Active" ]]; then
             echo "   ✅ ${NS}: ${STATUS}"
@@ -188,5 +222,5 @@ spec:
         echo ""
         echo "=========================================="
         echo "✅ Namespace preparation completed"
-        echo "   Created and configured ${#NAMESPACES[@]} namespaces"
+        echo "   Configured ${CONFIGURED} namespaces; skipped ${SKIPPED} not created yet"
         echo "=========================================="
