@@ -106,19 +106,20 @@ resource "ibm_container_vpc_cluster" "cluster" {
 
 # ReadWriteMany storage for EIC: the IBM Cloud File Storage for VPC CSI driver
 # add-on provides the ibmc-vpc-file-* storage classes (ROKS VPC only ships the
-# block classes). Default add-on version; the other cluster add-ons are left
-# alone (manage_all_addons is not set).
-resource "ibm_container_addons" "file_storage" {
-  cluster           = ibm_container_vpc_cluster.cluster.id
-  resource_group_id = data.ibm_resource_group.group.id
+# block classes). Enabled with the ibmcloud CLI in its default version, only if
+# it is not enabled yet; the other add-ons are left alone. Not
+# ibm_container_addons: it fails on an add-on that is already enabled unless
+# the version is pinned, and with its default manage_all_addons = true a later
+# apply disables every add-on it does not list.
+resource "terraform_data" "file_storage_addon" {
+  triggers_replace = [ibm_container_vpc_cluster.cluster.id]
 
-  addons {
-    name = "vpc-file-csi-driver"
-  }
-
-  timeouts {
-    create = "30m"
-    update = "30m"
+  provisioner "local-exec" {
+    working_dir = path.module
+    command     = "bash scripts/enable-cluster-addon.sh \"$CLUSTER\" vpc-file-csi-driver"
+    environment = {
+      CLUSTER = ibm_container_vpc_cluster.cluster.id
+    }
   }
 }
 
