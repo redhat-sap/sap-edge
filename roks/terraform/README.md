@@ -49,10 +49,23 @@ Cluster settings worth knowing:
   behind (even with a `Delete` storage class), which is why the
   `roks-teardown` task sweeps them afterwards (see [Destroy](#destroy)).
 - `wait_till = "IngressReady"` with a 3 h create timeout.
-- Storage: ELM and EIC are assumed to work with the cluster's default storage
-  class, VPC Block Storage (ReadWriteOnce; `ibmc-vpc-block-10iops-tier` on
-  ROKS VPC). No ReadWriteMany storage class (VPC File Storage, ODF) is
-  provisioned; add one if an EIC component turns out to need RWX.
+- `openshift_version` only applies when the cluster is created
+  (`ignore_changes = [kube_version]`). IBM applies master patch updates, and an
+  admin may update the master to a newer minor version; a later apply leaves
+  the version alone instead of trying a downgrade, which IBM rejects
+  (`E0144 The cluster cannot be downgraded`). Upgrade an existing cluster with
+  `ibmcloud ks cluster master update`, not by changing the variable.
+- Storage:
+  - ReadWriteOnce: VPC Block Storage, the cluster's default class
+    `ibmc-vpc-block-10iops-tier`. On this 3-zone cluster prefer
+    `ibmc-vpc-block-metro-10iops-tier` (`WaitForFirstConsumer`: the volume is
+    created in the zone of the pod that uses it).
+  - ReadWriteMany (shared file storage for EIC): `ibm_container_addons`
+    enables the IBM Cloud File Storage for VPC CSI driver add-on
+    (`vpc-file-csi-driver`), which provides the `ibmc-vpc-file-*` classes. EIC's
+    shared file system does not work with them as they are: a cluster
+    administrator has to fix the share's permissions once per EIC deployment.
+    Avoid the `-retain` variants of either kind on these ephemeral clusters.
 
 ## Container Registry (ICR)
 
@@ -368,7 +381,7 @@ before you copy it elsewhere. It grants cluster-admin: do not share it.
 | `cluster_name` | (required) | Cluster name, name prefix and ICR namespace; `^[a-z][a-z0-9-]{0,28}[a-z0-9]$` (at most 30 characters), starts with `redhat-` |
 | `region` | `eu-de` | IBM Cloud region |
 | `resource_group` | `redhat-sap-edge-roks-ci` | Existing resource group |
-| `openshift_version` | `4.21_openshift` | `<major>.<minor>_openshift` |
+| `openshift_version` | `4.21_openshift` | `<major>.<minor>_openshift`; used only when the cluster is created |
 | `worker_flavor` | `bx2.16x64` | Worker flavor |
 | `workers_per_zone` | `1` | Workers per zone (at least 2 in total) |
 | `zones` | `["eu-de-1","eu-de-2","eu-de-3"]` | 1-3 zones of `region` |

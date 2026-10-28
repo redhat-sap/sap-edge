@@ -76,6 +76,10 @@ When ODF (OpenShift Data Foundation) is installed, set the shared file system pa
 
 Additionally, set the ODF `ocs-storagecluster-ceph-rbd` storage class as default for RWO/RWX Block volumes to meet most block storage requirements for various services running on OpenShift.
 
+For deployments with a cluster-admin kubeconfig (EIC pods under the `privileged` SCC), use a CephFS storage class that mounts with a generic SELinux context, as described in Red Hat Knowledgebase solution [7137220](https://access.redhat.com/solutions/7137220); otherwise pods sharing the volume lose access to it. Restricted-access deployments are not affected.
+
+On Red Hat OpenShift on IBM Cloud (ROKS) without ODF, IBM Cloud File Storage for VPC needs a workaround for the shared file system: a cluster administrator has to make the share writable for EIC after each EIC deployment.
+
 # External Services Setup
 
 ## Databases

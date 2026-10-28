@@ -95,6 +95,31 @@ resource "ibm_container_vpc_cluster" "cluster" {
 
   # Destroyed before the VPE cleanup hook runs (see terraform_data.vpe_cleanup).
   depends_on = [terraform_data.vpe_cleanup]
+
+  # The version only selects what a new cluster is created with; IBM (patch
+  # updates) or an admin (minor updates) can move the master later, and
+  # applying an older version would try a downgrade, which IBM rejects (E0144).
+  lifecycle {
+    ignore_changes = [kube_version]
+  }
+}
+
+# ReadWriteMany storage for EIC: the IBM Cloud File Storage for VPC CSI driver
+# add-on provides the ibmc-vpc-file-* storage classes (ROKS VPC only ships the
+# block classes). Default add-on version; the other cluster add-ons are left
+# alone (manage_all_addons is not set).
+resource "ibm_container_addons" "file_storage" {
+  cluster           = ibm_container_vpc_cluster.cluster.id
+  resource_group_id = data.ibm_resource_group.group.id
+
+  addons {
+    name = "vpc-file-csi-driver"
+  }
+
+  timeouts {
+    create = "30m"
+    update = "30m"
+  }
 }
 
 ###########################################
