@@ -253,8 +253,9 @@ down.
   need (ROSA already falls back to the hostname; check what `endpoint-tests`
   accepts).
 - Storage classes for ELM on ROKS (block vs file) and whether any EIC
-  component needs RWX. Outcome: the ROKS VPC default storage class (VPC Block
-  Storage, RWO) is assumed for ELM/EIC; no RWX storage class is provisioned
-  (`roks/terraform/README.md`).
+  component needs RWX. Outcome: VPC Block Storage (RWO) for ELM/EIC, and EIC's
+  shared file storage (RWX) from the IBM Cloud File Storage for VPC CSI driver
+  add-on, enabled by Terraform (`ibm_container_addons`, 2026-10-27, after the
+  user confirmed EIC needs a shared file storage class; `roks/terraform/README.md`).
 - Exact params of the new tasks (follow ROSA's names where meaning matches).
 - README/docs placement, and harness tests for the new task scripts.
