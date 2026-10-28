@@ -29,6 +29,7 @@ account-level and have no resource group.
 | Cloud Object Storage instance (standard, global; ROKS on VPC needs it for the internal registry) | `<cluster_name>-cos` |
 | ROKS cluster: `bx2.16x64`, 1 worker per zone across 3 zones, no entitlement (regular OpenShift license), public service endpoint on, outbound traffic protection off | `<cluster_name>` |
 | `terraform_data.vpe_cleanup`: destroy-time hook that deletes the VPE gateways ROKS leaves in the VPC (see [Destroy](#destroy)) | - |
+| `terraform_data.file_storage_addon`: enables the `vpc-file-csi-driver` add-on unless it is already enabled (see the storage notes below) | - |
 | Optional, `deploy_postgres`: IBM Cloud Databases for PostgreSQL 15 (see [Optional managed services](#optional-managed-services)) | `<cluster_name>-postgres` |
 | Optional, `deploy_redis`: IBM Cloud Databases for Redis | `<cluster_name>-redis` |
 | IBM Cloud Container Registry namespace in the region's registry (`de.icr.io`), see [Container Registry](#container-registry-icr) | `<cluster_name>` |
@@ -60,9 +61,15 @@ Cluster settings worth knowing:
     `ibmc-vpc-block-10iops-tier`. On this 3-zone cluster prefer
     `ibmc-vpc-block-metro-10iops-tier` (`WaitForFirstConsumer`: the volume is
     created in the zone of the pod that uses it).
-  - ReadWriteMany (shared file storage for EIC): `ibm_container_addons`
-    enables the IBM Cloud File Storage for VPC CSI driver add-on
-    (`vpc-file-csi-driver`), which provides the `ibmc-vpc-file-*` classes. EIC's
+  - ReadWriteMany (shared file storage for EIC):
+    `terraform_data.file_storage_addon` runs
+    `scripts/enable-cluster-addon.sh`, which enables the IBM Cloud File Storage
+    for VPC CSI driver add-on (`vpc-file-csi-driver`, default version) with
+    the `ibmcloud` CLI unless it is already enabled, and waits for it. It
+    provides the `ibmc-vpc-file-*` classes. The `ibm_container_addons`
+    resource is not used: it fails on an add-on that is already enabled unless
+    the version is pinned, and with its default `manage_all_addons = true` a
+    later apply disables every add-on it does not list. EIC's
     shared file system does not work with them as they are: a cluster
     administrator has to fix the share's permissions once per EIC deployment.
     Avoid the `-retain` variants of either kind on these ephemeral clusters.
@@ -240,6 +247,11 @@ make roks-destroy CLUSTER=redhat-roks-eic-pr123
 
 Other variables go into `roks/terraform/terraform.tfvars` (see
 `terraform.tfvars.example`) or `ROKS_TF_ARGS`.
+
+**Requirements for apply** (`terraform apply` and `make roks-apply`): `bash`,
+`jq` and the `ibmcloud` CLI with the `container-service` plugin, logged in to
+the account (see the destroy requirements below), for
+`terraform_data.file_storage_addon`.
 
 ### Destroy
 
