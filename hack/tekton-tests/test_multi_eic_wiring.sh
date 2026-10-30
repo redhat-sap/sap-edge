@@ -50,14 +50,15 @@ for label, path in (("A", sys.argv[1]), ("B", sys.argv[2])):
     # Valkey is namespaced only and stays parallel.
     check("cell1-deploy-valkey" not in tasks["cell2-deploy-valkey"].get("runAfter", []),
           f"{label}: cell2-deploy-valkey should stay parallel to cell1-deploy-valkey")
-    # apply-rbac downloads exactly the pipeline's component folders.
-    check(task_param(tasks["apply-rbac"], "requiredComponents") == "$(params.restrictedResourcesComponents)",
-          f"{label}: apply-rbac requiredComponents must be $(params.restrictedResourcesComponents)")
     for n in ("1", "2"):
         check(task_param(tasks[f"cell{n}-get-all-accesses"], "instance") == f"eic-{n}",
               f"{label}: cell{n}-get-all-accesses must use instance eic-{n}")
 
     if label == "A":
+        # apply-rbac downloads exactly the pipeline's component folders
+        # (B applies them in two passes: test_multi_stack_two_pass_wiring.sh).
+        check(task_param(tasks["apply-rbac"], "requiredComponents") == "$(params.restrictedResourcesComponents)",
+              "A: apply-rbac requiredComponents must be $(params.restrictedResourcesComponents)")
         check(params["restrictedResourcesComponents"].get("default") == "",
               "A: restrictedResourcesComponents default must stay '' (flat)")
         for n in ("1", "2"):
@@ -72,8 +73,10 @@ for label, path in (("A", sys.argv[1]), ("B", sys.argv[2])):
         check("restrictedResourcesComponents without edge-icell-2" in params["cellCount"]["description"],
               "A: cellCount description must say that 1 needs restrictedResourcesComponents without edge-icell-2")
     else:
-        check(params["restrictedResourcesComponents"].get("default") == "elm-1 edge-icell-1 elm-2 edge-icell-2",
-              "B: restrictedResourcesComponents default must be the fixed two-stack layout")
+        check(params["elmRestrictedResourcesComponents"].get("default") == "elm-1 elm-2",
+              "B: elmRestrictedResourcesComponents default must be the fixed two-stack layout")
+        check(params["eicRestrictedResourcesComponents"].get("default") == "edge-icell-1 edge-icell-2",
+              "B: eicRestrictedResourcesComponents default must be the fixed two-stack layout")
         for n in ("1", "2"):
             check(task_param(tasks[f"cell{n}-get-all-accesses"], "elmKubeconfigFile") == f"edgelm-{n}-kubeconfig",
                   f"B: cell{n}-get-all-accesses must store edgelm-{n}-kubeconfig")

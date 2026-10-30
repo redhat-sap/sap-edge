@@ -9,7 +9,9 @@
 #    folders elm-1/, edge-icell-1/, elm-2/, edge-icell-2/ under
 #    'restricted-resources/pr<N>-multi-stack/' (one set per PR; a sibling of the
 #    dedicated pipeline's 'restricted-resources/pr<N>/', not a subfolder) and
-#    pauses (approval-upload-restricted-resources) until the bundles are uploaded.
+#    waits for the bundles in two passes: wait-elm-zips (elm-N/), then, after
+#    both Edge Nodes are registered and EIC is deployed in ELM, wait-eic-zips
+#    (edge-icell-N/).
 #
 # 2. Ensure the Service Mesh 3.x operator is installed on the target cluster
 #    (via OperatorHub or CLI before running this pipeline)
@@ -87,15 +89,20 @@ spec:
       value: "restricted-resources/pr{{ pull_request_number }}-multi-stack/"
     # S3 folders under s3Prefix, one SAP bundle zip each (upload as downloaded):
     #   elm-1/         ELM bundle of Edge Node 1 (creates edgelm-1)
-    #   edge-icell-1/  EIC bundle of Edge Node 1 (edge-icell-1, istio-gateways-1, ...)
     #   elm-2/         ELM bundle of Edge Node 2 (creates edgelm-2)
+    #   edge-icell-1/  EIC bundle of Edge Node 1 (edge-icell-1, istio-gateways-1, ...)
     #   edge-icell-2/  EIC bundle of Edge Node 2
-    # The pipeline creates these folders and pauses at the upload gate;
-    # apply-rbac then downloads only these folders and fails if one is empty.
-    # Apply order comes from the zip type (ELM first), not from this list.
-    # Same as the pipeline default (fixed at two Edge Nodes); kept for visibility.
-    - name: restrictedResourcesComponents
-      value: "elm-1 edge-icell-1 elm-2 edge-icell-2"
+    # The pipeline creates all four folders and applies them in two passes:
+    #   1. wait-elm-zips -> apply-rbac-elm (ELM folders only) -> meshes,
+    #      namespace labels, one restricted kubeconfig per Edge Node
+    #   2. register the Edge Nodes and deploy EIC in ELM, upload the EIC zips:
+    #      wait-eic-zips -> apply-rbac-eic (EIC folders only) -> EIC namespace labels
+    # Earlier zips stay in the folders (latest version per folder wins).
+    # Same as the pipeline defaults (fixed at two Edge Nodes); kept for visibility.
+    - name: elmRestrictedResourcesComponents
+      value: "elm-1 elm-2"
+    - name: eicRestrictedResourcesComponents
+      value: "edge-icell-1 edge-icell-2"
 
     # --- EIC services parameters ---
     - name: postgresVersion
