@@ -5,8 +5,10 @@
 
 # Prerequisites:
 # 1. Ensure the ObjectBucketClaim (OBC) 'sap-eic-restricted-cluster-config-resources'
-#    is created and bound in the pipeline namespace, with restricted-resources zip files
-#    uploaded to the S3 bucket under the 'restricted-resources/' prefix.
+#    is created and bound in the pipeline namespace. The pipeline creates the folders
+#    elm/ and edge-icell/ under 'restricted-resources/<hostedClusterName>/' and waits
+#    for the bundles in two passes: wait-elm-zip (elm/), then, after the Edge Node is
+#    registered and EIC is deployed in ELM, wait-eic-zip (edge-icell/).
 #
 # 2. Ensure the Service Mesh 3.x operator is installed on the target cluster
 #    (via OperatorHub or CLI before running this pipeline)
@@ -76,8 +78,10 @@ spec:
       value: "stable-3.2"
     - name: obcName
       value: "sap-eic-restricted-cluster-config-resources"
+    # One folder per cluster (elm/ and edge-icell/ below it); earlier zips stay
+    # (latest version per folder wins)
     - name: s3Prefix
-      value: "restricted-resources/"
+      value: "restricted-resources/hcp-ossm-eic-pr{{ pull_request_number }}/"
 
     # --- EIC services parameters ---
     - name: postgresVersion
