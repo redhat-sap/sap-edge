@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 SAP edge team
+# SPDX-FileCopyrightText: 2025 SAP edge team
 # SPDX-FileContributor: Manjun Jiao (@mjiao)
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -6,30 +6,26 @@
 # Prerequisites:
 # 1. Ensure the ObjectBucketClaim (OBC) 'sap-eic-restricted-cluster-config-resources'
 #    is created and bound in the pipeline namespace. The pipeline creates the
-#    folders elm-1/, edge-icell-1/, elm-2/, edge-icell-2/ under
-#    'restricted-resources/pr<N>-multi-stack/' (one set per PR; a sibling of the
-#    dedicated pipeline's 'restricted-resources/pr<N>/', not a subfolder) and
-#    waits for the bundles in two passes: wait-elm-zips (elm-N/), then, after
-#    both Edge Nodes are registered and EIC is deployed in ELM, wait-eic-zips
+#    folders elm/, edge-icell-1/, edge-icell-2/ under 'restricted-resources/pr<N>/' (one set per PR)
+#    and waits for the bundles in two passes: wait-elm-zip (elm/), then, after the
+#    Edge Node is registered and the EIC cells are deployed in ELM, wait-eic-zips
 #    (edge-icell-N/).
 #
 # 2. Ensure the Service Mesh 3.x operator is installed on the target cluster
 #    (via OperatorHub or CLI before running this pipeline)
 #
-# Scenario: multi-stack (2 Edge Nodes, dedicated mesh each), without proxy
-#   (multi-EIC topology B, KBA 7149262 "Scenario 2: Multiple Edge Nodes with
-#   Dedicated Meshes"; minimum releases ELM 1.64, EIC 8.48)
-#   - Edge Node N = ELM edgelm-N + EIC edge-icell-N (gateway istio-gateways-N)
-#   - One Istio control plane per Edge Node: istio-system-sap-edge-N / sap-mesh-istio-N
-#     (discovery selector istio-discovery=sap-edge-mesh-N, revision-based injection)
-#   - One restricted kubeconfig per Edge Node (Secret edgelm-kubeconfig-generated-<cluster>-N)
-#   - Shared PostgreSQL, one Redis/Valkey per EIC cell
+# Scenario: Dedicated SAP service mesh (istio-system-sap-edge) without proxy,
+#   two Edge Integration Cells sharing one edgelm (multi-EIC topology A, see
+#   .tekton/README.md, "Multi-EIC restricted resources")
+#   - Deploys an independent Istio control plane 'sap-mesh-istio'
+#   - Uses revision-based sidecar injection (istio.io/rev=sap-mesh-istio)
+#   - Isolated from any shared mesh on the same cluster
 
 ---
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: hcp-ossm3-multistack-pr{{ pull_request_number }}-
+  generateName: hcp-ossm3-dedicated-pr{{ pull_request_number }}-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
@@ -38,7 +34,7 @@ metadata:
     pipelinesascode.tekton.dev/cancel-in-progress: "true"
 spec:
   pipelineRef:
-    name: hcp-ossm3-multi-stack-validation-pipeline
+    name: hcp-ossm3-dedicated-validation-pipeline
   timeouts:
     pipeline: "336h"      # Total pipeline timeout (14 days)
     tasks: "335h"         # Individual task timeout (tasks + finally must be <= pipeline)
@@ -53,11 +49,12 @@ spec:
       value: "{{ pull_request_number }}"
 
     # --- HCP cluster parameters ---
-    # hostedClusterName: one hosted cluster per PR
-    # Pattern: {prefix}-pr{number} (add the hubClusterName to the prefix when
-    # the same PR runs against several hubs)
+    # hostedClusterName: include hubClusterName to avoid collisions across hubs
+    # Pattern: {prefix}-{hubClusterName}-pr{number}
     - name: hostedClusterName
-      value: "hcp-multistack-pr{{ pull_request_number }}"
+      value: "hcp-dedicated-eli-pr{{ pull_request_number }}"
+    # hostedClusterName: include hubClusterName to avoid collisions across hubs
+    # Pattern: {prefix}-{hubClusterName}-pr{number}
     - name: hostedClusterNamespace
       value: "clusters"
     - name: releaseImage
@@ -86,23 +83,26 @@ spec:
     - name: obcName
       value: "sap-eic-restricted-cluster-config-resources"
     - name: s3Prefix
-      value: "restricted-resources/pr{{ pull_request_number }}-multi-stack/"
+      value: "restricted-resources/pr{{ pull_request_number }}/"
     # S3 folders under s3Prefix, one SAP bundle zip each (upload as downloaded):
-    #   elm-1/         ELM bundle of Edge Node 1 (creates edgelm-1)
-    #   elm-2/         ELM bundle of Edge Node 2 (creates edgelm-2)
-    #   edge-icell-1/  EIC bundle of Edge Node 1 (edge-icell-1, istio-gateways-1, ...)
-    #   edge-icell-2/  EIC bundle of Edge Node 2
-    # The pipeline creates all four folders and applies them in two passes:
-    #   1. wait-elm-zips -> apply-rbac-elm (ELM folders only) -> meshes,
-    #      namespace labels, one restricted kubeconfig per Edge Node
-    #   2. register the Edge Nodes and deploy EIC in ELM, upload the EIC zips:
-    #      wait-eic-zips -> apply-rbac-eic (EIC folders only) -> EIC namespace labels
+    #   elm/           ELM bundle of the (single, shared) Edge Node (creates edgelm)
+    #   edge-icell-1/  EIC bundle of cell 1 (edge-icell-1, istio-gateways-1, ...)
+    #   edge-icell-2/  EIC bundle of cell 2 (edge-icell-2, istio-gateways-2, ...)
+    # The pipeline creates these folders and applies them in two passes:
+    #   1. wait-elm-zip -> apply-rbac-elm (elm/ only) -> mesh, edgelm labels,
+    #      restricted kubeconfig
+    #   2. register the Edge Node and deploy the EIC cells in ELM, upload the EIC
+    #      zips: wait-eic-zips -> apply-rbac-eic (EIC folders only) -> EIC labels
     # Earlier zips stay in the folders (latest version per folder wins).
-    # Same as the pipeline defaults (fixed at two Edge Nodes); kept for visibility.
+    # Same as the pipeline defaults; kept for visibility.
     - name: elmRestrictedResourcesComponents
-      value: "elm-1 elm-2"
+      value: "elm"
     - name: eicRestrictedResourcesComponents
       value: "edge-icell-1 edge-icell-2"
+    # Number of EIC cells to validate. With "1", every cell2-* task is skipped;
+    # also drop edge-icell-2 from eicRestrictedResourcesComponents above.
+    - name: cellCount
+      value: "2"
 
     # --- EIC services parameters ---
     - name: postgresVersion
