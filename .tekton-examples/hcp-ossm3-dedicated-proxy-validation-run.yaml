@@ -6,8 +6,9 @@
 # Prerequisites:
 # 1. Ensure the ObjectBucketClaim (OBC) 'sap-eic-restricted-cluster-config-resources'
 #    is created and bound in the pipeline namespace. The pipeline creates the
-#    folders under 'restricted-resources/pr<N>/' (one set per PR) and pauses
-#    (approval-upload-restricted-resources) until the bundles are uploaded.
+#    folders under 'restricted-resources/pr<N>/' (one set per PR) and waits for
+#    the bundles in two passes: wait-elm-zip (elm/), then, after the Edge Node is
+#    registered and EIC is deployed in ELM, wait-eic-zips (edge-icell-1/).
 #
 # 2. Ensure the Service Mesh 3.x operator is installed on the target cluster
 #    (via OperatorHub or CLI before running this pipeline)
@@ -29,9 +30,8 @@
 #   - Creates a ServiceEntry in edgelm namespace to permit proxy connections
 #   - ELM registration should have "Enable HTTP Proxy" checked
 #   - All SAP namespaces follow the -N naming scheme (edge-icell-1, istio-gateways-1, etc.)
-#   - restrictedResourcesComponents must exclude edge-icell-2 when cellCount: "1"
-#     (apply-rbac fails on an empty folder)
-#   - The upload gate pauses every run (ApprovalTasks cannot be skipped conditionally)
+#   - eicRestrictedResourcesComponents must exclude edge-icell-2 when cellCount: "1"
+#     (wait-eic-zips waits until every listed folder holds a zip)
 
 ---
 apiVersion: tekton.dev/v1
@@ -96,8 +96,10 @@ spec:
       value: "sap-eic-restricted-cluster-config-resources"
     - name: s3Prefix
       value: "restricted-resources/pr{{ pull_request_number }}/"
-    - name: restrictedResourcesComponents
-      value: "elm edge-icell-1"
+    - name: elmRestrictedResourcesComponents
+      value: "elm"
+    - name: eicRestrictedResourcesComponents
+      value: "edge-icell-1"
     - name: cellCount
       value: "1"
 

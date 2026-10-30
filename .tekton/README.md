@@ -262,23 +262,22 @@ restricted-resources/pr<N>-multi-stack/
 
 - One bundle zip per folder; the latest version in a folder wins. To add a
   cell, add a folder; to upgrade a cell, put the newer zip into its folder.
-- Topology A creates the folders listed in `restrictedResourcesComponents`
-  (for example `elm edge-icell-1 edge-icell-2`) and pauses at
-  `approval-upload-restricted-resources` with upload instructions and each
-  folder's contents. After the approval, `apply-rbac` fails if a listed folder
-  holds no zip.
-- Topology B creates the folders of `elmRestrictedResourcesComponents`
-  (`elm-1 elm-2`) and `eicRestrictedResourcesComponents`
-  (`edge-icell-1 edge-icell-2`) and applies them in two passes, because the EIC
-  zips can only be downloaded after the Edge Nodes are registered:
-  1. `wait-elm-zips` waits until each ELM folder holds a zip, `apply-rbac-elm`
-     applies them, then the meshes, the `edgelm-N` labels and one restricted
-     kubeconfig per Edge Node follow, then PostgreSQL and Redis/Valkey.
-  2. Register both Edge Nodes with their kubeconfigs, deploy EIC in ELM and
-     upload the EIC zips: `wait-eic-zips` waits for them, `apply-rbac-eic`
-     applies them and `prepare-namespaces-multi-stack-eic` puts the EIC
-     namespaces on their meshes. Confirm the EIC resources in ELM once
-     `approval-elm-eic-iflow-deployed` is waiting.
+- Both pipelines create the folders of `elmRestrictedResourcesComponents`
+  (topology A `elm`, topology B `elm-1 elm-2`) and
+  `eicRestrictedResourcesComponents` (`edge-icell-1 edge-icell-2`; topology A
+  with `cellCount: "1"` lists only `edge-icell-1`) and apply them in two
+  passes, because the EIC zips can only be downloaded after the Edge Node is
+  registered:
+  1. `wait-elm-zip` (topology B: `wait-elm-zips`) waits until each ELM folder
+     holds a zip and `apply-rbac-elm` applies them. Then the mesh, the `edgelm`
+     labels and the restricted kubeconfig follow (topology B: one mesh and one
+     kubeconfig per Edge Node), then PostgreSQL and Redis/Valkey.
+  2. Register the Edge Node (topology B: both) with its kubeconfig, deploy EIC
+     in ELM and upload the EIC zips: `wait-eic-zips` waits for them,
+     `apply-rbac-eic` applies them, and the EIC namespaces join the mesh
+     (topology A: `prepare-namespaces-eic` and `configure-mesh-eic`, topology B:
+     `prepare-namespaces-multi-stack-eic`). Confirm the EIC resources in ELM
+     once `approval-elm-eic-iflow-deployed` is waiting.
 
   The waits are tasks, not approvals; their logs show the upload plan. Zips
   from an earlier run of the same PR stay in the folders, so a folder that
@@ -321,7 +320,8 @@ The secrets namespaces are in the mesh's discovery scope but get no sidecars
   `edgelm.sap.com/product=edgelm`, replaces `istio-injection` with
   `istio.io/rev=sap-mesh-istio` and sets the SCC annotations per role. Then
   `ossm3-configure-dedicated-mesh` creates the control plane and labels all SAP
-  namespaces `istio-discovery=sap-edge-mesh`.
+  namespaces `istio-discovery=sap-edge-mesh`. Both run once after the ELM pass
+  and again after the EIC pass (`prepare-namespaces-eic`, `configure-mesh-eic`).
 - Topology B runs the other way round, because the revision label is read from
   the running control plane: `ossm3-configure-multi-stack-mesh` creates one
   control plane per stack (namespace `istio-system-sap-edge-N`, Istio
