@@ -286,9 +286,11 @@ restricted-resources/pr<N>-multi-stack/
   (`ossm3-download-and-apply-rbac`, parameter `requiredComponents`) download
   only the listed folders; other folders below the prefix are never applied.
 - An empty `restrictedResourcesComponents` means a flat prefix: only the zips
-  directly under `s3Prefix` are applied, as one component. The single-EIC
-  pipelines (`hcp-ossm3-validation`, ARO, ROSA) use `restricted-resources/`
-  this way.
+  directly under `s3Prefix` are applied, as one component. The single-EIC ARO
+  and ROSA pipelines use `restricted-resources/` this way.
+- The single-EIC HCP pipeline (`hcp-ossm3-validation`) uses one folder per
+  cluster, `restricted-resources/<hostedClusterName>/` with `elm/` and
+  `edge-icell/`, and the same two passes (`wait-elm-zip`, `wait-eic-zip`).
 
 ### Apply order
 

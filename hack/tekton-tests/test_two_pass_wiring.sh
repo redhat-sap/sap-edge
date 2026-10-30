@@ -59,7 +59,10 @@ SPECS = {
         },
         "task_refs": {"prepare-namespaces-multi-stack-eic": "ossm3-prepare-namespaces-multi-stack"},
         "run_files": {
-            "hcp-ossm3-multi-stack-validation-run.yaml": ("elm-1 elm-2", "edge-icell-1 edge-icell-2"),
+            "hcp-ossm3-multi-stack-validation-run.yaml": {
+                "elmRestrictedResourcesComponents": "elm-1 elm-2",
+                "eicRestrictedResourcesComponents": "edge-icell-1 edge-icell-2",
+            },
         },
     },
     "hcp-ossm3-dedicated-validation-pipeline": {
@@ -88,8 +91,46 @@ SPECS = {
             "configure-mesh-eic": "ossm3-configure-dedicated-mesh",
         },
         "run_files": {
-            "hcp-ossm3-dedicated-validation-run.yaml": ("elm", "edge-icell-1 edge-icell-2"),
-            "hcp-ossm3-dedicated-proxy-validation-run.yaml": ("elm", "edge-icell-1"),
+            "hcp-ossm3-dedicated-validation-run.yaml": {
+                "elmRestrictedResourcesComponents": "elm",
+                "eicRestrictedResourcesComponents": "edge-icell-1 edge-icell-2",
+            },
+            "hcp-ossm3-dedicated-proxy-validation-run.yaml": {
+                "elmRestrictedResourcesComponents": "elm",
+                "eicRestrictedResourcesComponents": "edge-icell-1",
+            },
+        },
+    },
+    "hcp-ossm3-validation-pipeline": {
+        "elm_default": "elm",
+        "eic_default": "edge-icell",
+        "waits": {
+            "wait-elm-zip": (ELM, ("elm/",), ()),
+            "wait-eic-zip": (EIC, ("edge-icell/",), (KUBECONFIG_SECRET,)),
+        },
+        "run_after": {
+            "wait-elm-zip": {"prepare-restricted-resources-prefix"},
+            "apply-rbac-elm": {"verify-operators", "wait-elm-zip"},
+            "prepare-namespaces": {"apply-rbac-elm"},
+            "configure-mesh": {"prepare-namespaces"},
+            "generate-sa-based-kubeconfig": {"configure-mesh"},
+            # The optional browser session drives registration; skipped when disabled
+            "wait-eic-zip": {"get-all-accesses", "sap-browser"},
+            "apply-rbac-eic": {"wait-eic-zip"},
+            "prepare-namespaces-eic": {"apply-rbac-eic"},
+            "configure-mesh-eic": {"prepare-namespaces-eic"},
+            "enable-monitoring": {"configure-mesh-eic"},
+            "approval-elm-eic-iflow-deployed": {"configure-mesh-eic", "enable-monitoring"},
+        },
+        "task_refs": {
+            "prepare-namespaces-eic": "ossm3-prepare-namespaces",
+            "configure-mesh-eic": "ossm3-configure-mesh",
+        },
+        "run_files": {
+            # One folder per cluster, never the shared flat restricted-resources/
+            "hcp-ossm3-validation-run.yaml": {
+                "s3Prefix": "restricted-resources/hcp-ossm-eic-pr{{ pull_request_number }}/",
+            },
         },
     },
 }
@@ -174,25 +215,22 @@ for name, spec in SPECS.items():
         check(tasks.get(task_name, {}).get("taskRef", {}).get("name") == ref,
               f"{label}: {task_name} must re-run {ref}")
 
-    # Run files pass the two component lists and nothing stale; the active
-    # copy in .tekton/ (if any) must match the example.
-    for run_file, (elm, eic) in spec["run_files"].items():
+    # Run files pass the expected values and nothing stale; the active copy in
+    # .tekton/ (if any) must match the example.
+    for run_file, expected in spec["run_files"].items():
         example = os.path.join(EXAMPLES, run_file)
         active = os.path.join(ROOT, run_file)
         if os.path.exists(active):
             with open(active, "rb") as a, open(example, "rb") as e:
                 check(a.read() == e.read(), f"{active} and {example} must be identical")
         run_params = {p["name"]: p["value"] for p in load(example)["spec"]["params"]}
-        check(run_params.get("elmRestrictedResourcesComponents") == elm,
-              f"{run_file}: elmRestrictedResourcesComponents must be {elm!r}")
-        check(run_params.get("eicRestrictedResourcesComponents") == eic,
-              f"{run_file}: eicRestrictedResourcesComponents must be {eic!r}")
+        for param, value in expected.items():
+            check(run_params.get(param) == value, f"{run_file}: {param} must be {value!r}")
         check("restrictedResourcesComponents" not in run_params,
               f"{run_file}: restrictedResourcesComponents is no longer a pipeline param")
 
 # No pipeline may still apply restricted resources in one pass
 NOT_YET_TWO_PASS = {
-    "hcp-ossm3-validation-pipeline",
     "aro-eic-full-test-pipeline",
     "rosa-eic-full-test-pipeline",
 }
