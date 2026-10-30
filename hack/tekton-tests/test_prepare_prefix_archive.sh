@@ -74,14 +74,19 @@ if [[ "${TASK_RC}" -ne 0 ]]; then
 fi
 
 # Check that mv was called for both components with correct flags
-if ! grep -qF 's3 mv s3://bkt/restricted-resources/c1/elm/ s3://bkt/restricted-resources/c1/archive/' "${AWS_LOG}"; then
+if ! grep -qF 's3 mv s3://bkt/restricted-resources/c1/elm/ s3://bkt/restricted-resources/c1/archive/ ' "${AWS_LOG}"; then
   cat "${AWS_LOG}"
   fail "aws s3 mv for elm/ not found in log"
 fi
 
-if ! grep -qF 's3 mv s3://bkt/restricted-resources/c1/edge-icell/ s3://bkt/restricted-resources/c1/archive/' "${AWS_LOG}"; then
+if ! grep -qF 's3 mv s3://bkt/restricted-resources/c1/edge-icell/ s3://bkt/restricted-resources/c1/archive/ ' "${AWS_LOG}"; then
   cat "${AWS_LOG}"
   fail "aws s3 mv for edge-icell/ not found in log"
+fi
+
+# One flat archive/ folder: no timestamp or component subfolders
+if grep -E 's3 mv .* s3://bkt/restricted-resources/c1/archive/[^ ]' "${AWS_LOG}"; then
+  fail "mv must target archive/ directly, without subfolders"
 fi
 
 # Check that mv includes the correct filters
