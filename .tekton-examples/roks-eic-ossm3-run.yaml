@@ -134,7 +134,7 @@ spec:
     - name: publicDNS
       value: "false"
     - name: skipAutomatedTests
-      value: "false"
+      value: "true"
     - name: jiraSecretName
       value: "jira-secret-mj"
     - name: jiraIssueKey
