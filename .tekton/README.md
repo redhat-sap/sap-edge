@@ -262,15 +262,30 @@ restricted-resources/pr<N>-multi-stack/
 
 - One bundle zip per folder; the latest version in a folder wins. To add a
   cell, add a folder; to upgrade a cell, put the newer zip into its folder.
-- The pipelines create the folders listed in `restrictedResourcesComponents`
-  (for example `elm edge-icell-1 edge-icell-2` in topology A; topology B
-  defaults to `elm-1 edge-icell-1 elm-2 edge-icell-2`) and pause at
+- Topology A creates the folders listed in `restrictedResourcesComponents`
+  (for example `elm edge-icell-1 edge-icell-2`) and pauses at
   `approval-upload-restricted-resources` with upload instructions and each
   folder's contents. After the approval, `apply-rbac` fails if a listed folder
   holds no zip.
-- `apply-rbac` (`ossm3-download-and-apply-rbac`, parameter
-  `requiredComponents`) downloads only the listed folders; other folders below
-  the prefix are never applied.
+- Topology B creates the folders of `elmRestrictedResourcesComponents`
+  (`elm-1 elm-2`) and `eicRestrictedResourcesComponents`
+  (`edge-icell-1 edge-icell-2`) and applies them in two passes, because the EIC
+  zips can only be downloaded after the Edge Nodes are registered:
+  1. `wait-elm-zips` waits until each ELM folder holds a zip, `apply-rbac-elm`
+     applies them, then the meshes, the `edgelm-N` labels and one restricted
+     kubeconfig per Edge Node follow, then PostgreSQL and Redis/Valkey.
+  2. Register both Edge Nodes with their kubeconfigs, deploy EIC in ELM and
+     upload the EIC zips: `wait-eic-zips` waits for them, `apply-rbac-eic`
+     applies them and `prepare-namespaces-multi-stack-eic` puts the EIC
+     namespaces on their meshes. Confirm the EIC resources in ELM once
+     `approval-elm-eic-iflow-deployed` is waiting.
+
+  The waits are tasks, not approvals; their logs show the upload plan. Zips
+  from an earlier run of the same PR stay in the folders, so a folder that
+  already holds a zip does not wait.
+- `apply-rbac`, `apply-rbac-elm` and `apply-rbac-eic`
+  (`ossm3-download-and-apply-rbac`, parameter `requiredComponents`) download
+  only the listed folders; other folders below the prefix are never applied.
 - An empty `restrictedResourcesComponents` means a flat prefix: only the zips
   directly under `s3Prefix` are applied, as one component. The single-EIC
   pipelines (`hcp-ossm3-validation`, ARO, ROSA) use `restricted-resources/`
@@ -312,7 +327,8 @@ The secrets namespaces are in the mesh's discovery scope but get no sidecars
   control plane per stack (namespace `istio-system-sap-edge-N`, Istio
   `sap-mesh-istio-N`, selector `istio-discovery=sap-edge-mesh-N`), then
   `ossm3-prepare-namespaces-multi-stack` labels each stack's namespaces with the
-  active revision of its mesh.
+  active revision of its mesh: `edgelm-N` after the ELM pass, and again
+  (`prepare-namespaces-multi-stack-eic`) the EIC namespaces after the EIC pass.
 
 ### Backing services per cell
 
