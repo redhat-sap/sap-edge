@@ -67,8 +67,11 @@ spec:
       value: "stable-3.3"
     - name: obcName
       value: "sap-eic-restricted-cluster-config-resources"
+    # One folder per cluster: the pipeline creates elm/ and edge-icell/ below it
+    # and waits for the ELM zip, then (after registration and EIC deployment in
+    # ELM) for the EIC zip; earlier zips stay (latest version per folder wins)
     - name: s3Prefix
-      value: "restricted-resources/"
+      value: "restricted-resources/rosa-ossm-pr{{ pull_request_number }}/"
     - name: terraformStateS3Bucket
       value: "eic-test-rosa-terraform-state"
     - name: terraformStateS3Key

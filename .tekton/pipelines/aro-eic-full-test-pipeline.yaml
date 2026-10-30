@@ -8,7 +8,7 @@ kind: Pipeline
 metadata:
   name: aro-eic-full-test-pipeline
   annotations:
-    description: "Complete SAP Edge Integration Cell validation pipeline: deploys ARO with Azure services (PostgreSQL, Redis, Quay Storage via Bicep), Quay registry operator, runs comprehensive endpoint tests, and tears down infrastructure"
+    description: "Complete SAP Edge Integration Cell validation pipeline: deploys ARO with Azure services (PostgreSQL, Redis, Quay Storage via Bicep), Quay registry operator, applies the OSSM3 restricted-resources in two passes (ELM bundle first, EIC bundle after the Edge Node is registered), runs comprehensive endpoint tests, and tears down infrastructure"
 spec:
   params:
     - name: repoUrl
@@ -93,8 +93,16 @@ spec:
       default: "sap-eic-restricted-cluster-config-resources"
     - name: s3Prefix
       type: string
-      description: "S3 key prefix holding the restricted-resources zip files directly (flat prefix; subfolders such as per-PR folders are ignored)"
+      description: "S3 key prefix of this deployment's restricted-resources folders (e.g. restricted-resources/<aroClusterName>/)"
       default: "restricted-resources/"
+    - name: elmRestrictedResourcesComponents
+      type: string
+      description: "ELM component folder under s3Prefix. The pipeline creates it, waits until it holds a zip (wait-elm-zip) and applies only it in the first pass (apply-rbac-elm)."
+      default: "elm"
+    - name: eicRestrictedResourcesComponents
+      type: string
+      description: "EIC component folder under s3Prefix (uploaded after the Edge Node is registered and EIC is deployed in ELM). The pipeline creates it, waits until it holds a zip (wait-eic-zip) and applies only it in the second pass (apply-rbac-eic)."
+      default: "edge-icell"
     - name: enableMasterScheduling
       type: string
       description: "Whether to make master nodes schedulable (true) or leave them unschedulable (false). Set to false when worker nodes provide enough capacity."
@@ -196,6 +204,41 @@ spec:
         - name: pullSecretName
           value: $(params.pullSecretName)
 
+    # Create the S3 folders elm/ and edge-icell/ under s3Prefix and render the
+    # upload instructions (parallel with the cluster deployment). Earlier zips
+    # stay (no archive): a re-run reuses them, the latest version per folder wins.
+    - name: prepare-restricted-resources-prefix
+      runAfter: [preflight-check]
+      taskRef: { name: ossm3-prepare-restricted-resources-prefix }
+      params:
+        - name: obcName
+          value: $(params.obcName)
+        - name: s3Prefix
+          value: $(params.s3Prefix)
+        - name: components
+          value: "$(params.elmRestrictedResourcesComponents) $(params.eicRestrictedResourcesComponents)"
+
+    # Wait for the ELM zip (first pass; the EIC zip can only be downloaded after
+    # the Edge Node is registered with the restricted kubeconfig, see
+    # wait-eic-zip). The log shows the upload plan.
+    - name: wait-elm-zip
+      runAfter: [prepare-restricted-resources-prefix]
+      taskRef: { name: ossm3-wait-for-restricted-resources }
+      params:
+        - name: obcName
+          value: $(params.obcName)
+        - name: s3Prefix
+          value: $(params.s3Prefix)
+        - name: components
+          value: $(params.elmRestrictedResourcesComponents)
+        - name: instructions
+          value: |
+            ARO cluster $(params.aroClusterName), first pass: in Edge Lifecycle Management, add the Edge Node
+            with restricted access and upload its ELM restricted-resources zip as downloaded to the elm/
+            folder (latest version wins). The EIC zip (edge-icell/) comes later, after the Edge Node is
+            registered (wait-eic-zip); a zip already in that folder is applied in the second pass.
+            $(tasks.prepare-restricted-resources-prefix.results.uploadPlan)
+
     # Install Service Mesh 3.x operator on target cluster
     - name: verify-operators
       runAfter: [validate-and-get-access]
@@ -211,9 +254,10 @@ spec:
         - name: source
           workspace: source
 
-    # Download and apply RBAC permissions from S3 (restricted-access resources)
-    - name: apply-rbac
-      runAfter: [verify-operators]
+    # Download and apply the ELM restricted-access resources (first pass); the
+    # EIC bundle follows in apply-rbac-eic
+    - name: apply-rbac-elm
+      runAfter: [verify-operators, wait-elm-zip]
       taskRef: { name: ossm3-download-and-apply-rbac }
       params:
         - name: hostedClusterName
@@ -222,15 +266,18 @@ spec:
           value: $(params.obcName)
         - name: s3Prefix
           value: $(params.s3Prefix)
+        - name: requiredComponents
+          value: $(params.elmRestrictedResourcesComponents)
         - name: useWorkspaceKubeconfig
           value: "true"
       workspaces:
         - name: source
           workspace: source
 
-    # Prepare namespaces with labels and SCC annotations
+    # Prepare namespaces with labels and SCC annotations (first pass: edgelm;
+    # the EIC namespaces follow in prepare-namespaces-eic)
     - name: prepare-namespaces
-      runAfter: [apply-rbac]
+      runAfter: [apply-rbac-elm]
       taskRef: { name: ossm3-prepare-namespaces }
       params:
         - name: hostedClusterName
@@ -267,9 +314,98 @@ spec:
         - name: source
           workspace: source
 
-    # Manual approval gate after OSSM3 setup and Quay deployment
+    # Second pass (EIC). Every task carries the skipEicValidation gate: a task
+    # skipped by its own `when` does not block the tasks that run after it, so
+    # apply-rbac-eic would otherwise run without a zip.
+    # Wait for the EIC zip (log: what to do in ELM and the upload plan); after
+    # the registry, which ELM needs for the Edge Node.
+    - name: wait-eic-zip
+      runAfter: [generate-sa-based-kubeconfig, deploy-quay]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
+      taskRef: { name: ossm3-wait-for-restricted-resources }
+      params:
+        - name: obcName
+          value: $(params.obcName)
+        - name: s3Prefix
+          value: $(params.s3Prefix)
+        - name: components
+          value: $(params.eicRestrictedResourcesComponents)
+        - name: instructions
+          value: |
+            ARO cluster $(params.aroClusterName), second pass: the ELM resources are applied and the mesh is
+            running; the Azure PostgreSQL/Redis connection data is in the validate-and-get-access log.
+            1. Register the cluster in ELM with the restricted kubeconfig in Secret
+               edgelm-kubeconfig-generated-$(params.aroClusterName) (check "Restricted Access").
+            2. Deploy Edge Integration Cell (EIC) on that Edge Node.
+            3. Upload the EIC restricted-resources zip as downloaded to the edge-icell/ folder.
+            Confirm the EIC resources as applied in ELM only once approval-elm-eic-iflow-deployed is
+            waiting: apply-rbac-eic, prepare-namespaces-eic and configure-mesh-eic run first, so the
+            EIC pods start with their sidecars.
+            $(tasks.prepare-restricted-resources-prefix.results.uploadPlan)
+
+    # Download and apply the EIC restricted-access resources (second pass)
+    - name: apply-rbac-eic
+      runAfter: [wait-eic-zip]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
+      taskRef: { name: ossm3-download-and-apply-rbac }
+      params:
+        - name: hostedClusterName
+          value: $(params.aroClusterName)
+        - name: obcName
+          value: $(params.obcName)
+        - name: s3Prefix
+          value: $(params.s3Prefix)
+        - name: requiredComponents
+          value: $(params.eicRestrictedResourcesComponents)
+        - name: useWorkspaceKubeconfig
+          value: "true"
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Labels and SCC annotations for the EIC namespaces
+    - name: prepare-namespaces-eic
+      runAfter: [apply-rbac-eic]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
+      taskRef: { name: ossm3-prepare-namespaces }
+      params:
+        - name: hostedClusterName
+          value: $(params.aroClusterName)
+        - name: useWorkspaceKubeconfig
+          value: "true"
+      workspaces:
+        - name: source
+          workspace: source
+
+    # The EIC namespaces join the mesh
+    - name: configure-mesh-eic
+      runAfter: [prepare-namespaces-eic]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
+      taskRef: { name: ossm3-configure-mesh }
+      params:
+        - name: hostedClusterName
+          value: $(params.aroClusterName)
+        - name: useWorkspaceKubeconfig
+          value: "true"
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Manual approval gate after OSSM3 setup (both passes) and Quay deployment
     - name: approval-elm-eic-iflow-deployed
-      runAfter: [deploy-quay, generate-sa-based-kubeconfig]
+      runAfter: [deploy-quay, configure-mesh-eic]
       when:
         - input: $(params.skipEicValidation)
           operator: in
@@ -292,10 +428,13 @@ spec:
 
             Restricted kubeconfig stored as Secret 'edgelm-kubeconfig-generated-$(params.aroClusterName)'.
 
+            The restricted resources were applied in two passes (ELM first, then EIC after the Edge Node
+            was registered; registration, EIC deployment and the EIC zip upload happened before this gate,
+            see wait-eic-zip).
+
             🔧 Please complete the following manually:
-            1. Register the cluster in ELM (use restricted kubeconfig, check "Restricted Access")
-            2. Deploy Edge Integration Cell (EIC)
-            3. Deploy iFlows for testing
+            1. In ELM, confirm the EIC restricted resources as applied and wait until EIC is deployed
+            2. Deploy iFlows for testing
 
             After deployment is complete and istio-ingressgateway has a LoadBalancer IP:
             ✅ APPROVE: Continue to create ConfigMap and run endpoint tests

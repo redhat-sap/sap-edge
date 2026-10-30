@@ -133,6 +133,68 @@ SPECS = {
             },
         },
     },
+    "aro-eic-full-test-pipeline": {
+        "elm_default": "elm",
+        "eic_default": "edge-icell",
+        "waits": {
+            "wait-elm-zip": (ELM, ("elm/",), ()),
+            "wait-eic-zip": (EIC, ("edge-icell/",), ("edgelm-kubeconfig-generated-$(params.aroClusterName)",)),
+        },
+        "run_after": {
+            "wait-elm-zip": {"prepare-restricted-resources-prefix"},
+            "apply-rbac-elm": {"verify-operators", "wait-elm-zip"},
+            "prepare-namespaces": {"apply-rbac-elm"},
+            "configure-mesh": {"prepare-namespaces"},
+            "generate-sa-based-kubeconfig": {"configure-mesh"},
+            # PostgreSQL/Redis come with the cluster; ELM needs the registry
+            "wait-eic-zip": {"generate-sa-based-kubeconfig", "deploy-quay"},
+            "apply-rbac-eic": {"wait-eic-zip"},
+            "prepare-namespaces-eic": {"apply-rbac-eic"},
+            "configure-mesh-eic": {"prepare-namespaces-eic"},
+            "approval-elm-eic-iflow-deployed": {"deploy-quay", "configure-mesh-eic"},
+        },
+        "task_refs": {
+            "prepare-namespaces-eic": "ossm3-prepare-namespaces",
+            "configure-mesh-eic": "ossm3-configure-mesh",
+        },
+        # skipEicValidation=true deploys no EIC: every task of the second pass
+        # must be gated itself (a skipped parent does not block its dependents)
+        "eic_pass_gate": ("skipEicValidation", "false"),
+        "run_files": {
+            "aro-eic-ossm3-run.yaml": {"s3Prefix": "restricted-resources/eic-on-ocp-demo/"},
+        },
+    },
+    "rosa-eic-full-test-pipeline": {
+        "elm_default": "elm",
+        "eic_default": "edge-icell",
+        "waits": {
+            "wait-elm-zip": (ELM, ("elm/",), ()),
+            "wait-eic-zip": (EIC, ("edge-icell/",), ("edgelm-kubeconfig-generated-$(params.clusterName)",)),
+        },
+        "run_after": {
+            "wait-elm-zip": {"prepare-restricted-resources-prefix"},
+            "apply-rbac-elm": {"verify-operators", "wait-elm-zip"},
+            "prepare-namespaces": {"apply-rbac-elm"},
+            "configure-mesh": {"prepare-namespaces"},
+            "generate-sa-based-kubeconfig": {"configure-mesh"},
+            # PostgreSQL/Redis come with the cluster; ELM needs the registry
+            "wait-eic-zip": {"generate-sa-based-kubeconfig", "deploy-quay"},
+            "apply-rbac-eic": {"wait-eic-zip"},
+            "prepare-namespaces-eic": {"apply-rbac-eic"},
+            "configure-mesh-eic": {"prepare-namespaces-eic"},
+            "approval-elm-eic-iflow-deployed": {"deploy-quay", "configure-mesh-eic"},
+        },
+        "task_refs": {
+            "prepare-namespaces-eic": "ossm3-prepare-namespaces",
+            "configure-mesh-eic": "ossm3-configure-mesh",
+        },
+        # skipEicValidation=true deploys no EIC: every task of the second pass
+        # must be gated itself (a skipped parent does not block its dependents)
+        "eic_pass_gate": ("skipEicValidation", "false"),
+        "run_files": {
+            "rosa-eic-ossm3-run.yaml": {"s3Prefix": "restricted-resources/rosa-ossm-pr{{ pull_request_number }}/"},
+        },
+    },
 }
 
 failures = []
@@ -211,6 +273,15 @@ for name, spec in SPECS.items():
             got = set(task.get("runAfter", []))
             check(got == run_after, f"{label}: {task_name} runAfter must be {sorted(run_after)}, got {sorted(got)}")
 
+    gate = spec.get("eic_pass_gate")
+    if gate:
+        param, value = gate
+        for task_name in ("wait-eic-zip", "apply-rbac-eic", "prepare-namespaces-eic", "configure-mesh-eic"):
+            whens = tasks.get(task_name, {}).get("when", [])
+            check(any(w.get("input") == f"$(params.{param})" and w.get("operator") == "in" and w.get("values") == [value]
+                      for w in whens),
+                  f"{label}: {task_name} must be gated by {param} in [{value}]")
+
     for task_name, ref in spec["task_refs"].items():
         check(tasks.get(task_name, {}).get("taskRef", {}).get("name") == ref,
               f"{label}: {task_name} must re-run {ref}")
@@ -230,13 +301,7 @@ for name, spec in SPECS.items():
               f"{run_file}: restrictedResourcesComponents is no longer a pipeline param")
 
 # No pipeline may still apply restricted resources in one pass
-NOT_YET_TWO_PASS = {
-    "aro-eic-full-test-pipeline",
-    "rosa-eic-full-test-pipeline",
-}
 for name, pipeline in pipelines.items():
-    if name in NOT_YET_TWO_PASS:
-        continue
     for task in pipeline["tasks"]:
         if task.get("taskRef", {}).get("name") == "ossm3-download-and-apply-rbac":
             check(task["name"] in ("apply-rbac-elm", "apply-rbac-eic"),
