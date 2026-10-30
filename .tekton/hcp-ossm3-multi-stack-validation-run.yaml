@@ -1,0 +1,133 @@
+# SPDX-FileCopyrightText: 2026 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Prerequisites:
+# 1. Ensure the ObjectBucketClaim (OBC) 'sap-eic-restricted-cluster-config-resources'
+#    is created and bound in the pipeline namespace. The pipeline creates the
+#    folders elm-1/, edge-icell-1/, elm-2/, edge-icell-2/ under
+#    'restricted-resources/pr<N>-multi-stack/' (one set per PR; a sibling of the
+#    dedicated pipeline's 'restricted-resources/pr<N>/', not a subfolder) and
+#    pauses (approval-upload-restricted-resources) until the bundles are uploaded.
+#
+# 2. Ensure the Service Mesh 3.x operator is installed on the target cluster
+#    (via OperatorHub or CLI before running this pipeline)
+#
+# Scenario: multi-stack (2 Edge Nodes, dedicated mesh each), without proxy
+#   (multi-EIC topology B, KBA 7149262 "Scenario 2: Multiple Edge Nodes with
+#   Dedicated Meshes"; minimum releases ELM 1.64, EIC 8.48)
+#   - Edge Node N = ELM edgelm-N + EIC edge-icell-N (gateway istio-gateways-N)
+#   - One Istio control plane per Edge Node: istio-system-sap-edge-N / sap-mesh-istio-N
+#     (discovery selector istio-discovery=sap-edge-mesh-N, revision-based injection)
+#   - One restricted kubeconfig per Edge Node (Secret edgelm-kubeconfig-generated-<cluster>-N)
+#   - Shared PostgreSQL, one Redis/Valkey per EIC cell
+
+---
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: hcp-ossm3-multistack-pr{{ pull_request_number }}-
+  annotations:
+    pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
+    pipelinesascode.tekton.dev/on-target-branch: "[main]"
+    pipelinesascode.tekton.dev/task: "[./.tekton/tasks/git-clone.yaml]"
+    pipelinesascode.tekton.dev/max-keep-runs: "1"
+    pipelinesascode.tekton.dev/cancel-in-progress: "true"
+spec:
+  pipelineRef:
+    name: hcp-ossm3-multi-stack-validation-pipeline
+  timeouts:
+    pipeline: "336h"      # Total pipeline timeout (14 days)
+    tasks: "335h"         # Individual task timeout (tasks + finally must be <= pipeline)
+    finally: "60m"        # Finally tasks timeout
+  params:
+    # --- Git parameters ---
+    - name: repoUrl
+      value: "{{ repo_url }}"
+    - name: revision
+      value: "{{ revision }}"
+    - name: pullRequestNumber
+      value: "{{ pull_request_number }}"
+
+    # --- HCP cluster parameters ---
+    # hostedClusterName: one hosted cluster per PR
+    # Pattern: {prefix}-pr{number} (add the hubClusterName to the prefix when
+    # the same PR runs against several hubs)
+    - name: hostedClusterName
+      value: "hcp-multistack-pr{{ pull_request_number }}"
+    - name: hostedClusterNamespace
+      value: "clusters"
+    - name: releaseImage
+      value: "quay.io/openshift-release-dev/ocp-release:4.21.7-x86_64"
+    - name: nodePoolReplicas
+      value: "3"
+    - name: nodePoolCpuCores
+      value: "16"
+    - name: nodePoolMemoryGB
+      value: "32"
+    - name: rootDiskSizeGB
+      value: "120"
+    - name: pullSecretName
+      value: "mj-pull-secret"
+    - name: etcdStorageClass
+      value: ""
+    # hubClusterName: name of the target hub cluster
+    # The pipeline derives the kubeconfig secret as: {hubClusterName}-kubeconfig
+    # Ensure a Secret named "{hubClusterName}-kubeconfig" exists with the hub's kubeconfig
+    - name: hubClusterName
+      value: "eli"
+
+    # --- OSSM3 parameters ---
+    - name: ossm3Channel
+      value: "stable-3.2"
+    - name: obcName
+      value: "sap-eic-restricted-cluster-config-resources"
+    - name: s3Prefix
+      value: "restricted-resources/pr{{ pull_request_number }}-multi-stack/"
+    # S3 folders under s3Prefix, one SAP bundle zip each (upload as downloaded):
+    #   elm-1/         ELM bundle of Edge Node 1 (creates edgelm-1)
+    #   edge-icell-1/  EIC bundle of Edge Node 1 (edge-icell-1, istio-gateways-1, ...)
+    #   elm-2/         ELM bundle of Edge Node 2 (creates edgelm-2)
+    #   edge-icell-2/  EIC bundle of Edge Node 2
+    # The pipeline creates these folders and pauses at the upload gate;
+    # apply-rbac then downloads only these folders and fails if one is empty.
+    # Apply order comes from the zip type (ELM first), not from this list.
+    # Same as the pipeline default (fixed at two Edge Nodes); kept for visibility.
+    - name: restrictedResourcesComponents
+      value: "elm-1 edge-icell-1 elm-2 edge-icell-2"
+
+    # --- EIC services parameters ---
+    - name: postgresVersion
+      value: "v15"
+    - name: postgresHA
+      value: "false"
+    - name: datastoreType
+      value: "redis"
+    - name: redisClusterType
+      value: "standard"
+
+    # --- Endpoint test parameters ---
+    - name: eicAuthSecretName
+      value: "eic-auth-secret"
+    - name: publicDNS
+      value: "false"
+
+    # --- Jira parameters ---
+    - name: jiraSecretName
+      value: "jira-secret-mj"
+    - name: jiraIssueKey
+      value: ""
+
+    # --- Pipeline control ---
+    - name: skipTeardown
+      value: "false"
+  workspaces:
+    - name: source
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteMany]
+          storageClassName: ocs-storagecluster-cephfs
+          resources:
+            requests:
+              storage: 2Gi
