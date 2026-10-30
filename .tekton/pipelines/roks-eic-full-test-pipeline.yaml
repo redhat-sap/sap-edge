@@ -98,7 +98,7 @@ spec:
       default: "false"
     - name: skipAutomatedTests
       type: string
-      description: "Skip automated endpoint tests for manual execution: httpbinipfilter, slvredis, ratelimit-slvredis (true/false)"
+      description: "Skip all automated EIC endpoint tests, both rounds: http test1, http testelster, httpbinipfilter, slvredis, ratelimit-slvredis (true/false)"
       default: "false"
 
     # --- Jira parameters ---
@@ -606,6 +606,10 @@ spec:
 
     - name: test-http-test1
       runAfter: [validate-and-create-configmap]
+      when:
+        - input: $(params.skipAutomatedTests)
+          operator: in
+          values: ["false"]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -622,6 +626,10 @@ spec:
 
     - name: test-http-testelster
       runAfter: [validate-and-create-configmap]
+      when:
+        - input: $(params.skipAutomatedTests)
+          operator: in
+          values: ["false"]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -701,7 +709,7 @@ spec:
             First round of endpoint tests completed successfully.
 
             Cluster: $(params.clusterName) (ROKS, IBM Cloud resource group $(params.ibmcloudResourceGroup))
-            Automated tests skipped (httpbinipfilter, slvredis, ratelimit-slvredis): $(params.skipAutomatedTests)
+            Automated EIC endpoint tests skipped: $(params.skipAutomatedTests)
 
             APPROVE: Run second round of endpoint tests
             REJECT: Stop the pipeline; the cluster and its IBM Cloud resources stay (billable) until removed with: make roks-destroy CLUSTER=$(params.clusterName)
@@ -733,6 +741,10 @@ spec:
 
     - name: test-http-test1-round2
       runAfter: [approval-second-test-round]
+      when:
+        - input: $(params.skipAutomatedTests)
+          operator: in
+          values: ["false"]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -749,6 +761,10 @@ spec:
 
     - name: test-http-testelster-round2
       runAfter: [approval-second-test-round]
+      when:
+        - input: $(params.skipAutomatedTests)
+          operator: in
+          values: ["false"]
       taskRef: { name: endpoint-tests }
       params:
         - name: endpointPath
@@ -848,7 +864,7 @@ spec:
             * Service Mesh 3.x configuration: Completed
             * Restricted kubeconfig: Generated
             * Endpoint tests (2 rounds): Completed
-            * Automated tests skipped (httpbinipfilter, slvredis, ratelimit-slvredis): $(params.skipAutomatedTests)
+            * Automated EIC endpoint tests skipped: $(params.skipAutomatedTests)
 
             *Pipeline Details:*
             * *Repository:* $(params.repoUrl)
