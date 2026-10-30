@@ -14,7 +14,7 @@ spec:
     (e.g. elm/, edge-icell-1/, edge-icell-2/) in the ODF bucket of the OBC,
     report what is already uploaded, and render upload instructions for the
     approval gate that follows. Non-destructive: existing zips are untouched.
-    See docs/multi-eic-restricted-resources-convention.md.
+    See .tekton/README.md, "Multi-EIC restricted resources".
   params:
     - name: obcName
       type: string

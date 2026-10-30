@@ -111,7 +111,7 @@ spec:
         # The bundles (applied by ossm3-download-and-apply-rbac) create every
         # namespace with edgelm.sap.com/product=edgelm. With multiple cells the
         # names carry a trailing -N index (edge-icell-1, edge-icell-secrets-2, …),
-        # see docs/multi-eic-restricted-resources-convention.md.
+        # see .tekton/README.md, "Multi-EIC restricted resources".
         echo ""
         echo "🔍 Discovering SAP namespaces (edgelm.sap.com/product=edgelm)..."
         NAMESPACES=()

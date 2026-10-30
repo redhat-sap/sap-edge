@@ -204,6 +204,126 @@ oc get approvaltasks
 oc patch approvaltask <name> --type=merge -p '{"spec":{"approved":true}}'
 ```
 
+## Multi-EIC restricted resources
+
+Two pipelines deploy more than one Edge Integration Cell (EIC) on one cluster:
+
+- **Topology A, shared core:** `hcp-ossm3-dedicated-validation-pipeline`. One
+  Edge Node (a shared `edgelm`), one dedicated mesh, N cells (`cellCount`,
+  default `2`).
+- **Topology B, 1:1:1 stacks:** `hcp-ossm3-multi-stack-validation-pipeline`. An
+  Edge Node, ELM and mesh per cell, two stacks (KBA 7149262 "Scenario 2:
+  Multiple Edge Nodes with Dedicated Meshes"; ELM 1.64 and EIC 8.48 or later).
+
+SAP's restricted-resources bundles create their namespaces with the labels
+`edgelm.sap.com/product=edgelm` and `edgelm.sap.com/edge-node-id=<uuid>`, and
+their `apply-restricted-resources.sh` refuses a namespace that belongs to
+another Edge Node. Cells therefore need distinct namespace names. Cluster-scoped
+resources (CRDs, the ELM ClusterRole and ClusterRoleBinding) exist once per
+cluster, so the ELM bundle is applied first.
+
+### Namespace names
+
+Cell N appends `-N` to each base name. The names are chosen when the bundle is
+generated in ELM and must follow this scheme:
+
+| Role                | Base name             | Cell/stack 1            | Cell/stack 2            |
+|---------------------|-----------------------|-------------------------|-------------------------|
+| main                | `edge-icell`          | `edge-icell-1`          | `edge-icell-2`          |
+| secrets             | `edge-icell-secrets`  | `edge-icell-secrets-1`  | `edge-icell-secrets-2`  |
+| ela                 | `edge-icell-ela`      | `edge-icell-ela-1`      | `edge-icell-ela-2`      |
+| services            | `edge-icell-services` | `edge-icell-services-1` | `edge-icell-services-2` |
+| gateways            | `istio-gateways`      | `istio-gateways-1`      | `istio-gateways-2`      |
+| edgelm (topology A) | `edgelm`              | shared `edgelm`         | shared `edgelm`         |
+| edgelm (topology B) | `edgelm`              | `edgelm-1`              | `edgelm-2`              |
+
+The tasks find the role by stripping the trailing `-<digits>`, for example
+`edge-icell-services-2` → `edge-icell-services`.
+
+### S3 layout
+
+One prefix per cluster deployment (pipeline parameter `s3Prefix`), one folder
+per component:
+
+```text
+# Topology A (shared ELM, one mesh, N cells)
+restricted-resources/pr<N>/
+  elm/            restricted-resources-Edge_Lifecycle_Management-<ver>.zip
+  edge-icell-1/   restricted-resources-Edge_Integration_Cell-<ver>.zip
+  edge-icell-2/   restricted-resources-Edge_Integration_Cell-<ver>.zip
+
+# Topology B (an ELM and a mesh per stack)
+restricted-resources/pr<N>-multi-stack/
+  elm-1/          restricted-resources-Edge_Lifecycle_Management-<ver>.zip
+  edge-icell-1/   restricted-resources-Edge_Integration_Cell-<ver>.zip
+  elm-2/          restricted-resources-Edge_Lifecycle_Management-<ver>.zip
+  edge-icell-2/   restricted-resources-Edge_Integration_Cell-<ver>.zip
+```
+
+- One bundle zip per folder; the latest version in a folder wins. To add a
+  cell, add a folder; to upgrade a cell, put the newer zip into its folder.
+- The pipelines create the folders listed in `restrictedResourcesComponents`
+  (for example `elm edge-icell-1 edge-icell-2` in topology A; topology B
+  defaults to `elm-1 edge-icell-1 elm-2 edge-icell-2`) and pause at
+  `approval-upload-restricted-resources` with upload instructions and each
+  folder's contents. After the approval, `apply-rbac` fails if a listed folder
+  holds no zip.
+- `apply-rbac` (`ossm3-download-and-apply-rbac`, parameter
+  `requiredComponents`) downloads only the listed folders; other folders below
+  the prefix are never applied.
+- An empty `restrictedResourcesComponents` means a flat prefix: only the zips
+  directly under `s3Prefix` are applied, as one component. The single-EIC
+  pipelines (`hcp-ossm3-validation`, ARO, ROSA) use `restricted-resources/`
+  this way.
+
+### Apply order
+
+In each component, `apply-rbac` picks the latest bundle per resource type and
+applies ELM first, then a standalone gateways bundle if there is one, then the
+EIC cells ordered by name. It classifies bundles by the resource type in the zip
+name (`Edge_Lifecycle_Management`, `Edge_Integration_Cell`, …). In the current
+bundle format, the `istio-gateways` namespace and its RBAC ship inside each EIC
+bundle, so there is no separate gateways folder. Each bundle is applied with its
+own `apply-restricted-resources.sh --yes`.
+
+### Mesh labels and SCC annotations
+
+The same values apply to every cell:
+
+| Base role             | `istio.io/rev` | `istio-discovery` | SCC `uid-range` | SCC `supplemental-groups` |
+|-----------------------|----------------|-------------------|-----------------|---------------------------|
+| `edgelm`              | yes            | yes               | -               | `67000/1000`              |
+| `edge-icell`          | yes            | yes               | `10000/100`     | `1000/100`                |
+| `edge-icell-ela`      | yes            | yes               | `100000/1000`   | `100002/1000`             |
+| `edge-icell-services` | yes            | yes               | `1000000/1000`  | `1000002/1000`            |
+| `edge-icell-secrets`  | no             | yes               | -               | -                         |
+| `istio-gateways`      | yes            | yes               | -               | -                         |
+
+The secrets namespaces are in the mesh's discovery scope but get no sidecars
+(KBA 7131840).
+
+- Topology A: `ossm3-prepare-namespaces-dedicated` finds the SAP namespaces by
+  `edgelm.sap.com/product=edgelm`, replaces `istio-injection` with
+  `istio.io/rev=sap-mesh-istio` and sets the SCC annotations per role. Then
+  `ossm3-configure-dedicated-mesh` creates the control plane and labels all SAP
+  namespaces `istio-discovery=sap-edge-mesh`.
+- Topology B runs the other way round, because the revision label is read from
+  the running control plane: `ossm3-configure-multi-stack-mesh` creates one
+  control plane per stack (namespace `istio-system-sap-edge-N`, Istio
+  `sap-mesh-istio-N`, selector `istio-discovery=sap-edge-mesh-N`), then
+  `ossm3-prepare-namespaces-multi-stack` labels each stack's namespaces with the
+  active revision of its mesh.
+
+### Backing services per cell
+
+- Redis/Valkey: one instance per cell (`--instance eic-N`, namespace
+  `<default namespace>-eic-N`).
+- PostgreSQL: one instance, shared by all cells.
+- Each cell's credentials are in the Secret
+  `eic-credentials-hcp-<cluster>-eic-N`. Its `kubeconfig` key holds the
+  restricted kubeconfig of the cell's Edge Node: `edgelm-kubeconfig` in
+  topology A, `edgelm-N-kubeconfig` in topology B.
+
 ## Pipeline Features
 
 ### Timeouts

@@ -14,7 +14,7 @@
 #
 # Scenario: Dedicated SAP service mesh (istio-system-sap-edge) without proxy,
 #   two Edge Integration Cells sharing one edgelm (multi-EIC topology A, see
-#   docs/multi-eic-restricted-resources-convention.md)
+#   .tekton/README.md, "Multi-EIC restricted resources")
 #   - Deploys an independent Istio control plane 'sap-mesh-istio'
 #   - Uses revision-based sidecar injection (istio.io/rev=sap-mesh-istio)
 #   - Isolated from any shared mesh on the same cluster

@@ -186,7 +186,7 @@ spec:
         # ========================================
         # Step 2: Discover components, select latest bundle per type, extract
         # ========================================
-        # S3 layout (docs/multi-eic-restricted-resources-convention.md):
+        # S3 layout (.tekton/README.md, "Multi-EIC restricted resources"):
         #   <s3Prefix>/elm/           restricted-resources-Edge_Lifecycle_Management-<ver>.zip
         #   <s3Prefix>/edge-icell-1/  restricted-resources-Edge_Integration_Cell-<ver>.zip
         #   <s3Prefix>/edge-icell-2/  restricted-resources-Edge_Integration_Cell-<ver>.zip
