@@ -30,7 +30,7 @@ spec:
       default: ""
     - name: archiveExisting
       type: string
-      description: "When 'true' and components is non-empty, move earlier *.zip files to archive/<timestamp>/ before creating the folder markers"
+      description: "When 'true' and components is non-empty, move earlier *.zip files of the components into one archive/ folder under the prefix (same file names; a newer zip replaces an archived one of the same name) before creating the folder markers"
       default: "false"
   results:
     - name: bucketName
@@ -123,12 +123,11 @@ spec:
         # ========================================
         ARCHIVE_EXISTING="$(params.archiveExisting)"
         if [[ "${ARCHIVE_EXISTING}" == "true" ]] && [[ -n "${COMPONENTS}" ]]; then
-          STAMP=$(date -u +%Y%m%dT%H%M%SZ)
           echo ""
           echo "📦 Archiving earlier zips..."
           for C in ${COMPONENTS}; do
-            s3 s3 mv "s3://${BUCKET_NAME}/${PREFIX}${C}/" "s3://${BUCKET_NAME}/${PREFIX}archive/${STAMP}/${C}/" --recursive --exclude '*' --include '*.zip'
-            echo "   📦 Archived earlier zips of ${C}/ to archive/${STAMP}/${C}/"
+            s3 s3 mv "s3://${BUCKET_NAME}/${PREFIX}${C}/" "s3://${BUCKET_NAME}/${PREFIX}archive/" --recursive --exclude '*' --include '*.zip'
+            echo "   📦 Archived earlier zips of ${C}/ to archive/"
           done
         fi
 
