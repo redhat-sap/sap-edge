@@ -82,7 +82,7 @@ CI/CD pipelines for deploying and testing SAP Edge Integration Cell on ARO, ROSA
 - `ossm3-configure-mesh-task`: Deploy IstioCNI and Istio control plane, and add the existing application namespaces to the mesh
 - `ossm3-apply-rbac-task`: Apply RBAC permissions from SAP Note 3618713 resources
 - `ossm3-generate-sa-based-kubeconfig-task`: Generate SA-based restricted kubeconfig for ELM registration
-- `ossm3-wait-for-restricted-resources-task`: Wait until every given component folder under the run's S3 prefix holds a restricted-resources `.zip` (ROKS pipeline: `wait-elm-zip`, `wait-eic-zip`); prints the instructions with the upload plan once, retries failed listings
+- `ossm3-wait-for-restricted-resources-task`: Wait until every given component folder under the run's S3 prefix holds a restricted-resources `.zip` (every EIC pipeline: `wait-elm-zip`/`wait-elm-zips` and `wait-eic-zip`/`wait-eic-zips`, see "Two-pass apply" below); prints the instructions with the upload plan once, retries failed listings
 
 ### Common Tasks
 - `endpoint-tests`: Test EIC API endpoints
@@ -285,12 +285,36 @@ restricted-resources/pr<N>-multi-stack/
 - `apply-rbac`, `apply-rbac-elm` and `apply-rbac-eic`
   (`ossm3-download-and-apply-rbac`, parameter `requiredComponents`) download
   only the listed folders; other folders below the prefix are never applied.
-- An empty `restrictedResourcesComponents` means a flat prefix: only the zips
-  directly under `s3Prefix` are applied, as one component. The single-EIC ARO
-  and ROSA pipelines use `restricted-resources/` this way.
-- The single-EIC HCP pipeline (`hcp-ossm3-validation`) uses one folder per
-  cluster, `restricted-resources/<hostedClusterName>/` with `elm/` and
-  `edge-icell/`, and the same two passes (`wait-elm-zip`, `wait-eic-zip`).
+- `ossm3-download-and-apply-rbac` still supports an empty
+  `requiredComponents` (a flat prefix: only the zips directly under `s3Prefix`,
+  as one component), but no pipeline uses it any more.
+
+### Two-pass apply (all EIC pipelines)
+
+An EIC restricted-resources zip can only be downloaded after the Edge Node is
+registered with the restricted kubeconfig the pipeline generates, so every EIC
+pipeline applies the bundles in two passes, in the shape of the ROKS pipeline:
+
+```text
+wait-elm-zip -> apply-rbac-elm -> ELM namespace labels, mesh -> restricted kubeconfig
+  -> (register the Edge Node, deploy EIC in ELM, upload the EIC zip)
+  -> wait-eic-zip -> apply-rbac-eic -> EIC namespace labels, mesh
+  -> approval-elm-eic-iflow-deployed (confirm the EIC resources in ELM here)
+```
+
+| Pipeline | S3 folders | Notes |
+|---|---|---|
+| `roks-eic-full-test` | `restricted-resources/<clusterName>/elm/`, `edge-icell/` | earlier zips are archived (new cluster each run) |
+| `hcp-ossm3-validation` | `restricted-resources/<hostedClusterName>/elm/`, `edge-icell/` | EIC wait after PostgreSQL/Redis and the optional `sap-browser` |
+| `hcp-ossm3-dedicated-validation` | `restricted-resources/pr<N>/elm/`, `edge-icell-N/` | see the topology A notes above |
+| `hcp-ossm3-multi-stack-validation` | `restricted-resources/pr<N>-multi-stack/elm-N/`, `edge-icell-N/` | see the topology B notes above |
+| `aro-eic-full-test`, `rosa-eic-full-test` | `restricted-resources/<cluster name>/elm/`, `edge-icell/` | EIC wait after the Quay registry; `skipEicValidation: "true"` skips the whole second pass |
+
+Every HCP, ARO and ROSA run keeps the zips already in its folders (a re-run
+reuses them; the latest version per folder wins), so a folder that already
+holds a zip does not wait. The HCP pipelines enable user workload monitoring
+after the EIC pass, because its NetworkPolicies go only into namespaces that
+exist.
 
 ### Apply order
 
