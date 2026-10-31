@@ -16,7 +16,7 @@ echo "============================================"
 
 TASK=../../.tekton/tasks/roks-sap-browser-task.yaml
 HCP_TASK=../../.tekton/tasks/hcp-sap-browser-task.yaml
-PIPELINE=../../.tekton/pipelines/roks-eic-full-test-pipeline.yaml
+PIPELINE=../../.tekton/pipelines/roks-eic-ossm3-pipeline.yaml
 RUN_FILE=../../.tekton/roks-eic-ossm3-run.yaml
 EXAMPLE_RUN_FILE=../../.tekton-examples/roks-eic-ossm3-run.yaml
 ROKS_ENTRY=../../hack/sap-browser/roks-pipeline.mjs
@@ -501,16 +501,16 @@ def ancestors(name, seen=None):
 
 
 apply_tasks = {n for n, t in tasks.items() if t.get("taskRef", {}).get("name") == "ossm3-download-and-apply-rbac"}
-check(apply_tasks == {"apply-rbac-elm", "apply-rbac-eic"}, f"unexpected apply tasks: {sorted(apply_tasks)}")
+check(apply_tasks == {"apply-elm-resources", "apply-eic-resources"}, f"unexpected apply tasks: {sorted(apply_tasks)}")
 check(not (ancestors("sap-browser-access") & apply_tasks),
       f"sap-browser-access must not run after an apply: ancestors {sorted(ancestors('sap-browser-access'))}")
 # ...and every apply waits for it, so a zip uploaded by hand before
 # sap-browser-access ran cannot be applied first (it has no `when`: no cascade)
 for name in sorted(apply_tasks):
     check("sap-browser-access" in ancestors(name), f"{name} must run after sap-browser-access")
-check("sap-browser-access" in tasks.get("apply-rbac-elm", {}).get("runAfter", []),
-      "apply-rbac-elm must list sap-browser-access in runAfter")
-check("when" not in tasks.get("sap-browser-access", {}), "sap-browser-access must not carry a when (apply-rbac-elm waits for it)")
+check("sap-browser-access" in tasks.get("apply-elm-resources", {}).get("runAfter", []),
+      "apply-elm-resources must list sap-browser-access in runAfter")
+check("when" not in tasks.get("sap-browser-access", {}), "sap-browser-access must not carry a when (apply-elm-resources waits for it)")
 check(not (ancestors("sap-browser-deploy") & apply_tasks),
       "sap-browser-deploy must start before the applies (it produces the zips)")
 
@@ -610,7 +610,7 @@ run_browser_step() {
     --param phase=deploy \
     --param runnerImage=example.com/sap-browser:test \
     --param elmUrl=https://elm.example.com/ \
-    --param pipelineRun=roks-eic-full-test-pr7-abcde \
+    --param pipelineRun=roks-eic-ossm3-pr7-abcde \
     --param pipelineRunUID=0f6c1e4a-1111-2222-3333-444455556666 \
     --param clusterName=redhat-roks-eic-pr7 \
     --param obcName=sap-eic-restricted-cluster-config-resources \

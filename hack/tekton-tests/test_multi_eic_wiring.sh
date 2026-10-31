@@ -65,8 +65,8 @@ for label, path in (("A", sys.argv[1]), ("B", sys.argv[2])):
             check(line.endswith("(skipped when cellCount=1)"),
                   f"A: Jira cell-2 test line not tagged as skipped when cellCount=1: {line[:60]}")
         # The two-pass wiring and the component defaults: test_two_pass_wiring.sh
-        check("eicRestrictedResourcesComponents without edge-icell-2" in params["cellCount"]["description"],
-              "A: cellCount description must say that 1 needs eicRestrictedResourcesComponents without edge-icell-2")
+        check("eicZipFolders without edge-icell-2" in params["cellCount"]["description"],
+              "A: cellCount description must say that 1 needs eicZipFolders without edge-icell-2")
     else:
         for n in ("1", "2"):
             check(task_param(tasks[f"cell{n}-get-all-accesses"], "elmKubeconfigFile") == f"edgelm-{n}-kubeconfig",

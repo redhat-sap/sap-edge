@@ -29,8 +29,8 @@ export async function loadRoksInputs(read, pipelineRun, {
   if (expectedRunUID && run.metadata?.uid !== expectedRunUID) {
     throw new SetupError('PipelineRun UID does not match this browser task.');
   }
-  if (run.spec?.pipelineRef?.name !== 'roks-eic-full-test-pipeline') {
-    throw new SetupError('This helper currently supports roks-eic-full-test-pipeline only.');
+  if (run.spec?.pipelineRef?.name !== 'roks-eic-ossm3-pipeline') {
+    throw new SetupError('This helper currently supports roks-eic-ossm3-pipeline only.');
   }
 
   const clusterName = parameter(run, 'clusterName');

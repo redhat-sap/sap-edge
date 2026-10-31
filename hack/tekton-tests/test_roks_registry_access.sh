@@ -236,13 +236,13 @@ PY
 echo "✅ PASS: params_and_env"
 
 # Test case: pipeline_credentials_wiring
-# roks-eic-full-test-pipeline: one credentials Secret (roksCredentialsSecretName,
+# roks-eic-ossm3-pipeline: one credentials Secret (roksCredentialsSecretName,
 # default roks-ci-credentials) for every ROKS task that reads credentials and
 # for the preflight check; the three former Secret params are gone.
 echo ""
 echo "Test: pipeline_credentials_wiring"
 echo "--------------------------------------------"
-python3 -I - ../../.tekton/pipelines/roks-eic-full-test-pipeline.yaml <<'PY'
+python3 -I - ../../.tekton/pipelines/roks-eic-ossm3-pipeline.yaml <<'PY'
 import sys
 import yaml
 
@@ -280,7 +280,7 @@ echo "✅ PASS: pipeline_credentials_wiring"
 echo ""
 echo "Test: pipeline_hub_optional"
 echo "--------------------------------------------"
-python3 -I - ../../.tekton/pipelines/roks-eic-full-test-pipeline.yaml ../../.tekton-examples/roks-eic-ossm3-run.yaml <<'PY'
+python3 -I - ../../.tekton/pipelines/roks-eic-ossm3-pipeline.yaml ../../.tekton-examples/roks-eic-ossm3-run.yaml <<'PY'
 import sys
 import yaml
 

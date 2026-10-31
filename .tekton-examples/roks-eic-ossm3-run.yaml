@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Example PipelineRun for roks-eic-full-test-pipeline: EIC with restricted
+# Example PipelineRun for roks-eic-ossm3-pipeline: EIC with restricted
 # access on ROKS (Red Hat OpenShift on IBM Cloud, VPC). Terraform creates the
 # cluster, an IBM Cloud Container Registry namespace and IBM Cloud Databases
 # for PostgreSQL/Redis in the resource group redhat-sap-edge-roks-ci (see
@@ -69,7 +69,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: roks-eic-full-test-pr{{ pull_request_number }}-
+  generateName: roks-eic-ossm3-pr{{ pull_request_number }}-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
@@ -84,7 +84,7 @@ metadata:
     pipelinesascode.tekton.dev/cancel-in-progress: "false"
 spec:
   pipelineRef:
-    name: roks-eic-full-test-pipeline
+    name: roks-eic-ossm3-pipeline
   # When enabling sapBrowserMode, uncomment (the browser tasks run as the
   # ServiceAccount from hack/sap-browser/roks-runner-rbac.yaml):
   # taskRunSpecs:

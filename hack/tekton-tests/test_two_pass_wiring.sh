@@ -14,8 +14,8 @@ echo "============================================"
 # An EIC restricted-resources zip can only be downloaded after the Edge Node is
 # registered with the kubeconfig the pipeline generates, so no pipeline may
 # apply all bundles at once. Every pipeline below follows the ROKS shape
-# (test_roks_two_pass_wiring.sh): ELM zip wait → apply-rbac-elm → ELM namespace
-# labels, mesh, kubeconfig → EIC zip wait → apply-rbac-eic → EIC namespace
+# (test_roks_two_pass_wiring.sh): ELM zip wait → apply-elm-resources → ELM namespace
+# labels, mesh, kubeconfig → EIC zip wait → apply-eic-resources → EIC namespace
 # labels and mesh → monitoring → ELM/EIC approval.
 python3 -I - ../../.tekton <<'PY'
 import glob
@@ -26,8 +26,8 @@ import yaml
 
 ROOT = sys.argv[1]
 EXAMPLES = os.path.join(os.path.dirname(ROOT), ".tekton-examples")
-ELM = "$(params.elmRestrictedResourcesComponents)"
-EIC = "$(params.eicRestrictedResourcesComponents)"
+ELM = "$(params.elmZipFolders)"
+EIC = "$(params.eicZipFolders)"
 UPLOAD_PLAN = "$(tasks.prepare-restricted-resources-prefix.results.uploadPlan)"
 KUBECONFIG_SECRET = "edgelm-kubeconfig-generated-$(params.hostedClusterName)"
 
@@ -39,29 +39,29 @@ SPECS = {
         "elm_default": "elm-1 elm-2",
         "eic_default": "edge-icell-1 edge-icell-2",
         "waits": {
-            "wait-elm-zips": (ELM, ("elm-1/", "elm-2/"), ()),
-            "wait-eic-zips": (EIC, ("edge-icell-1/", "edge-icell-2/"),
+            "wait-elm-zip": (ELM, ("elm-1/", "elm-2/"), ()),
+            "wait-eic-zip": (EIC, ("edge-icell-1/", "edge-icell-2/"),
                               (f"{KUBECONFIG_SECRET}-1", f"{KUBECONFIG_SECRET}-2")),
         },
         "run_after": {
-            "wait-elm-zips": {"prepare-restricted-resources-prefix"},
-            "apply-rbac-elm": {"verify-operators", "wait-elm-zips"},
-            "configure-multi-stack-mesh": {"apply-rbac-elm"},
+            "wait-elm-zip": {"prepare-restricted-resources-prefix"},
+            "apply-elm-resources": {"verify-operators", "wait-elm-zip"},
+            "configure-multi-stack-mesh": {"apply-elm-resources"},
             "prepare-namespaces-multi-stack": {"configure-multi-stack-mesh"},
             "stack1-generate-sa-based-kubeconfig": {"prepare-namespaces-multi-stack"},
             "stack2-generate-sa-based-kubeconfig": {"prepare-namespaces-multi-stack"},
             # Deploying EIC in ELM needs the credentials
-            "wait-eic-zips": {"cell1-get-all-accesses", "cell2-get-all-accesses"},
-            "apply-rbac-eic": {"wait-eic-zips"},
-            "prepare-namespaces-multi-stack-eic": {"apply-rbac-eic"},
+            "wait-eic-zip": {"cell1-get-all-accesses", "cell2-get-all-accesses"},
+            "apply-eic-resources": {"wait-eic-zip"},
+            "prepare-namespaces-multi-stack-eic": {"apply-eic-resources"},
             "enable-monitoring": {"prepare-namespaces-multi-stack-eic"},
             "approval-elm-eic-iflow-deployed": {"prepare-namespaces-multi-stack-eic", "enable-monitoring"},
         },
         "task_refs": {"prepare-namespaces-multi-stack-eic": "ossm3-prepare-namespaces-multi-stack"},
         "run_files": {
             "hcp-ossm3-multi-stack-validation-run.yaml": {
-                "elmRestrictedResourcesComponents": "elm-1 elm-2",
-                "eicRestrictedResourcesComponents": "edge-icell-1 edge-icell-2",
+                "elmZipFolders": "elm-1 elm-2",
+                "eicZipFolders": "edge-icell-1 edge-icell-2",
             },
         },
     },
@@ -70,18 +70,18 @@ SPECS = {
         "eic_default": "edge-icell-1 edge-icell-2",
         "waits": {
             "wait-elm-zip": (ELM, ("elm/",), ()),
-            "wait-eic-zips": (EIC, ("edge-icell-1/", "edge-icell-2/"), (KUBECONFIG_SECRET,)),
+            "wait-eic-zip": (EIC, ("edge-icell-1/", "edge-icell-2/"), (KUBECONFIG_SECRET,)),
         },
         "run_after": {
             "wait-elm-zip": {"prepare-restricted-resources-prefix"},
-            "apply-rbac-elm": {"verify-operators", "wait-elm-zip"},
-            "prepare-namespaces": {"apply-rbac-elm"},
+            "apply-elm-resources": {"verify-operators", "wait-elm-zip"},
+            "prepare-namespaces": {"apply-elm-resources"},
             "configure-mesh": {"prepare-namespaces"},
             "generate-sa-based-kubeconfig": {"configure-mesh"},
             # cell2-get-all-accesses skipped by cellCount=1 does not block
-            "wait-eic-zips": {"cell1-get-all-accesses", "cell2-get-all-accesses"},
-            "apply-rbac-eic": {"wait-eic-zips"},
-            "prepare-namespaces-eic": {"apply-rbac-eic"},
+            "wait-eic-zip": {"cell1-get-all-accesses", "cell2-get-all-accesses"},
+            "apply-eic-resources": {"wait-eic-zip"},
+            "prepare-namespaces-eic": {"apply-eic-resources"},
             "configure-mesh-eic": {"prepare-namespaces-eic"},
             "enable-monitoring": {"configure-mesh-eic"},
             "approval-elm-eic-iflow-deployed": {"configure-mesh-eic", "enable-monitoring"},
@@ -92,12 +92,12 @@ SPECS = {
         },
         "run_files": {
             "hcp-ossm3-dedicated-validation-run.yaml": {
-                "elmRestrictedResourcesComponents": "elm",
-                "eicRestrictedResourcesComponents": "edge-icell-1 edge-icell-2",
+                "elmZipFolders": "elm",
+                "eicZipFolders": "edge-icell-1 edge-icell-2",
             },
-            "hcp-ossm3-dedicated-proxy-validation-run.yaml": {
-                "elmRestrictedResourcesComponents": "elm",
-                "eicRestrictedResourcesComponents": "edge-icell-1",
+            "hcp-ossm3-dedicated-validation-proxy-run.yaml": {
+                "elmZipFolders": "elm",
+                "eicZipFolders": "edge-icell-1",
             },
         },
     },
@@ -110,14 +110,14 @@ SPECS = {
         },
         "run_after": {
             "wait-elm-zip": {"prepare-restricted-resources-prefix"},
-            "apply-rbac-elm": {"verify-operators", "wait-elm-zip"},
-            "prepare-namespaces": {"apply-rbac-elm"},
+            "apply-elm-resources": {"verify-operators", "wait-elm-zip"},
+            "prepare-namespaces": {"apply-elm-resources"},
             "configure-mesh": {"prepare-namespaces"},
             "generate-sa-based-kubeconfig": {"configure-mesh"},
             # The optional browser session drives registration; skipped when disabled
             "wait-eic-zip": {"get-all-accesses", "sap-browser"},
-            "apply-rbac-eic": {"wait-eic-zip"},
-            "prepare-namespaces-eic": {"apply-rbac-eic"},
+            "apply-eic-resources": {"wait-eic-zip"},
+            "prepare-namespaces-eic": {"apply-eic-resources"},
             "configure-mesh-eic": {"prepare-namespaces-eic"},
             "enable-monitoring": {"configure-mesh-eic"},
             "approval-elm-eic-iflow-deployed": {"configure-mesh-eic", "enable-monitoring"},
@@ -133,7 +133,7 @@ SPECS = {
             },
         },
     },
-    "aro-eic-full-test-pipeline": {
+    "aro-eic-ossm3-pipeline": {
         "elm_default": "elm",
         "eic_default": "edge-icell",
         "waits": {
@@ -142,14 +142,14 @@ SPECS = {
         },
         "run_after": {
             "wait-elm-zip": {"prepare-restricted-resources-prefix"},
-            "apply-rbac-elm": {"verify-operators", "wait-elm-zip"},
-            "prepare-namespaces": {"apply-rbac-elm"},
+            "apply-elm-resources": {"verify-operators", "wait-elm-zip"},
+            "prepare-namespaces": {"apply-elm-resources"},
             "configure-mesh": {"prepare-namespaces"},
             "generate-sa-based-kubeconfig": {"configure-mesh"},
             # PostgreSQL/Redis come with the cluster; ELM needs the registry
             "wait-eic-zip": {"generate-sa-based-kubeconfig", "deploy-quay"},
-            "apply-rbac-eic": {"wait-eic-zip"},
-            "prepare-namespaces-eic": {"apply-rbac-eic"},
+            "apply-eic-resources": {"wait-eic-zip"},
+            "prepare-namespaces-eic": {"apply-eic-resources"},
             "configure-mesh-eic": {"prepare-namespaces-eic"},
             "approval-elm-eic-iflow-deployed": {"deploy-quay", "configure-mesh-eic"},
         },
@@ -164,7 +164,7 @@ SPECS = {
             "aro-eic-ossm3-run.yaml": {"s3Prefix": "restricted-resources/eic-on-ocp-demo/"},
         },
     },
-    "rosa-eic-full-test-pipeline": {
+    "rosa-eic-ossm3-pipeline": {
         "elm_default": "elm",
         "eic_default": "edge-icell",
         "waits": {
@@ -173,14 +173,14 @@ SPECS = {
         },
         "run_after": {
             "wait-elm-zip": {"prepare-restricted-resources-prefix"},
-            "apply-rbac-elm": {"verify-operators", "wait-elm-zip"},
-            "prepare-namespaces": {"apply-rbac-elm"},
+            "apply-elm-resources": {"verify-operators", "wait-elm-zip"},
+            "prepare-namespaces": {"apply-elm-resources"},
             "configure-mesh": {"prepare-namespaces"},
             "generate-sa-based-kubeconfig": {"configure-mesh"},
             # PostgreSQL/Redis come with the cluster; ELM needs the registry
             "wait-eic-zip": {"generate-sa-based-kubeconfig", "deploy-quay"},
-            "apply-rbac-eic": {"wait-eic-zip"},
-            "prepare-namespaces-eic": {"apply-rbac-eic"},
+            "apply-eic-resources": {"wait-eic-zip"},
+            "prepare-namespaces-eic": {"apply-eic-resources"},
             "configure-mesh-eic": {"prepare-namespaces-eic"},
             "approval-elm-eic-iflow-deployed": {"deploy-quay", "configure-mesh-eic"},
         },
@@ -232,11 +232,11 @@ for name, spec in SPECS.items():
     tasks = {t["name"]: t for t in pipeline["tasks"]}
 
     check("restrictedResourcesComponents" not in params,
-          f"{label}: restrictedResourcesComponents must be split into elm-/eicRestrictedResourcesComponents")
-    check(params.get("elmRestrictedResourcesComponents", {}).get("default") == spec["elm_default"],
-          f"{label}: elmRestrictedResourcesComponents default must be {spec['elm_default']!r}")
-    check(params.get("eicRestrictedResourcesComponents", {}).get("default") == spec["eic_default"],
-          f"{label}: eicRestrictedResourcesComponents default must be {spec['eic_default']!r}")
+          f"{label}: restrictedResourcesComponents must be split into elmZipFolders and eicZipFolders")
+    check(params.get("elmZipFolders", {}).get("default") == spec["elm_default"],
+          f"{label}: elmZipFolders default must be {spec['elm_default']!r}")
+    check(params.get("eicZipFolders", {}).get("default") == spec["eic_default"],
+          f"{label}: eicZipFolders default must be {spec['eic_default']!r}")
     for gone in ("approval-upload-restricted-resources", "apply-rbac"):
         check(gone not in tasks, f"{label}: {gone} must be replaced by the two passes")
 
@@ -259,7 +259,7 @@ for name, spec in SPECS.items():
             check(needle in instructions, f"{label}: {task_name} instructions must name {needle}")
         check(instructions.strip().endswith(UPLOAD_PLAN), f"{label}: {task_name} instructions must end with {UPLOAD_PLAN}")
 
-    for task_name, components in (("apply-rbac-elm", ELM), ("apply-rbac-eic", EIC)):
+    for task_name, components in (("apply-elm-resources", ELM), ("apply-eic-resources", EIC)):
         task = tasks.get(task_name, {})
         check(task.get("taskRef", {}).get("name") == "ossm3-download-and-apply-rbac",
               f"{label}: {task_name} must use ossm3-download-and-apply-rbac")
@@ -276,7 +276,7 @@ for name, spec in SPECS.items():
     gate = spec.get("eic_pass_gate")
     if gate:
         param, value = gate
-        for task_name in ("wait-eic-zip", "apply-rbac-eic", "prepare-namespaces-eic", "configure-mesh-eic"):
+        for task_name in ("wait-eic-zip", "apply-eic-resources", "prepare-namespaces-eic", "configure-mesh-eic"):
             whens = tasks.get(task_name, {}).get("when", [])
             check(any(w.get("input") == f"$(params.{param})" and w.get("operator") == "in" and w.get("values") == [value]
                       for w in whens),
@@ -304,7 +304,7 @@ for name, spec in SPECS.items():
 for name, pipeline in pipelines.items():
     for task in pipeline["tasks"]:
         if task.get("taskRef", {}).get("name") == "ossm3-download-and-apply-rbac":
-            check(task["name"] in ("apply-rbac-elm", "apply-rbac-eic"),
+            check(task["name"] in ("apply-elm-resources", "apply-eic-resources"),
                   f"{name}: {task['name']} applies restricted resources outside the two passes")
 
 if failures:

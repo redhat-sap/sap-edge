@@ -12,7 +12,7 @@ pod. From your RHEL desktop inside Citrix, use `oc port-forward` and open noVNC 
 your browser. Enter SAP login/MFA in the displayed Chromium window; Playwright
 continues in that same session.
 
-**ROKS:** `roks-eic-full-test-pipeline` has its own optional browser tasks
+**ROKS:** `roks-eic-ossm3-pipeline` has its own optional browser tasks
 (`sap-browser-deploy`, `sap-browser-teardown`) using the same image, reached
 through a per-run Route with the OpenShift OAuth proxy instead of port-forward.
 Build and push the image as below, then follow

@@ -8,7 +8,7 @@
 #    is created and bound in the pipeline namespace. The pipeline creates the
 #    folders elm/, edge-icell-1/, edge-icell-2/ under 'restricted-resources/pr<N>/' (one set per PR)
 #    and waits for the bundles in two passes: wait-elm-zip (elm/), then, after the
-#    Edge Node is registered and the EIC cells are deployed in ELM, wait-eic-zips
+#    Edge Node is registered and the EIC cells are deployed in ELM, wait-eic-zip
 #    (edge-icell-N/).
 #
 # 2. Ensure the Service Mesh 3.x operator is installed on the target cluster
@@ -25,7 +25,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: hcp-ossm3-dedicated-pr{{ pull_request_number }}-
+  generateName: hcp-ossm3-dedicated-validation-pr{{ pull_request_number }}-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
@@ -89,18 +89,18 @@ spec:
     #   edge-icell-1/  EIC bundle of cell 1 (edge-icell-1, istio-gateways-1, ...)
     #   edge-icell-2/  EIC bundle of cell 2 (edge-icell-2, istio-gateways-2, ...)
     # The pipeline creates these folders and applies them in two passes:
-    #   1. wait-elm-zip -> apply-rbac-elm (elm/ only) -> mesh, edgelm labels,
+    #   1. wait-elm-zip -> apply-elm-resources (elm/ only) -> mesh, edgelm labels,
     #      restricted kubeconfig
     #   2. register the Edge Node and deploy the EIC cells in ELM, upload the EIC
-    #      zips: wait-eic-zips -> apply-rbac-eic (EIC folders only) -> EIC labels
+    #      zips: wait-eic-zip -> apply-eic-resources (EIC folders only) -> EIC labels
     # Earlier zips stay in the folders (latest version per folder wins).
     # Same as the pipeline defaults; kept for visibility.
-    - name: elmRestrictedResourcesComponents
+    - name: elmZipFolders
       value: "elm"
-    - name: eicRestrictedResourcesComponents
+    - name: eicZipFolders
       value: "edge-icell-1 edge-icell-2"
     # Number of EIC cells to validate. With "1", every cell2-* task is skipped;
-    # also drop edge-icell-2 from eicRestrictedResourcesComponents above.
+    # also drop edge-icell-2 from eicZipFolders above.
     - name: cellCount
       value: "2"
 
