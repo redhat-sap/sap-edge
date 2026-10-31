@@ -9,8 +9,8 @@
 #    folders elm-1/, edge-icell-1/, elm-2/, edge-icell-2/ under
 #    'restricted-resources/pr<N>-multi-stack/' (one set per PR; a sibling of the
 #    dedicated pipeline's 'restricted-resources/pr<N>/', not a subfolder) and
-#    waits for the bundles in two passes: wait-elm-zips (elm-N/), then, after
-#    both Edge Nodes are registered and EIC is deployed in ELM, wait-eic-zips
+#    waits for the bundles in two passes: wait-elm-zip (elm-N/), then, after
+#    both Edge Nodes are registered and EIC is deployed in ELM, wait-eic-zip
 #    (edge-icell-N/).
 #
 # 2. Ensure the Service Mesh 3.x operator is installed on the target cluster
@@ -29,7 +29,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: hcp-ossm3-multistack-pr{{ pull_request_number }}-
+  generateName: hcp-ossm3-multi-stack-validation-pr{{ pull_request_number }}-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
@@ -93,15 +93,15 @@ spec:
     #   edge-icell-1/  EIC bundle of Edge Node 1 (edge-icell-1, istio-gateways-1, ...)
     #   edge-icell-2/  EIC bundle of Edge Node 2
     # The pipeline creates all four folders and applies them in two passes:
-    #   1. wait-elm-zips -> apply-rbac-elm (ELM folders only) -> meshes,
+    #   1. wait-elm-zip -> apply-elm-resources (ELM folders only) -> meshes,
     #      namespace labels, one restricted kubeconfig per Edge Node
     #   2. register the Edge Nodes and deploy EIC in ELM, upload the EIC zips:
-    #      wait-eic-zips -> apply-rbac-eic (EIC folders only) -> EIC namespace labels
+    #      wait-eic-zip -> apply-eic-resources (EIC folders only) -> EIC namespace labels
     # Earlier zips stay in the folders (latest version per folder wins).
     # Same as the pipeline defaults (fixed at two Edge Nodes); kept for visibility.
-    - name: elmRestrictedResourcesComponents
+    - name: elmZipFolders
       value: "elm-1 elm-2"
-    - name: eicRestrictedResourcesComponents
+    - name: eicZipFolders
       value: "edge-icell-1 edge-icell-2"
 
     # --- EIC services parameters ---

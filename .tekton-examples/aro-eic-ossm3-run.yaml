@@ -7,7 +7,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: aro-eic-full-test-pr{{ pull_request_number }}-
+  generateName: aro-eic-ossm3-pr{{ pull_request_number }}-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
@@ -16,7 +16,7 @@ metadata:
     pipelinesascode.tekton.dev/cancel-in-progress: "true"
 spec:
   pipelineRef:
-    name: aro-eic-full-test-pipeline
+    name: aro-eic-ossm3-pipeline
   timeouts:
     pipeline: "336h"      # Total pipeline timeout (14 days)
     tasks: "335h"         # Individual task timeout (tasks + finally must be <= pipeline)

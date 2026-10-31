@@ -81,13 +81,13 @@ spec:
       type: string
       description: "S3 key prefix of this deployment's restricted-resources bundles (e.g. restricted-resources/pr123-multi-stack/)"
       default: "restricted-resources/"
-    - name: elmRestrictedResourcesComponents
+    - name: elmZipFolders
       type: string
-      description: "Space-separated ELM component folders under s3Prefix (one per Edge Node; the pipeline is fixed at two stacks). The pipeline creates them, waits until each holds a zip (wait-elm-zips) and applies only them in the first pass (apply-rbac-elm)."
+      description: "Space-separated ELM zip folders under s3Prefix (one per Edge Node; the pipeline is fixed at two stacks). The pipeline creates them, waits until each holds a zip (wait-elm-zip) and applies only them in the first pass (apply-elm-resources)."
       default: "elm-1 elm-2"
-    - name: eicRestrictedResourcesComponents
+    - name: eicZipFolders
       type: string
-      description: "Space-separated EIC component folders under s3Prefix (one per Edge Node, uploaded after the Edge Nodes are registered and EIC is deployed in ELM). The pipeline creates them, waits until each holds a zip (wait-eic-zips) and applies only them in the second pass (apply-rbac-eic)."
+      description: "Space-separated EIC zip folders under s3Prefix (one per Edge Node, uploaded after the Edge Nodes are registered and EIC is deployed in ELM). The pipeline creates them, waits until each holds a zip (wait-eic-zip) and applies only them in the second pass (apply-eic-resources)."
       default: "edge-icell-1 edge-icell-2"
     # --- Corporate proxy parameters ---
     # Proxy config is read from a Secret named {hubClusterName}-proxy-config
@@ -176,13 +176,13 @@ spec:
         - name: s3Prefix
           value: $(params.s3Prefix)
         - name: components
-          value: "$(params.elmRestrictedResourcesComponents) $(params.eicRestrictedResourcesComponents)"
+          value: "$(params.elmZipFolders) $(params.eicZipFolders)"
 
     # Step 0.2: Wait for the ELM zip of each Edge Node (first pass; the EIC zips
     #           can only be downloaded after the Edge Nodes are registered with
-    #           the kubeconfigs of Step 8, see wait-eic-zips). The log shows the
+    #           the kubeconfigs of Step 8, see wait-eic-zip). The log shows the
     #           upload plan of prepare-restricted-resources-prefix.
-    - name: wait-elm-zips
+    - name: wait-elm-zip
       runAfter: [prepare-restricted-resources-prefix]
       taskRef: { name: ossm3-wait-for-restricted-resources }
       params:
@@ -191,7 +191,7 @@ spec:
         - name: s3Prefix
           value: $(params.s3Prefix)
         - name: components
-          value: $(params.elmRestrictedResourcesComponents)
+          value: $(params.elmZipFolders)
         - name: instructions
           value: |
             Multi-stack (2 Edge Nodes, dedicated mesh each), cluster $(params.hostedClusterName), first pass:
@@ -202,7 +202,7 @@ spec:
             Minimum releases (KBA 7149262, multiple Edge Nodes on one cluster): ELM 1.64, EIC 8.48.
             Every SAP namespace of Edge Node N must be named with the -N suffix in ELM.
             The EIC zips (edge-icell-1/, edge-icell-2/) come later, after both Edge Nodes are
-            registered (wait-eic-zips); zips already in those folders are applied in the second pass.
+            registered (wait-eic-zip); zips already in those folders are applied in the second pass.
             $(tasks.prepare-restricted-resources-prefix.results.uploadPlan)
 
     # Step 1: Clone repository
@@ -303,9 +303,9 @@ spec:
 
     # Step 5: Download and apply the ELM restricted-access resources of both Edge
     #         Nodes (first pass): creates edgelm-N and applies CRDs, ClusterRoles,
-    #         RoleBindings, etc. The EIC bundles follow in apply-rbac-eic.
-    - name: apply-rbac-elm
-      runAfter: [verify-operators, wait-elm-zips]
+    #         RoleBindings, etc. The EIC bundles follow in apply-eic-resources.
+    - name: apply-elm-resources
+      runAfter: [verify-operators, wait-elm-zip]
       taskRef: { name: ossm3-download-and-apply-rbac }
       params:
         - name: hostedClusterName
@@ -319,7 +319,7 @@ spec:
         - name: s3Prefix
           value: $(params.s3Prefix)
         - name: requiredComponents
-          value: $(params.elmRestrictedResourcesComponents)
+          value: $(params.elmZipFolders)
       workspaces:
         - name: source
           workspace: source
@@ -335,7 +335,7 @@ spec:
     #         Mesh before namespace labels (reverse of the dedicated pipeline):
     #         the injection revision is read from the running control plane.
     - name: configure-multi-stack-mesh
-      runAfter: [apply-rbac-elm]
+      runAfter: [apply-elm-resources]
       taskRef: { name: ossm3-configure-multi-stack-mesh }
       params:
         - name: hostedClusterName
@@ -418,7 +418,7 @@ spec:
     #   Shared PostgreSQL for all cells; one Redis/Valkey per EIC cell
     #   (instance eic-N -> namespace sap-eic-external-<datastore>-eic-N).
     #   Cell N = EIC edge-icell-N on Edge Node N; both cells always run.
-    #   Ready before wait-eic-zips: deploying EIC in ELM needs these credentials.
+    #   Ready before wait-eic-zip: deploying EIC in ELM needs these credentials.
     # =============================================
 
     # Step 9: Deploy PostgreSQL on hosted cluster (shared by all EIC cells,
@@ -593,7 +593,7 @@ spec:
     # Step 11: Wait for the EIC zip of each Edge Node (log: what to do in ELM
     #          and the upload plan). After the credentials, which deploying
     #          EIC in ELM needs.
-    - name: wait-eic-zips
+    - name: wait-eic-zip
       runAfter: [cell1-get-all-accesses, cell2-get-all-accesses]
       taskRef: { name: ossm3-wait-for-restricted-resources }
       params:
@@ -602,7 +602,7 @@ spec:
         - name: s3Prefix
           value: $(params.s3Prefix)
         - name: components
-          value: $(params.eicRestrictedResourcesComponents)
+          value: $(params.eicZipFolders)
         - name: instructions
           value: |
             Multi-stack (2 Edge Nodes, dedicated mesh each), cluster $(params.hostedClusterName), second pass:
@@ -623,14 +623,14 @@ spec:
                  Edge Node 2: edge-icell-2/ (edge-icell-2, edge-icell-secrets-2, edge-icell-ela-2,
                                              edge-icell-services-2, istio-gateways-2)
             Confirm the EIC resources as applied in ELM only once approval-elm-eic-iflow-deployed is
-            waiting: apply-rbac-eic and prepare-namespaces-multi-stack-eic run first, so the EIC pods
+            waiting: apply-eic-resources and prepare-namespaces-multi-stack-eic run first, so the EIC pods
             start with their sidecars.
             $(tasks.prepare-restricted-resources-prefix.results.uploadPlan)
 
     # Step 11a: Download and apply the EIC restricted-access resources of both
     #           Edge Nodes (second pass: edge-icell-N, ..., istio-gateways-N)
-    - name: apply-rbac-eic
-      runAfter: [wait-eic-zips]
+    - name: apply-eic-resources
+      runAfter: [wait-eic-zip]
       taskRef: { name: ossm3-download-and-apply-rbac }
       params:
         - name: hostedClusterName
@@ -644,7 +644,7 @@ spec:
         - name: s3Prefix
           value: $(params.s3Prefix)
         - name: requiredComponents
-          value: $(params.eicRestrictedResourcesComponents)
+          value: $(params.eicZipFolders)
       workspaces:
         - name: source
           workspace: source
@@ -653,7 +653,7 @@ spec:
     #           Step 7; re-checks that each stack's namespaces share one
     #           edgelm.sap.com/edge-node-id, relabels edgelm-N unchanged)
     - name: prepare-namespaces-multi-stack-eic
-      runAfter: [apply-rbac-eic]
+      runAfter: [apply-eic-resources]
       taskRef: { name: ossm3-prepare-namespaces-multi-stack }
       params:
         - name: hostedClusterName
@@ -745,8 +745,8 @@ spec:
               - PostgreSQL: shared instance (same for both Edge Nodes)
 
             Please complete the following manually (Edge Node registration, EIC deployment and the EIC
-            zip upload happened before this gate, see wait-eic-zips):
-            1. In ELM, confirm the EIC restricted resources of both Edge Nodes as applied (apply-rbac-eic
+            zip upload happened before this gate, see wait-eic-zip):
+            1. In ELM, confirm the EIC restricted resources of both Edge Nodes as applied (apply-eic-resources
                applied them, prepare-namespaces-multi-stack-eic put the EIC namespaces on their meshes)
                and wait until EIC 1 and EIC 2 are deployed
             2. Deploy iFlows for testing on each EIC cell

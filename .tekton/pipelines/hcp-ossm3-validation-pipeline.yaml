@@ -81,13 +81,13 @@ spec:
       type: string
       description: "S3 key prefix of this deployment's restricted-resources folders (e.g. restricted-resources/<hostedClusterName>/)"
       default: "restricted-resources/"
-    - name: elmRestrictedResourcesComponents
+    - name: elmZipFolders
       type: string
-      description: "ELM component folder under s3Prefix. The pipeline creates it, waits until it holds a zip (wait-elm-zip) and applies only it in the first pass (apply-rbac-elm)."
+      description: "ELM zip folder under s3Prefix. The pipeline creates it, waits until it holds a zip (wait-elm-zip) and applies only it in the first pass (apply-elm-resources)."
       default: "elm"
-    - name: eicRestrictedResourcesComponents
+    - name: eicZipFolders
       type: string
-      description: "EIC component folder under s3Prefix (uploaded after the Edge Node is registered and EIC is deployed in ELM). The pipeline creates it, waits until it holds a zip (wait-eic-zip) and applies only it in the second pass (apply-rbac-eic)."
+      description: "EIC zip folder under s3Prefix (uploaded after the Edge Node is registered and EIC is deployed in ELM). The pipeline creates it, waits until it holds a zip (wait-eic-zip) and applies only it in the second pass (apply-eic-resources)."
       default: "edge-icell"
     # --- EIC services parameters ---
     - name: postgresVersion
@@ -208,7 +208,7 @@ spec:
         - name: s3Prefix
           value: $(params.s3Prefix)
         - name: components
-          value: "$(params.elmRestrictedResourcesComponents) $(params.eicRestrictedResourcesComponents)"
+          value: "$(params.elmZipFolders) $(params.eicZipFolders)"
 
     # Step 0.2: Wait for the ELM zip (first pass; the EIC zip can only be
     #           downloaded after the Edge Node is registered with the kubeconfig
@@ -222,7 +222,7 @@ spec:
         - name: s3Prefix
           value: $(params.s3Prefix)
         - name: components
-          value: $(params.elmRestrictedResourcesComponents)
+          value: $(params.elmZipFolders)
         - name: instructions
           value: |
             Cluster $(params.hostedClusterName), first pass: in Edge Lifecycle Management, add the Edge Node
@@ -329,8 +329,8 @@ spec:
 
     # Step 5: Download and apply the ELM restricted-access resources (first
     #         pass): creates edgelm and applies CRDs, ClusterRoles, RoleBindings,
-    #         etc. The EIC bundle follows in apply-rbac-eic.
-    - name: apply-rbac-elm
+    #         etc. The EIC bundle follows in apply-eic-resources.
+    - name: apply-elm-resources
       runAfter: [verify-operators, wait-elm-zip]
       taskRef: { name: ossm3-download-and-apply-rbac }
       params:
@@ -345,17 +345,17 @@ spec:
         - name: s3Prefix
           value: $(params.s3Prefix)
         - name: requiredComponents
-          value: $(params.elmRestrictedResourcesComponents)
+          value: $(params.elmZipFolders)
       workspaces:
         - name: source
           workspace: source
 
     # Step 6: Prepare namespaces with labels and SCC annotations
-    #         Runs after apply-rbac-elm to re-apply correct annotations that may
+    #         Runs after apply-elm-resources to re-apply correct annotations that may
     #         have been overridden by namespace definitions in the zip files.
     #         First pass: edgelm only; the EIC namespaces follow in prepare-namespaces-eic.
     - name: prepare-namespaces
-      runAfter: [apply-rbac-elm]
+      runAfter: [apply-elm-resources]
       taskRef: { name: ossm3-prepare-namespaces }
       params:
         - name: hostedClusterName
@@ -586,7 +586,7 @@ spec:
         - name: s3Prefix
           value: $(params.s3Prefix)
         - name: components
-          value: $(params.eicRestrictedResourcesComponents)
+          value: $(params.eicZipFolders)
         - name: instructions
           value: |
             Cluster $(params.hostedClusterName), second pass: the ELM resources are applied, the mesh is
@@ -597,12 +597,12 @@ spec:
             2. Deploy Edge Integration Cell (EIC) on that Edge Node.
             3. Upload the EIC restricted-resources zip as downloaded to the edge-icell/ folder.
             Confirm the EIC resources as applied in ELM only once approval-elm-eic-iflow-deployed is
-            waiting: apply-rbac-eic, prepare-namespaces-eic and configure-mesh-eic run first, so the
+            waiting: apply-eic-resources, prepare-namespaces-eic and configure-mesh-eic run first, so the
             EIC pods start with their sidecars.
             $(tasks.prepare-restricted-resources-prefix.results.uploadPlan)
 
     # Step 13b: Download and apply the EIC restricted-access resources (second pass)
-    - name: apply-rbac-eic
+    - name: apply-eic-resources
       runAfter: [wait-eic-zip]
       taskRef: { name: ossm3-download-and-apply-rbac }
       params:
@@ -617,14 +617,14 @@ spec:
         - name: s3Prefix
           value: $(params.s3Prefix)
         - name: requiredComponents
-          value: $(params.eicRestrictedResourcesComponents)
+          value: $(params.eicZipFolders)
       workspaces:
         - name: source
           workspace: source
 
     # Step 13c: Labels and SCC annotations for the EIC namespaces (same task as Step 6)
     - name: prepare-namespaces-eic
-      runAfter: [apply-rbac-eic]
+      runAfter: [apply-eic-resources]
       taskRef: { name: ossm3-prepare-namespaces }
       params:
         - name: hostedClusterName
