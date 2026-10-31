@@ -8,7 +8,7 @@ kind: Pipeline
 metadata:
   name: hcp-ossm3-validation-pipeline
   annotations:
-    description: "Complete SAP Edge validation pipeline for HCP KubeVirt with OSSM3 restricted-access setup: creates hosted cluster, configures Service Mesh 3.x, applies RBAC, generates restricted kubeconfig, deploys PostgreSQL and Redis, runs endpoint tests, and tears down infrastructure"
+    description: "Complete SAP Edge validation pipeline for HCP KubeVirt with OSSM3 restricted-access setup: creates hosted cluster, configures Service Mesh 3.x, applies the restricted-resources in two passes (ELM bundle first, EIC bundle after the Edge Node is registered), generates restricted kubeconfig, deploys PostgreSQL and Redis, runs endpoint tests, and tears down infrastructure"
 spec:
   params:
     # --- Git parameters ---
@@ -79,8 +79,16 @@ spec:
       default: "sap-eic-restricted-cluster-config-resources"
     - name: s3Prefix
       type: string
-      description: "S3 key prefix holding the restricted-resources zip files directly (flat prefix; subfolders such as per-PR folders are ignored)"
+      description: "S3 key prefix of this deployment's restricted-resources folders (e.g. restricted-resources/<hostedClusterName>/)"
       default: "restricted-resources/"
+    - name: elmZipFolders
+      type: string
+      description: "ELM zip folder under s3Prefix. The pipeline creates it, waits until it holds a zip (wait-elm-zip) and applies only it in the first pass (apply-elm-resources)."
+      default: "elm"
+    - name: eicZipFolders
+      type: string
+      description: "EIC zip folder under s3Prefix (uploaded after the Edge Node is registered and EIC is deployed in ELM). The pipeline creates it, waits until it holds a zip (wait-eic-zip) and applies only it in the second pass (apply-eic-resources)."
+      default: "edge-icell"
     # --- EIC services parameters ---
     - name: postgresVersion
       type: string
@@ -186,6 +194,43 @@ spec:
         - name: hubKubeconfigSecretName
           value: $(params.hubClusterName)-kubeconfig
 
+    # Step 0.1: Create the S3 folders elm/ and edge-icell/ under s3Prefix and
+    #           render upload instructions. Runs in parallel with cluster
+    #           creation so the upload overlaps the cluster build. Earlier zips
+    #           stay (no archive): a re-run reuses them, the latest version per
+    #           folder wins.
+    - name: prepare-restricted-resources-prefix
+      runAfter: [preflight-check]
+      taskRef: { name: ossm3-prepare-restricted-resources-prefix }
+      params:
+        - name: obcName
+          value: $(params.obcName)
+        - name: s3Prefix
+          value: $(params.s3Prefix)
+        - name: components
+          value: "$(params.elmZipFolders) $(params.eicZipFolders)"
+
+    # Step 0.2: Wait for the ELM zip (first pass; the EIC zip can only be
+    #           downloaded after the Edge Node is registered with the kubeconfig
+    #           of Step 8, see wait-eic-zip). The log shows the upload plan.
+    - name: wait-elm-zip
+      runAfter: [prepare-restricted-resources-prefix]
+      taskRef: { name: ossm3-wait-for-restricted-resources }
+      params:
+        - name: obcName
+          value: $(params.obcName)
+        - name: s3Prefix
+          value: $(params.s3Prefix)
+        - name: components
+          value: $(params.elmZipFolders)
+        - name: instructions
+          value: |
+            Cluster $(params.hostedClusterName), first pass: in Edge Lifecycle Management, add the Edge Node
+            with restricted access and upload its ELM restricted-resources zip as downloaded to the elm/
+            folder (latest version wins). The EIC zip (edge-icell/) comes later, after the Edge Node is
+            registered (wait-eic-zip); a zip already in that folder is applied in the second pass.
+            $(tasks.prepare-restricted-resources-prefix.results.uploadPlan)
+
     # Step 1: Clone repository
     - name: fetch-repository
       taskRef: { name: git-clone }
@@ -282,10 +327,11 @@ spec:
         - name: source
           workspace: source
 
-    # Step 5: Download and apply RBAC permissions from S3 (restricted-access resources)
-    #         This creates namespaces and applies CRDs, ClusterRoles, RoleBindings, etc.
-    - name: apply-rbac
-      runAfter: [verify-operators]
+    # Step 5: Download and apply the ELM restricted-access resources (first
+    #         pass): creates edgelm and applies CRDs, ClusterRoles, RoleBindings,
+    #         etc. The EIC bundle follows in apply-eic-resources.
+    - name: apply-elm-resources
+      runAfter: [verify-operators, wait-elm-zip]
       taskRef: { name: ossm3-download-and-apply-rbac }
       params:
         - name: hostedClusterName
@@ -298,15 +344,18 @@ spec:
           value: $(params.obcName)
         - name: s3Prefix
           value: $(params.s3Prefix)
+        - name: requiredComponents
+          value: $(params.elmZipFolders)
       workspaces:
         - name: source
           workspace: source
 
     # Step 6: Prepare namespaces with labels and SCC annotations
-    #         Runs after apply-rbac to re-apply correct annotations that may
+    #         Runs after apply-elm-resources to re-apply correct annotations that may
     #         have been overridden by namespace definitions in the zip files.
+    #         First pass: edgelm only; the EIC namespaces follow in prepare-namespaces-eic.
     - name: prepare-namespaces
-      runAfter: [apply-rbac]
+      runAfter: [apply-elm-resources]
       taskRef: { name: ossm3-prepare-namespaces }
       params:
         - name: hostedClusterName
@@ -319,7 +368,9 @@ spec:
         - name: source
           workspace: source
 
-    # Step 7: Configure OpenShift Service Mesh 3.x
+    # Step 7: Configure OpenShift Service Mesh 3.x (first pass: control plane,
+    #         and edgelm joins the mesh before ELM starts its pods; the EIC
+    #         namespaces follow in configure-mesh-eic)
     - name: configure-mesh
       runAfter: [prepare-namespaces]
       taskRef: { name: ossm3-configure-mesh }
@@ -351,22 +402,8 @@ spec:
 
     # =============================================
     # Phase 3: Deploy EIC Services
+    #   Ready before wait-eic-zip: deploying EIC in ELM needs these credentials.
     # =============================================
-
-    # Step 9: Enable User Workload Monitoring (parallel with DB deployment)
-    - name: enable-monitoring
-      runAfter: [generate-sa-based-kubeconfig]
-      taskRef: { name: hcp-enable-monitoring }
-      params:
-        - name: hostedClusterName
-          value: $(params.hostedClusterName)
-        - name: hostedClusterNamespace
-          value: $(params.hostedClusterNamespace)
-        - name: hubKubeconfigSecretName
-          value: $(params.hubClusterName)-kubeconfig
-      workspaces:
-        - name: source
-          workspace: source
 
     # Step 10: Deploy PostgreSQL on hosted cluster (parallel with Redis)
     - name: deploy-postgres
@@ -536,9 +573,105 @@ spec:
         - name: source
           workspace: source
 
-    # Step 13: Manual approval after ELM/EIC and iFlow deployment
+    # Step 13a: Wait for the EIC zip (second pass; log: what to do in ELM and
+    #           the upload plan). After the credentials, which deploying EIC in
+    #           ELM needs, and after the optional browser session (skipped when
+    #           disabled, which does not block).
+    - name: wait-eic-zip
+      runAfter: [get-all-accesses, sap-browser]
+      taskRef: { name: ossm3-wait-for-restricted-resources }
+      params:
+        - name: obcName
+          value: $(params.obcName)
+        - name: s3Prefix
+          value: $(params.s3Prefix)
+        - name: components
+          value: $(params.eicZipFolders)
+        - name: instructions
+          value: |
+            Cluster $(params.hostedClusterName), second pass: the ELM resources are applied, the mesh is
+            running, and PostgreSQL and Redis/Valkey are deployed (credentials in the get-all-accesses log).
+            1. Register the cluster in ELM with the restricted kubeconfig in Secret
+               edgelm-kubeconfig-generated-$(params.hostedClusterName) (pipeline namespace; check
+               "Restricted Access").
+            2. Deploy Edge Integration Cell (EIC) on that Edge Node.
+            3. Upload the EIC restricted-resources zip as downloaded to the edge-icell/ folder.
+            Confirm the EIC resources as applied in ELM only once approval-elm-eic-iflow-deployed is
+            waiting: apply-eic-resources, prepare-namespaces-eic and configure-mesh-eic run first, so the
+            EIC pods start with their sidecars.
+            $(tasks.prepare-restricted-resources-prefix.results.uploadPlan)
+
+    # Step 13b: Download and apply the EIC restricted-access resources (second pass)
+    - name: apply-eic-resources
+      runAfter: [wait-eic-zip]
+      taskRef: { name: ossm3-download-and-apply-rbac }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: obcName
+          value: $(params.obcName)
+        - name: s3Prefix
+          value: $(params.s3Prefix)
+        - name: requiredComponents
+          value: $(params.eicZipFolders)
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 13c: Labels and SCC annotations for the EIC namespaces (same task as Step 6)
+    - name: prepare-namespaces-eic
+      runAfter: [apply-eic-resources]
+      taskRef: { name: ossm3-prepare-namespaces }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 13d: The EIC namespaces join the mesh (same task as Step 7)
+    - name: configure-mesh-eic
+      runAfter: [prepare-namespaces-eic]
+      taskRef: { name: ossm3-configure-mesh }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 13e: Enable User Workload Monitoring once the EIC namespaces exist
+    #           (the NetworkPolicies go only into existing namespaces)
+    - name: enable-monitoring
+      runAfter: [configure-mesh-eic]
+      taskRef: { name: hcp-enable-monitoring }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Step 13: Manual approval after confirming the EIC resources in ELM and
+    #          deploying iFlows
     - name: approval-elm-eic-iflow-deployed
-      runAfter: [sap-browser]
+      runAfter: [configure-mesh-eic, enable-monitoring]
       taskRef:
         apiVersion: openshift-pipelines.org/v1alpha1
         kind: ApprovalTask
@@ -555,6 +688,8 @@ spec:
           value: |
             OSSM3 restricted-access setup, PostgreSQL and Redis deployed successfully.
             Credentials have been displayed. Restricted kubeconfig generated.
+            The restricted resources were applied in two passes (ELM first, then EIC after the Edge Node
+            was registered) and the EIC namespaces are on the mesh.
 
             Cluster: $(params.hostedClusterName)
             Namespace: $(params.hostedClusterNamespace)
@@ -564,10 +699,10 @@ spec:
 
             Optional SAP browser mode: $(params.sapBrowserMode).
             Registration review and inspection modes do not verify deployment readiness.
-            Confirm the following are complete (finish any remaining steps manually):
-            1. Register the cluster in ELM (use restricted kubeconfig, check "Restricted Access")
-            2. Deploy Edge Integration Cell (EIC)
-            3. Deploy iFlows for testing
+            Confirm the following are complete (finish any remaining steps manually; registration,
+            EIC deployment and the EIC zip upload happened before this gate, see wait-eic-zip):
+            1. In ELM, confirm the EIC restricted resources as applied and wait until EIC is deployed
+            2. Deploy iFlows for testing
 
             After deployment is complete and istio-ingressgateway has a LoadBalancer IP:
             APPROVE: Continue with ConfigMap creation and endpoint tests
@@ -998,7 +1133,7 @@ spec:
             * OSSM3 operator verification: Completed
             * Namespace preparation: Completed
             * Service Mesh 3.x configuration: Completed
-            * RBAC permissions: Completed
+            * RBAC permissions (ELM bundle, then EIC bundle): Completed
             * Restricted kubeconfig: Generated
             * PostgreSQL deployment: Completed
             * Redis deployment: Completed

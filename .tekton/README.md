@@ -5,42 +5,35 @@ SPDX-License-Identifier: Apache-2.0
 
 # Tekton Pipelines
 
-CI/CD pipelines for deploying and testing SAP Edge Integration Cell on ARO, ROSA, and HCP clusters.
+CI/CD pipelines for deploying and testing SAP Edge Integration Cell on ARO, ROSA, ROKS and HCP clusters.
 
 ## Pipelines
 
-### ARO (Azure Red Hat OpenShift)
+**Names.** `.tekton/pipelines/<name>-pipeline.yaml` has its example run in
+`.tekton-examples/<name>-run.yaml` (a variant adds a suffix before `-run`, for
+example `-proxy`), and the run's `generateName` is `<name>-pr<N>-`. To run a
+pipeline on pull requests, copy its example run into `.tekton/`.
 
-| Pipeline | Purpose |
-|----------|---------|
-| `aro-eic-full-test-pipeline.yaml` | Full ARO deployment with EIC services → endpoint testing → cleanup |
-| `aro-edgelm-validation-pipeline.yaml` | ARO + Quay deployment → edgelm validation → status reporting |
+**`ossm3` in the name means restricted access:** the pipeline installs OpenShift
+Service Mesh 3, applies SAP's restricted-resources zips in two passes (see
+[Two-pass apply](#two-pass-apply-all-ossm3-pipelines)) and generates the
+restricted kubeconfig that ELM registers with ("Restricted Access"). Without
+`ossm3`, ELM gets full cluster access and brings its own Istio; there are no
+zips to upload.
 
-### ROSA (Red Hat OpenShift on AWS)
-
-| Pipeline | Purpose |
-|----------|---------|
-| `rosa-eic-full-test-pipeline.yaml` | Full ROSA deployment with EIC services → endpoint testing → cleanup |
-| `rosa-edgelm-validation-pipeline.yaml` | ROSA + Quay deployment → edgelm validation → status reporting |
-
-### ROKS (Red Hat OpenShift on IBM Cloud)
-
-| Pipeline | Purpose |
-|----------|---------|
-| `roks-eic-full-test-pipeline.yaml` | Full ROKS deployment with EIC services → endpoint testing → cleanup |
-
-### HCP (Hosted Control Plane)
-
-| Pipeline | Purpose |
-|----------|---------|
-| `hcp-kubevirt-validation-pipeline.yaml` | HCP KubeVirt cluster deployment and validation |
-| `hcp-ossm3-validation-pipeline.yaml` | HCP KubeVirt + OSSM3 restricted-access setup, EIC services, endpoint tests, and teardown |
-
-### Common
-
-| Pipeline | Purpose |
-|----------|---------|
-| `endpoint-test-pipeline.yaml` | Standalone endpoint testing for existing clusters |
+| Pipeline | ELM access | What it does |
+|----------|------------|--------------|
+| `aro-eic-ossm3` | restricted | ARO with Azure PostgreSQL/Redis and Quay, EIC, endpoint tests, teardown |
+| `rosa-eic-ossm3` | restricted | ROSA HCP with RDS PostgreSQL, ElastiCache Redis and Quay, EIC, endpoint tests, teardown |
+| `roks-eic-ossm3` | restricted | ROKS with IBM Cloud Databases and Container Registry, optional ELM browser automation, EIC, endpoint tests, teardown |
+| `hcp-ossm3-validation` | restricted | HCP KubeVirt, one Edge Node with one EIC on the shared mesh |
+| `hcp-ossm3-dedicated-validation` | restricted | HCP KubeVirt, one Edge Node with one or two EICs on a dedicated mesh (topology A) |
+| `hcp-ossm3-multi-stack-validation` | restricted | HCP KubeVirt, two Edge Nodes with one EIC and a dedicated mesh each (topology B) |
+| `hcp-kubevirt-validation` | full | HCP KubeVirt with PostgreSQL/Redis, EIC, endpoint tests, teardown |
+| `hcp-cloud-connector-validation` | full | as `hcp-kubevirt-validation`, plus the SAP Cloud Connector configuration |
+| `aro-edgelm-validation`, `rosa-edgelm-validation` | full | cluster with Quay, ELM only (no databases), edgelm validation |
+| `aro-validation`, `rosa-validation` | - | cluster only, for generic testing |
+| `endpoint-test-pipeline` | - | endpoint tests against an existing EIC |
 
 ## Tasks
 
@@ -82,7 +75,7 @@ CI/CD pipelines for deploying and testing SAP Edge Integration Cell on ARO, ROSA
 - `ossm3-configure-mesh-task`: Deploy IstioCNI and Istio control plane, and add the existing application namespaces to the mesh
 - `ossm3-apply-rbac-task`: Apply RBAC permissions from SAP Note 3618713 resources
 - `ossm3-generate-sa-based-kubeconfig-task`: Generate SA-based restricted kubeconfig for ELM registration
-- `ossm3-wait-for-restricted-resources-task`: Wait until every given component folder under the run's S3 prefix holds a restricted-resources `.zip` (ROKS pipeline: `wait-elm-zip`, `wait-eic-zip`); prints the instructions with the upload plan once, retries failed listings
+- `ossm3-wait-for-restricted-resources-task`: Wait until every given component folder under the run's S3 prefix holds a restricted-resources `.zip` (every OSSM3 pipeline: `wait-elm-zip` and `wait-eic-zip`, see [Two-pass apply](#two-pass-apply-all-ossm3-pipelines)); prints the instructions with the upload plan once, retries failed listings
 
 ### Common Tasks
 - `endpoint-tests`: Test EIC API endpoints
@@ -194,9 +187,9 @@ tkn pipelinerun logs <pipelinerun-name> -f
 tkn pipelinerun list
 ```
 
-**Example PipelineRuns** are in `.tekton-examples/`:
-- `hcp-kubevirt-validation-pipelinerun.yaml` - HCP KubeVirt validation
-- `hcp-ossm3-validation-pipelinerun.yaml` - HCP KubeVirt + OSSM3 restricted-access setup
+**Example PipelineRuns** are in `.tekton-examples/`, named after their pipeline
+(see [Pipelines](#pipelines)), for example `hcp-ossm3-validation-run.yaml`;
+`hcp-sap-browser-taskrun.yaml` rehearses the SAP browser task on its own.
 
 ### 4. Manual Approvals
 ```bash
@@ -262,19 +255,58 @@ restricted-resources/pr<N>-multi-stack/
 
 - One bundle zip per folder; the latest version in a folder wins. To add a
   cell, add a folder; to upgrade a cell, put the newer zip into its folder.
-- The pipelines create the folders listed in `restrictedResourcesComponents`
-  (for example `elm edge-icell-1 edge-icell-2` in topology A; topology B
-  defaults to `elm-1 edge-icell-1 elm-2 edge-icell-2`) and pause at
-  `approval-upload-restricted-resources` with upload instructions and each
-  folder's contents. After the approval, `apply-rbac` fails if a listed folder
-  holds no zip.
-- `apply-rbac` (`ossm3-download-and-apply-rbac`, parameter
-  `requiredComponents`) downloads only the listed folders; other folders below
-  the prefix are never applied.
-- An empty `restrictedResourcesComponents` means a flat prefix: only the zips
-  directly under `s3Prefix` are applied, as one component. The single-EIC
-  pipelines (`hcp-ossm3-validation`, ARO, ROSA) use `restricted-resources/`
-  this way.
+- Both pipelines create the folders of `elmZipFolders` (topology A `elm`,
+  topology B `elm-1 elm-2`) and `eicZipFolders` (`edge-icell-1 edge-icell-2`;
+  topology A with `cellCount: "1"` lists only `edge-icell-1`) and apply them in
+  two passes, because the EIC zips can only be downloaded after the Edge Node
+  is registered:
+  1. `wait-elm-zip` waits until each ELM folder holds a zip and
+     `apply-elm-resources` applies them. Then the mesh, the `edgelm` labels and
+     the restricted kubeconfig follow (topology B: one mesh and one kubeconfig
+     per Edge Node), then PostgreSQL and Redis/Valkey.
+  2. Register the Edge Node (topology B: both) with its kubeconfig, deploy EIC
+     in ELM and upload the EIC zips: `wait-eic-zip` waits for them,
+     `apply-eic-resources` applies them, and the EIC namespaces join the mesh
+     (topology A: `prepare-namespaces-eic` and `configure-mesh-eic`, topology B:
+     `prepare-namespaces-multi-stack-eic`). Confirm the EIC resources in ELM
+     once `approval-elm-eic-iflow-deployed` is waiting.
+
+  The waits are tasks, not approvals; their logs show the upload plan. Zips
+  from an earlier run of the same PR stay in the folders, so a folder that
+  already holds a zip does not wait.
+- `apply-elm-resources` and `apply-eic-resources`
+  (`ossm3-download-and-apply-rbac`, parameter `requiredComponents`) download
+  only the listed folders; other folders below the prefix are never applied.
+- `ossm3-download-and-apply-rbac` still supports an empty
+  `requiredComponents` (a flat prefix: only the zips directly under `s3Prefix`,
+  as one component), but no pipeline uses it any more.
+
+### Two-pass apply (all OSSM3 pipelines)
+
+An EIC restricted-resources zip can only be downloaded after the Edge Node is
+registered with the restricted kubeconfig the pipeline generates, so every OSSM3
+pipeline applies the bundles in two passes, in the shape of the ROKS pipeline:
+
+```text
+wait-elm-zip -> apply-elm-resources -> ELM namespace labels, mesh -> restricted kubeconfig
+  -> (register the Edge Node, deploy EIC in ELM, upload the EIC zip)
+  -> wait-eic-zip -> apply-eic-resources -> EIC namespace labels, mesh
+  -> approval-elm-eic-iflow-deployed (confirm the EIC resources in ELM here)
+```
+
+| Pipeline | S3 folders | Notes |
+|---|---|---|
+| `roks-eic-ossm3` | `restricted-resources/<clusterName>/elm/`, `edge-icell/` | earlier zips are archived (new cluster each run) |
+| `hcp-ossm3-validation` | `restricted-resources/<hostedClusterName>/elm/`, `edge-icell/` | EIC wait after PostgreSQL/Redis and the optional `sap-browser` |
+| `hcp-ossm3-dedicated-validation` | `restricted-resources/pr<N>/elm/`, `edge-icell-N/` | see the topology A notes above |
+| `hcp-ossm3-multi-stack-validation` | `restricted-resources/pr<N>-multi-stack/elm-N/`, `edge-icell-N/` | see the topology B notes above |
+| `aro-eic-ossm3`, `rosa-eic-ossm3` | `restricted-resources/<cluster name>/elm/`, `edge-icell/` | EIC wait after the Quay registry; `skipEicValidation: "true"` skips the whole second pass |
+
+Every HCP, ARO and ROSA run keeps the zips already in its folders (a re-run
+reuses them; the latest version per folder wins), so a folder that already
+holds a zip does not wait. The HCP pipelines enable user workload monitoring
+after the EIC pass, because its NetworkPolicies go only into namespaces that
+exist.
 
 ### Apply order
 
@@ -306,13 +338,15 @@ The secrets namespaces are in the mesh's discovery scope but get no sidecars
   `edgelm.sap.com/product=edgelm`, replaces `istio-injection` with
   `istio.io/rev=sap-mesh-istio` and sets the SCC annotations per role. Then
   `ossm3-configure-dedicated-mesh` creates the control plane and labels all SAP
-  namespaces `istio-discovery=sap-edge-mesh`.
+  namespaces `istio-discovery=sap-edge-mesh`. Both run once after the ELM pass
+  and again after the EIC pass (`prepare-namespaces-eic`, `configure-mesh-eic`).
 - Topology B runs the other way round, because the revision label is read from
   the running control plane: `ossm3-configure-multi-stack-mesh` creates one
   control plane per stack (namespace `istio-system-sap-edge-N`, Istio
   `sap-mesh-istio-N`, selector `istio-discovery=sap-edge-mesh-N`), then
   `ossm3-prepare-namespaces-multi-stack` labels each stack's namespaces with the
-  active revision of its mesh.
+  active revision of its mesh: `edgelm-N` after the ELM pass, and again
+  (`prepare-namespaces-multi-stack-eic`) the EIC namespaces after the EIC pass.
 
 ### Backing services per cell
 
@@ -674,7 +708,7 @@ tkn pipelinerun logs -f <pipelinerun-name>
 
 Cluster name: `redhat-roks-eic-pr<N>` (starts with `redhat-`, at most 30 characters).
 
-**Restricted-resources upload:** right after the run starts it creates the folders `restricted-resources/<clusterName>/elm/` and `restricted-resources/<clusterName>/edge-icell/` in the OBC bucket (earlier zips of both components are moved to `restricted-resources/<clusterName>/archive/`) and waits for the zips in two steps, `wait-elm-zip` and `wait-eic-zip` (tasks, not approvals). Upload the ELM zip to `elm/` first (new-format bundle with `apply-restricted-resources.sh`; the logs of `wait-elm-zip` and `wait-eic-zip` show the upload plan of `prepare-restricted-resources-prefix`: the folders, the console steps and the `aws s3 cp` command); once `apply-rbac-elm` applies it, register the Edge Node with the generated restricted kubeconfig and deploy EIC, then upload the EIC zip to `edge-icell/`. The SAP bundles create all namespaces; the pipeline only adds the mesh labels and SCC annotations: to `edgelm` (plus the mesh control plane) after the ELM zip, before `elm init` starts the ELM pods, and to the EIC namespaces after the EIC zip (`prepare-namespaces-eic`, `configure-mesh-eic`). In ELM, confirm "downloaded and applied" for the ELM resources only after `generate-sa-based-kubeconfig`, and for the EIC resources only after `configure-mesh-eic`, so the pods start with their sidecars. Each task reads only its own component folder under `restricted-resources/<clusterName>/`, never zips directly under `restricted-resources/`. The folders are named after the cluster (unique per run), and each run needs fresh uploads (earlier zips are moved to the run's `archive/` folder; a zip with the same name replaces the archived copy).
+**Restricted-resources upload:** right after the run starts it creates the folders `restricted-resources/<clusterName>/elm/` and `restricted-resources/<clusterName>/edge-icell/` in the OBC bucket (earlier zips of both components are moved to `restricted-resources/<clusterName>/archive/`) and waits for the zips in two steps, `wait-elm-zip` and `wait-eic-zip` (tasks, not approvals). Upload the ELM zip to `elm/` first (new-format bundle with `apply-restricted-resources.sh`; the logs of `wait-elm-zip` and `wait-eic-zip` show the upload plan of `prepare-restricted-resources-prefix`: the folders, the console steps and the `aws s3 cp` command); once `apply-elm-resources` applies it, register the Edge Node with the generated restricted kubeconfig and deploy EIC, then upload the EIC zip to `edge-icell/`. The SAP bundles create all namespaces; the pipeline only adds the mesh labels and SCC annotations: to `edgelm` (plus the mesh control plane) after the ELM zip, before `elm init` starts the ELM pods, and to the EIC namespaces after the EIC zip (`prepare-namespaces-eic`, `configure-mesh-eic`). In ELM, confirm "downloaded and applied" for the ELM resources only after `generate-sa-based-kubeconfig`, and for the EIC resources only after `configure-mesh-eic`, so the pods start with their sidecars. Each task reads only its own component folder under `restricted-resources/<clusterName>/`, never zips directly under `restricted-resources/`. The folders are named after the cluster (unique per run), and each run needs fresh uploads (earlier zips are moved to the run's `archive/` folder; a zip with the same name replaces the archived copy).
 
 #### Browser automation (optional)
 

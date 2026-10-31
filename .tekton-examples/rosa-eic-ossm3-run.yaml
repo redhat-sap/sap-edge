@@ -7,7 +7,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: rosa-eic-full-test-pr{{ pull_request_number }}-
+  generateName: rosa-eic-ossm3-pr{{ pull_request_number }}-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
@@ -16,7 +16,7 @@ metadata:
     pipelinesascode.tekton.dev/cancel-in-progress: "true"
 spec:
   pipelineRef:
-    name: rosa-eic-full-test-pipeline
+    name: rosa-eic-ossm3-pipeline
   timeouts:
     pipeline: "336h"      # Total pipeline timeout (14 days)
     tasks: "335h"         # Individual task timeout (tasks + finally must be <= pipeline)
@@ -67,8 +67,11 @@ spec:
       value: "stable-3.3"
     - name: obcName
       value: "sap-eic-restricted-cluster-config-resources"
+    # One folder per cluster: the pipeline creates elm/ and edge-icell/ below it
+    # and waits for the ELM zip, then (after registration and EIC deployment in
+    # ELM) for the EIC zip; earlier zips stay (latest version per folder wins)
     - name: s3Prefix
-      value: "restricted-resources/"
+      value: "restricted-resources/rosa-ossm-pr{{ pull_request_number }}/"
     - name: terraformStateS3Bucket
       value: "eic-test-rosa-terraform-state"
     - name: terraformStateS3Key

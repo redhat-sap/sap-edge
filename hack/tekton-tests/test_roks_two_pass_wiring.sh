@@ -11,9 +11,9 @@ echo "============================================"
 echo "Test: ROKS two-pass apply wiring"
 echo "============================================"
 
-# ROKS pipeline two-pass apply invariants: ELM zip wait → apply-rbac-elm →
-# generate SA kubeconfig → EIC zip wait → apply-rbac-eic → re-apply mesh labels.
-python3 -I - ../../.tekton/pipelines/roks-eic-full-test-pipeline.yaml \
+# ROKS pipeline two-pass apply invariants: ELM zip wait → apply-elm-resources →
+# generate SA kubeconfig → EIC zip wait → apply-eic-resources → re-apply mesh labels.
+python3 -I - ../../.tekton/pipelines/roks-eic-ossm3-pipeline.yaml \
   ../../.tekton/pipelines/hcp-*.yaml <<'PY'
 import sys
 import yaml
@@ -82,26 +82,26 @@ if elm_wait:
     check(instructions and instructions.strip().endswith(UPLOAD_PLAN),
           f"ROKS: wait-elm-zip instructions must end with {UPLOAD_PLAN}")
 
-# apply-rbac-elm (renamed from apply-rbac)
-check("apply-rbac" not in tasks, "ROKS: apply-rbac must be renamed to apply-rbac-elm")
-elm_apply = tasks.get("apply-rbac-elm")
-check(elm_apply is not None, "ROKS: apply-rbac-elm must exist")
+# apply-elm-resources (renamed from apply-rbac)
+check("apply-rbac" not in tasks, "ROKS: apply-rbac must be renamed to apply-elm-resources")
+elm_apply = tasks.get("apply-elm-resources")
+check(elm_apply is not None, "ROKS: apply-elm-resources must exist")
 if elm_apply:
     # sap-browser-access records the cluster's pre-run Edge Node ID before the
     # ELM zip is applied, also when the zip was uploaded by hand early
     check(run_after_set(elm_apply) == {"verify-operators", "wait-elm-zip", "sap-browser-access"},
-          f"ROKS: apply-rbac-elm runAfter must be [verify-operators, wait-elm-zip, sap-browser-access], got {run_after_set(elm_apply)}")
+          f"ROKS: apply-elm-resources runAfter must be [verify-operators, wait-elm-zip, sap-browser-access], got {run_after_set(elm_apply)}")
     check(task_param(elm_apply, "requiredComponents") == "elm",
-          "ROKS: apply-rbac-elm requiredComponents must be \"elm\"")
+          "ROKS: apply-elm-resources requiredComponents must be \"elm\"")
     check(task_param(elm_apply, "s3Prefix") == "restricted-resources/$(params.clusterName)/",
-          "ROKS: apply-rbac-elm s3Prefix must be restricted-resources/$(params.clusterName)/")
+          "ROKS: apply-elm-resources s3Prefix must be restricted-resources/$(params.clusterName)/")
 
-# prepare-namespaces depends on apply-rbac-elm
+# prepare-namespaces depends on apply-elm-resources
 prep_ns = tasks.get("prepare-namespaces")
 check(prep_ns is not None, "ROKS: prepare-namespaces must exist")
 if prep_ns:
-    check(run_after_set(prep_ns) == {"apply-rbac-elm"},
-          f"ROKS: prepare-namespaces runAfter must be [apply-rbac-elm], got {run_after_set(prep_ns)}")
+    check(run_after_set(prep_ns) == {"apply-elm-resources"},
+          f"ROKS: prepare-namespaces runAfter must be [apply-elm-resources], got {run_after_set(prep_ns)}")
 
 # configure-mesh depends on prepare-namespaces (unchanged)
 mesh = tasks.get("configure-mesh")
@@ -133,23 +133,23 @@ if eic_wait:
     check(instructions and instructions.strip().endswith(UPLOAD_PLAN),
           f"ROKS: wait-eic-zip instructions must end with {UPLOAD_PLAN}")
 
-# apply-rbac-eic
-eic_apply = tasks.get("apply-rbac-eic")
-check(eic_apply is not None, "ROKS: apply-rbac-eic must exist")
+# apply-eic-resources
+eic_apply = tasks.get("apply-eic-resources")
+check(eic_apply is not None, "ROKS: apply-eic-resources must exist")
 if eic_apply:
     check(run_after_set(eic_apply) == {"wait-eic-zip"},
-          f"ROKS: apply-rbac-eic runAfter must be [wait-eic-zip], got {run_after_set(eic_apply)}")
+          f"ROKS: apply-eic-resources runAfter must be [wait-eic-zip], got {run_after_set(eic_apply)}")
     check(task_param(eic_apply, "requiredComponents") == "edge-icell",
-          "ROKS: apply-rbac-eic requiredComponents must be \"edge-icell\"")
+          "ROKS: apply-eic-resources requiredComponents must be \"edge-icell\"")
     check(task_param(eic_apply, "s3Prefix") == "restricted-resources/$(params.clusterName)/",
-          "ROKS: apply-rbac-eic s3Prefix must be restricted-resources/$(params.clusterName)/")
+          "ROKS: apply-eic-resources s3Prefix must be restricted-resources/$(params.clusterName)/")
 
 # prepare-namespaces-eic
 prep_ns_eic = tasks.get("prepare-namespaces-eic")
 check(prep_ns_eic is not None, "ROKS: prepare-namespaces-eic must exist")
 if prep_ns_eic:
-    check(run_after_set(prep_ns_eic) == {"apply-rbac-eic"},
-          f"ROKS: prepare-namespaces-eic runAfter must be [apply-rbac-eic], got {run_after_set(prep_ns_eic)}")
+    check(run_after_set(prep_ns_eic) == {"apply-eic-resources"},
+          f"ROKS: prepare-namespaces-eic runAfter must be [apply-eic-resources], got {run_after_set(prep_ns_eic)}")
 
 # configure-mesh-eic
 mesh_eic = tasks.get("configure-mesh-eic")

@@ -6,9 +6,9 @@
 apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
-  name: rosa-eic-full-test-pipeline
+  name: aro-eic-ossm3-pipeline
   annotations:
-    description: "Complete SAP Edge Integration Cell validation pipeline for ROSA: deploys ROSA HCP with AWS services (RDS PostgreSQL, ElastiCache Redis, S3 for Quay via Terraform), Quay registry operator, runs comprehensive endpoint tests, and tears down infrastructure"
+    description: "Complete SAP Edge Integration Cell validation pipeline: deploys ARO with Azure services (PostgreSQL, Redis, Quay Storage via Bicep), Quay registry operator, applies the OSSM3 restricted-resources in two passes (ELM bundle first, EIC bundle after the Edge Node is registered), runs comprehensive endpoint tests, and tears down infrastructure"
 spec:
   params:
     - name: repoUrl
@@ -19,64 +19,52 @@ spec:
       type: string
       description: "Pull request number"
       default: ""
-    - name: clusterName
+    - name: aroLocation
       type: string
-      description: "ROSA cluster name (max 15 characters)"
-    - name: awsRegion
+      description: "ARO location"
+      default: "northeurope"
+    - name: aroClusterName
       type: string
-      description: "AWS region"
-      default: "eu-north-1"
-    - name: rosaVersion
+      description: "ARO cluster name"
+    - name: aroVersion
       type: string
-      description: "ROSA version"
-      default: "4.17.0"
-    - name: awsSecretName
+      description: "ARO version"
+      default: "4.15.35"
+    - name: azureSecretName
       type: string
-      description: "Name of the Kubernetes Secret containing AWS credentials"
-      default: "aws-credentials-secret"
-    - name: redhatTokenSecretName
+      description: "Name of the Kubernetes Secret containing Azure service principal credentials, ARO resource group, and ARO domain"
+      default: "azure-sp-secret"
+    - name: pullSecretName
       type: string
-      description: "Name of the Kubernetes Secret containing Red Hat OCM token"
-      default: "redhat-token-secret"
+      description: "Name of the Kubernetes Secret containing Red Hat pull secret"
+      default: "redhat-pull-secret"
     - name: eicAuthSecretName
       type: string
       description: "EIC authentication secret name"
     - name: postgresAdminPasswordSecretName
       type: string
       description: "Name of the Kubernetes Secret containing PostgreSQL admin password"
-      default: "rosa-postgres-admin-password"
+      default: "azure-postgres-admin-password"
     - name: quayAdminPasswordSecretName
       type: string
       description: "Name of the Kubernetes Secret containing Quay admin password and email"
       default: "quay-admin-secret"
     - name: deployPostgres
       type: string
-      description: "Whether to deploy RDS PostgreSQL (true/false)"
+      description: "Whether to deploy PostgreSQL (true/false)"
       default: "false"
     - name: deployRedis
       type: string
-      description: "Whether to deploy ElastiCache Redis (true/false)"
+      description: "Whether to deploy Redis (true/false)"
       default: "false"
     - name: deployQuay
       type: string
-      description: "Whether to deploy S3 for Quay (true/false)"
+      description: "Whether to deploy Quay storage (true/false)"
       default: "true"
     - name: publicDNS
       type: string
       description: "Use public DNS"
       default: "false"
-    - name: terraformStateS3Bucket
-      type: string
-      description: "S3 bucket name for Terraform state storage"
-      default: "eic-test-rosa-terraform-state"
-    - name: terraformStateS3Key
-      type: string
-      description: "S3 key for Terraform state file (auto-generated as rosa/${CLUSTER_NAME}/terraform.tfstate)"
-      default: "rosa/terraform.tfstate"
-    - name: terraformStateDynamoDBTable
-      type: string
-      description: "DynamoDB table for Terraform state locking"
-      default: "eic-test-rosa-terraform-state-lock"
     - name: jiraSecretName
       type: string
       description: "Name of the Kubernetes Secret containing Jira credentials"
@@ -105,8 +93,24 @@ spec:
       default: "sap-eic-restricted-cluster-config-resources"
     - name: s3Prefix
       type: string
-      description: "S3 key prefix holding the restricted-resources zip files directly (flat prefix; subfolders such as per-PR folders are ignored)"
+      description: "S3 key prefix of this deployment's restricted-resources folders (e.g. restricted-resources/<aroClusterName>/)"
       default: "restricted-resources/"
+    - name: elmZipFolders
+      type: string
+      description: "ELM zip folder under s3Prefix. The pipeline creates it, waits until it holds a zip (wait-elm-zip) and applies only it in the first pass (apply-elm-resources)."
+      default: "elm"
+    - name: eicZipFolders
+      type: string
+      description: "EIC zip folder under s3Prefix (uploaded after the Edge Node is registered and EIC is deployed in ELM). The pipeline creates it, waits until it holds a zip (wait-eic-zip) and applies only it in the second pass (apply-eic-resources)."
+      default: "edge-icell"
+    - name: enableMasterScheduling
+      type: string
+      description: "Whether to make master nodes schedulable (true) or leave them unschedulable (false). Set to false when worker nodes provide enough capacity."
+      default: "true"
+  results:
+    - name: cluster-summary
+      description: "Brief cluster and services validation summary"
+      value: $(tasks.validate-and-get-access.results.cluster-summary)
   workspaces:
     - name: source
   tasks:
@@ -123,20 +127,20 @@ spec:
         - name: output
           workspace: source
 
-    - name: deploy-rosa
+    - name: deploy-aro
       runAfter: [fetch-repository]
-      taskRef: { name: rosa-deploy-with-eic-services }
+      taskRef: { name: aro-deploy-with-eic-services }
       params:
-        - name: clusterName
-          value: $(params.clusterName)
-        - name: awsRegion
-          value: $(params.awsRegion)
-        - name: rosaVersion
-          value: $(params.rosaVersion)
-        - name: awsSecretName
-          value: $(params.awsSecretName)
-        - name: redhatTokenSecretName
-          value: $(params.redhatTokenSecretName)
+        - name: aroLocation
+          value: $(params.aroLocation)
+        - name: aroClusterName
+          value: $(params.aroClusterName)
+        - name: aroVersion
+          value: $(params.aroVersion)
+        - name: azureSecretName
+          value: $(params.azureSecretName)
+        - name: pullSecretName
+          value: $(params.pullSecretName)
         - name: postgresAdminPasswordSecretName
           value: $(params.postgresAdminPasswordSecretName)
         - name: deployPostgres
@@ -145,38 +149,24 @@ spec:
           value: $(params.deployRedis)
         - name: deployQuay
           value: $(params.deployQuay)
-        - name: terraformStateS3Bucket
-          value: $(params.terraformStateS3Bucket)
-        - name: terraformStateS3Key
-          value: $(params.terraformStateS3Key)
-        - name: terraformStateDynamoDBTable
-          value: $(params.terraformStateDynamoDBTable)
       workspaces:
         - name: source
           workspace: source
 
     - name: validate-and-get-access
-      runAfter: [deploy-rosa]
-      taskRef: { name: rosa-validate-and-get-access }
+      runAfter: [deploy-aro]
+      taskRef: { name: aro-validate-and-get-access }
       params:
-        - name: clusterName
-          value: $(params.clusterName)
-        - name: awsRegion
-          value: $(params.awsRegion)
-        - name: awsSecretName
-          value: $(params.awsSecretName)
-        - name: redhatTokenSecretName
-          value: $(params.redhatTokenSecretName)
+        - name: aroClusterName
+          value: $(params.aroClusterName)
+        - name: azureSecretName
+          value: $(params.azureSecretName)
         - name: postgresAdminPasswordSecretName
           value: $(params.postgresAdminPasswordSecretName)
-        - name: terraformStateS3Bucket
-          value: $(params.terraformStateS3Bucket)
-        - name: terraformStateS3Key
-          value: $(params.terraformStateS3Key)
-        - name: terraformStateDynamoDBTable
-          value: $(params.terraformStateDynamoDBTable)
         - name: hubKubeconfigSecretName
           value: $(params.hubClusterName)-kubeconfig
+        - name: enableMasterScheduling
+          value: $(params.enableMasterScheduling)
       workspaces:
         - name: source
           workspace: source
@@ -187,22 +177,14 @@ spec:
         - input: $(params.deployQuay)
           operator: in
           values: ["true"]
-      taskRef: { name: rosa-quay-deploy }
+      taskRef: { name: aro-quay-deploy }
       params:
-        - name: clusterName
-          value: $(params.clusterName)
-        - name: s3BucketName
-          value: "$(params.clusterName)-quay-registry"  # Will be retrieved from Terraform
-        - name: s3Region
-          value: $(params.awsRegion)
-        - name: s3Host
-          value: "s3.$(params.awsRegion).amazonaws.com"
-        - name: awsSecretName
-          value: $(params.awsSecretName)
+        - name: aroClusterName
+          value: $(params.aroClusterName)
+        - name: azureSecretName
+          value: $(params.azureSecretName)
         - name: quayAdminPasswordSecretName
           value: $(params.quayAdminPasswordSecretName)
-        - name: redhatTokenSecretName
-          value: $(params.redhatTokenSecretName)
         - name: hubKubeconfigSecretName
           value: $(params.hubClusterName)-kubeconfig
       workspaces:
@@ -220,7 +202,42 @@ spec:
         - name: obcName
           value: $(params.obcName)
         - name: pullSecretName
-          value: $(params.redhatTokenSecretName)
+          value: $(params.pullSecretName)
+
+    # Create the S3 folders elm/ and edge-icell/ under s3Prefix and render the
+    # upload instructions (parallel with the cluster deployment). Earlier zips
+    # stay (no archive): a re-run reuses them, the latest version per folder wins.
+    - name: prepare-restricted-resources-prefix
+      runAfter: [preflight-check]
+      taskRef: { name: ossm3-prepare-restricted-resources-prefix }
+      params:
+        - name: obcName
+          value: $(params.obcName)
+        - name: s3Prefix
+          value: $(params.s3Prefix)
+        - name: components
+          value: "$(params.elmZipFolders) $(params.eicZipFolders)"
+
+    # Wait for the ELM zip (first pass; the EIC zip can only be downloaded after
+    # the Edge Node is registered with the restricted kubeconfig, see
+    # wait-eic-zip). The log shows the upload plan.
+    - name: wait-elm-zip
+      runAfter: [prepare-restricted-resources-prefix]
+      taskRef: { name: ossm3-wait-for-restricted-resources }
+      params:
+        - name: obcName
+          value: $(params.obcName)
+        - name: s3Prefix
+          value: $(params.s3Prefix)
+        - name: components
+          value: $(params.elmZipFolders)
+        - name: instructions
+          value: |
+            ARO cluster $(params.aroClusterName), first pass: in Edge Lifecycle Management, add the Edge Node
+            with restricted access and upload its ELM restricted-resources zip as downloaded to the elm/
+            folder (latest version wins). The EIC zip (edge-icell/) comes later, after the Edge Node is
+            registered (wait-eic-zip); a zip already in that folder is applied in the second pass.
+            $(tasks.prepare-restricted-resources-prefix.results.uploadPlan)
 
     # Install Service Mesh 3.x operator on target cluster
     - name: verify-operators
@@ -228,7 +245,7 @@ spec:
       taskRef: { name: ossm3-verify-operators }
       params:
         - name: hostedClusterName
-          value: $(params.clusterName)
+          value: $(params.aroClusterName)
         - name: ossm3Channel
           value: $(params.ossm3Channel)
         - name: useWorkspaceKubeconfig
@@ -237,30 +254,34 @@ spec:
         - name: source
           workspace: source
 
-    # Download and apply RBAC permissions from S3 (restricted-access resources)
-    - name: apply-rbac
-      runAfter: [verify-operators]
+    # Download and apply the ELM restricted-access resources (first pass); the
+    # EIC bundle follows in apply-eic-resources
+    - name: apply-elm-resources
+      runAfter: [verify-operators, wait-elm-zip]
       taskRef: { name: ossm3-download-and-apply-rbac }
       params:
         - name: hostedClusterName
-          value: $(params.clusterName)
+          value: $(params.aroClusterName)
         - name: obcName
           value: $(params.obcName)
         - name: s3Prefix
           value: $(params.s3Prefix)
+        - name: requiredComponents
+          value: $(params.elmZipFolders)
         - name: useWorkspaceKubeconfig
           value: "true"
       workspaces:
         - name: source
           workspace: source
 
-    # Prepare namespaces with labels and SCC annotations
+    # Prepare namespaces with labels and SCC annotations (first pass: edgelm;
+    # the EIC namespaces follow in prepare-namespaces-eic)
     - name: prepare-namespaces
-      runAfter: [apply-rbac]
+      runAfter: [apply-elm-resources]
       taskRef: { name: ossm3-prepare-namespaces }
       params:
         - name: hostedClusterName
-          value: $(params.clusterName)
+          value: $(params.aroClusterName)
         - name: useWorkspaceKubeconfig
           value: "true"
       workspaces:
@@ -273,7 +294,7 @@ spec:
       taskRef: { name: ossm3-configure-mesh }
       params:
         - name: hostedClusterName
-          value: $(params.clusterName)
+          value: $(params.aroClusterName)
         - name: useWorkspaceKubeconfig
           value: "true"
       workspaces:
@@ -286,16 +307,105 @@ spec:
       taskRef: { name: ossm3-generate-sa-based-kubeconfig }
       params:
         - name: hostedClusterName
-          value: $(params.clusterName)
+          value: $(params.aroClusterName)
         - name: useWorkspaceKubeconfig
           value: "true"
       workspaces:
         - name: source
           workspace: source
 
-    # Manual approval gate after OSSM3 setup and Quay deployment
+    # Second pass (EIC). Every task carries the skipEicValidation gate: a task
+    # skipped by its own `when` does not block the tasks that run after it, so
+    # apply-eic-resources would otherwise run without a zip.
+    # Wait for the EIC zip (log: what to do in ELM and the upload plan); after
+    # the registry, which ELM needs for the Edge Node.
+    - name: wait-eic-zip
+      runAfter: [generate-sa-based-kubeconfig, deploy-quay]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
+      taskRef: { name: ossm3-wait-for-restricted-resources }
+      params:
+        - name: obcName
+          value: $(params.obcName)
+        - name: s3Prefix
+          value: $(params.s3Prefix)
+        - name: components
+          value: $(params.eicZipFolders)
+        - name: instructions
+          value: |
+            ARO cluster $(params.aroClusterName), second pass: the ELM resources are applied and the mesh is
+            running; the Azure PostgreSQL/Redis connection data is in the validate-and-get-access log.
+            1. Register the cluster in ELM with the restricted kubeconfig in Secret
+               edgelm-kubeconfig-generated-$(params.aroClusterName) (check "Restricted Access").
+            2. Deploy Edge Integration Cell (EIC) on that Edge Node.
+            3. Upload the EIC restricted-resources zip as downloaded to the edge-icell/ folder.
+            Confirm the EIC resources as applied in ELM only once approval-elm-eic-iflow-deployed is
+            waiting: apply-eic-resources, prepare-namespaces-eic and configure-mesh-eic run first, so the
+            EIC pods start with their sidecars.
+            $(tasks.prepare-restricted-resources-prefix.results.uploadPlan)
+
+    # Download and apply the EIC restricted-access resources (second pass)
+    - name: apply-eic-resources
+      runAfter: [wait-eic-zip]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
+      taskRef: { name: ossm3-download-and-apply-rbac }
+      params:
+        - name: hostedClusterName
+          value: $(params.aroClusterName)
+        - name: obcName
+          value: $(params.obcName)
+        - name: s3Prefix
+          value: $(params.s3Prefix)
+        - name: requiredComponents
+          value: $(params.eicZipFolders)
+        - name: useWorkspaceKubeconfig
+          value: "true"
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Labels and SCC annotations for the EIC namespaces
+    - name: prepare-namespaces-eic
+      runAfter: [apply-eic-resources]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
+      taskRef: { name: ossm3-prepare-namespaces }
+      params:
+        - name: hostedClusterName
+          value: $(params.aroClusterName)
+        - name: useWorkspaceKubeconfig
+          value: "true"
+      workspaces:
+        - name: source
+          workspace: source
+
+    # The EIC namespaces join the mesh
+    - name: configure-mesh-eic
+      runAfter: [prepare-namespaces-eic]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
+      taskRef: { name: ossm3-configure-mesh }
+      params:
+        - name: hostedClusterName
+          value: $(params.aroClusterName)
+        - name: useWorkspaceKubeconfig
+          value: "true"
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Manual approval gate after OSSM3 setup (both passes) and Quay deployment
     - name: approval-elm-eic-iflow-deployed
-      runAfter: [deploy-quay, generate-sa-based-kubeconfig]
+      runAfter: [deploy-quay, configure-mesh-eic]
       when:
         - input: $(params.skipEicValidation)
           operator: in
@@ -314,14 +424,17 @@ spec:
             - system:admin
         - name: description
           value: |
-            ROSA cluster, AWS services (RDS PostgreSQL, ElastiCache Redis, S3), Quay registry, and OSSM3 restricted-access setup are complete.
+            ARO cluster, Azure services (PostgreSQL/Redis), Quay registry, and OSSM3 restricted-access setup are complete.
 
-            Restricted kubeconfig stored as Secret 'edgelm-kubeconfig-generated-$(params.clusterName)'.
+            Restricted kubeconfig stored as Secret 'edgelm-kubeconfig-generated-$(params.aroClusterName)'.
+
+            The restricted resources were applied in two passes (ELM first, then EIC after the Edge Node
+            was registered; registration, EIC deployment and the EIC zip upload happened before this gate,
+            see wait-eic-zip).
 
             🔧 Please complete the following manually:
-            1. Register the cluster in ELM (use restricted kubeconfig, check "Restricted Access")
-            2. Deploy Edge Integration Cell (EIC)
-            3. Deploy iFlows for testing
+            1. In ELM, confirm the EIC restricted resources as applied and wait until EIC is deployed
+            2. Deploy iFlows for testing
 
             After deployment is complete and istio-ingressgateway has a LoadBalancer IP:
             ✅ APPROVE: Continue to create ConfigMap and run endpoint tests
@@ -338,16 +451,12 @@ spec:
         - input: $(params.skipEicValidation)
           operator: in
           values: ["false"]
-      taskRef: { name: rosa-validate-and-create-configmap }
+      taskRef: { name: aro-validate-and-create-configmap }
       params:
-        - name: clusterName
-          value: $(params.clusterName)
-        - name: awsRegion
-          value: $(params.awsRegion)
-        - name: awsSecretName
-          value: $(params.awsSecretName)
-        - name: redhatTokenSecretName
-          value: $(params.redhatTokenSecretName)
+        - name: aroClusterName
+          value: $(params.aroClusterName)
+        - name: azureSecretName
+          value: $(params.azureSecretName)
       workspaces:
         - name: source
           workspace: source
@@ -369,7 +478,7 @@ spec:
         - name: endpointPath
           value: /httpbinipfilter
         - name: clusterConfigMapName
-          value: "cluster-info-rosa-$(params.clusterName)"
+          value: "cluster-info-aro-$(params.aroClusterName)"
         - name: eicAuthSecretName
           value: $(params.eicAuthSecretName)
         - name: publicDNS
@@ -389,7 +498,7 @@ spec:
         - name: endpointPath
           value: /http/test1
         - name: clusterConfigMapName
-          value: "cluster-info-rosa-$(params.clusterName)"
+          value: "cluster-info-aro-$(params.aroClusterName)"
         - name: eicAuthSecretName
           value: $(params.eicAuthSecretName)
         - name: publicDNS
@@ -409,7 +518,7 @@ spec:
         - name: endpointPath
           value: /http/testelster
         - name: clusterConfigMapName
-          value: "cluster-info-rosa-$(params.clusterName)"
+          value: "cluster-info-aro-$(params.aroClusterName)"
         - name: eicAuthSecretName
           value: $(params.eicAuthSecretName)
         - name: publicDNS
@@ -432,7 +541,7 @@ spec:
         - name: endpointPath
           value: /slvredis
         - name: clusterConfigMapName
-          value: "cluster-info-rosa-$(params.clusterName)"
+          value: "cluster-info-aro-$(params.aroClusterName)"
         - name: eicAuthSecretName
           value: $(params.eicAuthSecretName)
         - name: publicDNS
@@ -455,7 +564,7 @@ spec:
         - name: endpointPath
           value: /slvredis
         - name: clusterConfigMapName
-          value: "cluster-info-rosa-$(params.clusterName)"
+          value: "cluster-info-aro-$(params.aroClusterName)"
         - name: eicAuthSecretName
           value: $(params.eicAuthSecretName)
         - name: publicDNS
@@ -492,7 +601,7 @@ spec:
           value: |
             First round of endpoint tests completed successfully.
 
-            Cluster: $(params.clusterName)
+            Cluster: $(params.aroClusterName)
 
             ✅ APPROVE: Run second round of endpoint tests
             ❌ REJECT: Skip second round and proceed
@@ -516,7 +625,7 @@ spec:
         - name: endpointPath
           value: /httpbinipfilter
         - name: clusterConfigMapName
-          value: "cluster-info-rosa-$(params.clusterName)"
+          value: "cluster-info-aro-$(params.aroClusterName)"
         - name: eicAuthSecretName
           value: $(params.eicAuthSecretName)
         - name: publicDNS
@@ -536,7 +645,7 @@ spec:
         - name: endpointPath
           value: /http/test1
         - name: clusterConfigMapName
-          value: "cluster-info-rosa-$(params.clusterName)"
+          value: "cluster-info-aro-$(params.aroClusterName)"
         - name: eicAuthSecretName
           value: $(params.eicAuthSecretName)
         - name: publicDNS
@@ -556,7 +665,7 @@ spec:
         - name: endpointPath
           value: /http/testelster
         - name: clusterConfigMapName
-          value: "cluster-info-rosa-$(params.clusterName)"
+          value: "cluster-info-aro-$(params.aroClusterName)"
         - name: eicAuthSecretName
           value: $(params.eicAuthSecretName)
         - name: publicDNS
@@ -579,7 +688,7 @@ spec:
         - name: endpointPath
           value: /slvredis
         - name: clusterConfigMapName
-          value: "cluster-info-rosa-$(params.clusterName)"
+          value: "cluster-info-aro-$(params.aroClusterName)"
         - name: eicAuthSecretName
           value: $(params.eicAuthSecretName)
         - name: publicDNS
@@ -602,7 +711,7 @@ spec:
         - name: endpointPath
           value: /slvredis
         - name: clusterConfigMapName
-          value: "cluster-info-rosa-$(params.clusterName)"
+          value: "cluster-info-aro-$(params.aroClusterName)"
         - name: eicAuthSecretName
           value: $(params.eicAuthSecretName)
         - name: publicDNS
@@ -631,22 +740,22 @@ spec:
           value: $(params.jiraIssueKey)
         - name: comment
           value: |
-            h2. ✅ Complete EIC Validation Pipeline Completed (ROSA)
+            h2. ✅ Complete EIC Validation Pipeline Completed
 
-            ROSA HCP cluster with full EIC infrastructure and all automated endpoint tests completed successfully.
+            ARO cluster with full EIC infrastructure and all automated endpoint tests completed successfully.
 
             *Infrastructure Configuration:*
-            * *Cluster Name:* $(params.clusterName)
-            * *AWS Region:* $(params.awsRegion)
-            * *ROSA Version:* $(params.rosaVersion)
-            * *RDS PostgreSQL:* $(params.deployPostgres) (VPC private, Terraform-managed)
-            * *ElastiCache Redis:* $(params.deployRedis) (VPC private, Terraform-managed)
-            * *S3 for Quay:* $(params.deployQuay) (Encrypted, Terraform-managed)
+            * *Cluster Name:* $(params.aroClusterName)
+            * *Location:* $(params.aroLocation)
+            * *ARO Version:* $(params.aroVersion)
+            * *PostgreSQL:* $(params.deployPostgres) (VNet integrated, Bicep-managed)
+            * *Redis:* $(params.deployRedis) (Private endpoint, Bicep-managed)
+            * *Quay Storage:* $(params.deployQuay) (Azure Storage, Bicep-managed)
             * *Quay Registry:* ✅ Deployed
 
             *Pipeline Status:*
             * Repository cloned: ✅
-            * ROSA deployment with AWS services: ✅ Completed
+            * ARO deployment with Azure services: ✅ Completed
             * Quay registry deployment: ✅ Completed
             * Validation and access setup: ✅ Completed
             * Endpoint tests (2 rounds): ✅ All Passed
@@ -672,16 +781,16 @@ spec:
             * test-ratelimit-slvredis-round2 ✅
 
             *Infrastructure Components:*
-            * ROSA HCP OpenShift cluster ✅
-            * AWS RDS PostgreSQL (VPC private) ✅
-            * AWS ElastiCache Redis (VPC private) ✅
-            * S3 bucket for Quay registry ✅
+            * ARO OpenShift cluster ✅
+            * Azure PostgreSQL (VNet integrated) ✅
+            * Azure Redis (Private endpoint) ✅
+            * Quay container registry ✅
             * All EIC endpoints validated ✅
 
             *Security:*
-            * RDS PostgreSQL: Private connectivity via VPC security groups (Terraform-managed)
-            * ElastiCache Redis: Private access within VPC (Terraform-managed)
-            * S3 Storage: Encrypted with IAM user permissions (Terraform-managed)
+            * PostgreSQL: Private connectivity via delegated subnet (Bicep-managed)
+            * Redis: Private endpoint with private DNS (Bicep-managed)
+            * Quay Storage: Azure Storage Account with private access (Bicep-managed)
             * Quay: Certificate trust configured for OpenShift integration
 
             Ready for manual teardown approval. The complete EIC infrastructure will be destroyed once approved.
@@ -705,8 +814,8 @@ spec:
         - name: description
           value: |
             All endpoint tests completed. Please review results.
-
-            ✅ APPROVE: Tear down ROSA cluster and AWS resources
+            
+            ✅ APPROVE: Tear down ARO cluster and Azure resources
             ❌ REJECT: Keep cluster running (will timeout after 336h and teardown anyway)
         - name: numberOfApprovalsRequired
           value: '1'
@@ -714,22 +823,14 @@ spec:
           value: '336h'
 
     # Teardown after approval
-    - name: teardown-rosa
+    - name: teardown-aro
       runAfter: [approval-teardown]
-      taskRef: { name: rosa-teardown }
+      taskRef: { name: aro-teardown }
       params:
-        - name: clusterName
-          value: $(params.clusterName)
-        - name: awsRegion
-          value: $(params.awsRegion)
-        - name: awsSecretName
-          value: $(params.awsSecretName)
-        - name: redhatTokenSecretName
-          value: $(params.redhatTokenSecretName)
-        - name: terraformStateS3Bucket
-          value: $(params.terraformStateS3Bucket)
-        - name: terraformStateDynamoDBTable
-          value: $(params.terraformStateDynamoDBTable)
+        - name: aroClusterName
+          value: $(params.aroClusterName)
+        - name: azureSecretName
+          value: $(params.azureSecretName)
         - name: hubKubeconfigSecretName
           value: $(params.hubClusterName)-kubeconfig
       workspaces:
