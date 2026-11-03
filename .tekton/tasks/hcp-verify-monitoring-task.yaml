@@ -120,7 +120,7 @@ spec:
         for NS in "${NAMESPACES[@]}"; do
           if oc get namespace "${NS}" &>/dev/null; then
             SM_LIST=$(oc get servicemonitor -n "${NS}" -o json 2>/dev/null | jq -r '.items[].metadata.name' 2>/dev/null || echo "")
-            SM_COUNT=$(echo "${SM_LIST}" | grep -c . || echo "0")
+            SM_COUNT=$(echo "${SM_LIST}" | grep -c . || true)
             TOTAL_SM=$((TOTAL_SM + SM_COUNT))
             if [[ "${SM_COUNT}" -gt 0 ]]; then
               echo "✅ ${NS}: ${SM_COUNT} ServiceMonitor(s)"
@@ -147,7 +147,7 @@ spec:
         for NS in "${NAMESPACES[@]}"; do
           if oc get namespace "${NS}" &>/dev/null; then
             PM_LIST=$(oc get podmonitor -n "${NS}" -o json 2>/dev/null | jq -r '.items[].metadata.name' 2>/dev/null || echo "")
-            PM_COUNT=$(echo "${PM_LIST}" | grep -c . || echo "0")
+            PM_COUNT=$(echo "${PM_LIST}" | grep -c . || true)
             if [[ "${PM_COUNT}" -gt 0 ]]; then
               echo "✅ ${NS}: ${PM_COUNT} PodMonitor(s)"
               echo "${PM_LIST}" | sed 's/^/     - /'

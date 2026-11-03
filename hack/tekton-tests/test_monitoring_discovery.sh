@@ -230,6 +230,49 @@ assert_not_called "get servicemonitor -n istio-gateways-1"
 
 echo "✅ PASS: verify-monitoring discovers and queries correct namespaces"
 
+# Test 5: a namespace without ServiceMonitors must not stop the count
+# (grep -c prints 0 and exits 1; '|| echo 0' made it "0\n0" and the
+# arithmetic error abandoned the loop after the first namespace)
+echo ""
+echo "Test 5: verify-monitoring counts past a namespace without ServiceMonitors"
+echo "========================================================================="
+
+FAKE_OC_LOG=$(tmp_file)
+FAKE_OC_RULES=$(tmp_file)
+
+{
+  printf 'get namespace -l edgelm.sap.com/product=edgelm -o jsonpath*\t0\tedgelm\\nedge-icell-1\\nedge-icell-2\n'
+  printf 'get namespace edgelm\t0\t\n'
+  printf 'get namespace edge-icell-1\t0\t\n'
+  printf 'get namespace edge-icell-2\t0\t\n'
+  printf 'get servicemonitor -n edgelm -o json\t0\t{"items":[]}\n'
+  printf 'get servicemonitor -n edge-icell-1 -o json\t0\t{"items":[{"metadata":{"name":"sm-1"}}]}\n'
+  printf 'get servicemonitor -n edge-icell-2 -o json\t0\t{"items":[{"metadata":{"name":"sm-2"}},{"metadata":{"name":"sm-3"}}]}\n'
+  printf 'get podmonitor -n edgelm -o json\t0\t{"items":[]}\n'
+  printf 'get podmonitor -n edge-icell-1 -o json\t0\t{"items":[]}\n'
+  printf 'get podmonitor -n edge-icell-2 -o json\t0\t{"items":[]}\n'
+  printf 'get route thanos-querier *\t1\t\n'
+} > "${FAKE_OC_RULES}"
+
+export FAKE_OC_LOG FAKE_OC_RULES
+
+run_task ../../.tekton/tasks/hcp-verify-monitoring-task.yaml \
+  --param hostedClusterName=c1 \
+  --param hostedClusterNamespace=clusters \
+  --param discoverNamespaces=true \
+  --drop '# Install' 'oc version --client' \
+  --drop '# Configure hub cluster' 'oc whoami' \
+  --drop 'echo "🔐 Extracting kubeconfig' 'oc whoami' \
+  --from '# Step 1:'
+
+assert_rc 0
+assert_called "get servicemonitor -n edge-icell-1"
+assert_called "get servicemonitor -n edge-icell-2"
+grep -q "Total ServiceMonitors: 3" <<< "${TASK_OUT}" || fail "expected 'Total ServiceMonitors: 3' in the output"
+if grep -q "syntax error" <<< "${TASK_OUT}"; then fail "arithmetic syntax error in the output"; fi
+
+echo "✅ PASS: verify-monitoring counts past a namespace without ServiceMonitors"
+
 echo ""
 echo "============================================"
 echo "✅ ALL TESTS PASSED"
