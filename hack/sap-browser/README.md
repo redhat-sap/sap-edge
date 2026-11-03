@@ -117,6 +117,10 @@ npm run sap:browser -- inspect --url "$SAP_ELM_URL" --channel chrome
    or committing a flow.
 4. Resume Inspector and press Enter in the terminal when finished.
 
+Files you download in this browser, such as the restricted-resources zips, are
+kept in `.sap-browser/downloads/` (otherwise Playwright deletes them when the
+browser closes), ready to upload to the pipeline's S3 folders.
+
 The helper does not save authentication state, traces, screenshots or recordings
 automatically. It checks the configured tenant origin and the Edge Nodes heading
 before continuing. If login opens another tab, return to/reload ELM in the original

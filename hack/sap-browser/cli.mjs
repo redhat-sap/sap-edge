@@ -8,6 +8,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { kubernetesReader, loadInputs, readPreparedInputs, SetupError, withPrivateFiles, writePreparedInputs } from './inputs.mjs';
 import { reviewRegistration } from './registration.mjs';
+import { keepDownloads } from './downloads.mjs';
 
 const help = `SAP browser helper (Node.js 20+)
 
@@ -114,6 +115,12 @@ async function browserSession(options, inputs, files) {
   try {
     const context = await browser.newContext({ viewport: null });
     context.setDefaultTimeout(30000);
+    if (options.mode === 'inspect') {
+      // The walkthrough downloads the restricted-resources zips; keep them for the upload.
+      const downloads = resolve('.sap-browser', 'downloads');
+      await keepDownloads(context, downloads);
+      console.log(`Files downloaded in this browser are kept in ${downloads}`);
+    }
     const page = await context.newPage();
     await page.goto(options.url, { waitUntil: 'domcontentloaded' });
     console.log('Complete SAP login/MFA in the browser. Open Edge Nodes in this same tab.');
