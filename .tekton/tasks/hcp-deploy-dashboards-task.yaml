@@ -172,7 +172,7 @@ spec:
 
         echo "⏳ Waiting for UIPlugin to reconcile..."
         for i in $(seq 1 30); do
-          RECONCILED=$(oc get uiplugin monitoring -o jsonpath='{range .status.conditions[*]}{.type}={.status}{"\n"}{end}' 2>/dev/null | grep -c "=True" || echo "0")
+          RECONCILED=$(oc get uiplugin monitoring -o jsonpath='{range .status.conditions[*]}{.type}={.status}{"\n"}{end}' 2>/dev/null | grep -c "=True" || true)
           if [[ "${RECONCILED}" -ge 1 ]]; then
             echo "✅ UIPlugin reconciled"
             oc get uiplugin monitoring -o jsonpath='{range .status.conditions[*]}{.type}={.status}{"\n"}{end}' 2>/dev/null || true
