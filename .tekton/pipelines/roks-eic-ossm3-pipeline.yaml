@@ -920,6 +920,14 @@ spec:
           value: |
             All endpoint tests completed. Please review results.
 
+            Before approving, open the runtime page in SAP Integration Suite and
+            check that every Edge Integration Cell runtime of this cluster shows
+            a healthy status, with no errors.
+            With sapBrowserMode disabled, then delete every Edge Integration Cell
+            deployment of this cluster in ELM (Operations > Delete) and remove its Edge
+            Node (Remove, confirm with the node name); with the browser on,
+            sap-browser-teardown does this after you approve.
+
             Cluster: $(params.clusterName) (ROKS, IBM Cloud region $(params.ibmcloudRegion), resource group $(params.ibmcloudResourceGroup))
 
             APPROVE: Tear down the ROKS cluster and its IBM Cloud resources (Terraform destroy)

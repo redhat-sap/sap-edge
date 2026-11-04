@@ -197,6 +197,14 @@ oc get approvaltasks
 oc patch approvaltask <name> --type=merge -p '{"spec":{"approved":true}}'
 ```
 
+Before approving `approval-teardown` in an EIC pipeline, open the runtime page
+in SAP Integration Suite and check that every Edge Integration Cell runtime of
+the cluster shows a healthy status, with no errors. Then delete every EIC
+deployment of the cluster in ELM (Operations > Delete) and remove its Edge
+Node(s) (Remove, confirm with the node name): the teardown deletes only the
+cluster, not its ELM entries. ROKS with `sapBrowserMode` on does this in
+`sap-browser-teardown` after the approval. Approving starts the teardown.
+
 ## Multi-EIC restricted resources
 
 Two pipelines deploy more than one Edge Integration Cell (EIC) on one cluster:
