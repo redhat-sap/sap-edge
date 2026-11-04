@@ -1193,6 +1193,13 @@ spec:
           value: |
             All endpoint tests completed. Please review results.
 
+            Before approving, open the runtime page in SAP Integration Suite and
+            check that every Edge Integration Cell runtime of this cluster shows
+            a healthy status, with no errors.
+            Then delete every Edge Integration Cell deployment of this cluster in ELM
+            (Operations > Delete) and remove its Edge Node(s) (Remove, confirm with the
+            node name): the teardown deletes only the cluster, not its ELM entries.
+
             Cluster: $(params.hostedClusterName)
 
             APPROVE: Tear down HCP cluster and all resources
