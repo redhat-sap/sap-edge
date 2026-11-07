@@ -524,6 +524,8 @@ spec:
           value: $(params.datastoreType)
         - name: instance
           value: eic-1
+        - name: deploymentNamePrefix
+          value: pr-$(params.pullRequestNumber)
         - name: hubKubeconfigSecretName
           value: $(params.hubClusterName)-kubeconfig
       workspaces:
@@ -546,6 +548,8 @@ spec:
           value: $(params.datastoreType)
         - name: instance
           value: eic-2
+        - name: deploymentNamePrefix
+          value: pr-$(params.pullRequestNumber)
         - name: hubKubeconfigSecretName
           value: $(params.hubClusterName)-kubeconfig
       workspaces:
@@ -582,10 +586,10 @@ spec:
                With a proxy, select "Enable HTTP Proxy" and use the $(params.hubClusterName)-proxy-config Secret.
             2. Deploy EIC N ($(params.cellCount) cell(s)) on that Edge Node: host eic-N.<ingress domain of
                the hosted cluster>, gateway istio-gateways-N, the shared PostgreSQL and the cell's own
-               Redis/Valkey (credentials in the cellN-get-all-accesses logs and Secret
-               eic-credentials-hcp-$(params.hostedClusterName)-eic-N). Name every EIC namespace of cell N
-               with the -N suffix (edge-icell-N, edge-icell-secrets-N, edge-icell-ela-N,
-               edge-icell-services-N, istio-gateways-N).
+               Redis/Valkey (credentials in Secret eic-credentials-hcp-$(params.hostedClusterName)-eic-N;
+               every form value, tab by tab, under "ELM deploy form" in the cellN-get-all-accesses log).
+               Name every EIC namespace of cell N with the -N suffix (edge-icell-N, edge-icell-secrets-N,
+               edge-icell-ela-N, edge-icell-services-N, istio-gateways-N).
             3. Upload each cell's EIC restricted-resources zip as downloaded to its folder
                (edge-icell-1/, edge-icell-2/; only the folders of eicZipFolders).
             Confirm the EIC resources as applied in ELM only once approval-elm-eic-iflow-deployed is

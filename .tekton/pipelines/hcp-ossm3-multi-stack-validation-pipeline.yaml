@@ -555,6 +555,8 @@ spec:
           value: $(params.datastoreType)
         - name: instance
           value: eic-1
+        - name: deploymentNamePrefix
+          value: pr-$(params.pullRequestNumber)
         - name: elmKubeconfigFile
           value: edgelm-1-kubeconfig
         - name: hubKubeconfigSecretName
@@ -575,6 +577,8 @@ spec:
           value: $(params.datastoreType)
         - name: instance
           value: eic-2
+        - name: deploymentNamePrefix
+          value: pr-$(params.pullRequestNumber)
         - name: elmKubeconfigFile
           value: edgelm-2-kubeconfig
         - name: hubKubeconfigSecretName
@@ -616,7 +620,8 @@ spec:
                With a proxy, select "Enable HTTP Proxy" and use the $(params.hubClusterName)-proxy-config Secret.
             2. Deploy EIC N on Edge Node N: host eic-N.<ingress domain of the hosted cluster>, gateway
                istio-gateways-N, the shared PostgreSQL and the cell's own Redis/Valkey (credentials in the
-               cellN-get-all-accesses logs and Secret eic-credentials-hcp-$(params.hostedClusterName)-eic-N).
+               cellN-get-all-accesses logs and Secret eic-credentials-hcp-$(params.hostedClusterName)-eic-N;
+               every form value, tab by tab, under "ELM deploy form" in the cellN-get-all-accesses log).
             3. Upload each EIC restricted-resources zip as downloaded, one per folder:
                  Edge Node 1: edge-icell-1/ (edge-icell-1, edge-icell-secrets-1, edge-icell-ela-1,
                                              edge-icell-services-1, istio-gateways-1)
