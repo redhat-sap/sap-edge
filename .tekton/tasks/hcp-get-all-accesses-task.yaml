@@ -14,6 +14,9 @@ spec:
     and stores everything in the Secret eic-credentials-hcp-<cluster> on the pipeline
     cluster (eic-credentials-hcp-<cluster>-<instance> when instance is set, so per-cell
     runs in parallel never overwrite each other's Secret or certificate files).
+    When instance is set (eic-N), it also prints the values of the ELM "Deploy Solution"
+    form for that cell, tab by tab (namespaces with the -N suffix, virtual host, external
+    PostgreSQL and Redis/Valkey, Istio gateways).
   params:
     - name: hostedClusterName
       type: string
@@ -38,6 +41,10 @@ spec:
       type: string
       description: "Workspace file stored under the credentials Secret's kubeconfig key (the restricted ELM kubeconfig of the Edge Node hosting this EIC, written by ossm3-generate-sa-based-kubeconfig as <elmNamespace>-kubeconfig). The key is omitted, with a log line, when the file does not exist."
       default: "edgelm-kubeconfig"
+    - name: deploymentNamePrefix
+      type: string
+      description: "Prefix of the ELM deployment names in the ELM deploy form printed when instance is set (<prefix>-<instance>, <prefix>-<instance>-services, <prefix>-<instance>-gateways). Empty: the hosted cluster name."
+      default: ""
   workspaces:
     - name: source
   results:
@@ -65,6 +72,7 @@ spec:
         HUB_KUBECONFIG_SECRET="$(params.hubKubeconfigSecretName)"
         INSTANCE="$(params.instance)"
         ELM_KUBECONFIG_FILE="$(params.elmKubeconfigFile)"
+        DEPLOYMENT_NAME_PREFIX="$(params.deploymentNamePrefix)"
 
         echo "=============================================="
         echo "📋 Retrieving All Access Credentials"
@@ -399,6 +407,81 @@ spec:
         # Switch back to hosted cluster
         export KUBECONFIG="${HOSTED_KUBECONFIG}"
         [[ -f "$(workspaces.source.path)/.kubeconfig-rewrite.sh" ]] && source "$(workspaces.source.path)/.kubeconfig-rewrite.sh" "${HOSTED_KUBECONFIG}"
+
+        # ================== ELM deploy form (per EIC cell) ==================
+        # Copy-paste values for ELM "Deploy Solution" of cell N, in the order of
+        # the wizard tabs. Cell N names every EIC namespace with the -N suffix
+        # (see .tekton/README.md, "Multi-EIC restricted resources").
+        if [[ -n "${INSTANCE}" ]]; then
+          if [[ "${INSTANCE}" =~ -([0-9]+)$ ]]; then
+            NS_SUFFIX="-${BASH_REMATCH[1]}"
+          else
+            NS_SUFFIX="-${INSTANCE}"
+          fi
+          NAME_PREFIX="${DEPLOYMENT_NAME_PREFIX:-${HOSTED_CLUSTER_NAME}}"
+          INGRESS_DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null || true)
+
+          echo ""
+          echo "=============================================="
+          echo "📝 ELM deploy form: ${INSTANCE}"
+          echo "=============================================="
+          echo "Edge Node: deploy on the Edge Node registered with the restricted kubeconfig"
+          echo "  in Secret ${CREDS_SECRET_NAME}, key kubeconfig (\"Restricted Access\" checked)"
+          echo ""
+          echo "--- Solution Information ---"
+          echo "Solution:                        Edge Integration Cell"
+          echo "Deployment Name:                 ${NAME_PREFIX}-${INSTANCE}"
+          echo "Edge Integration Cell namespace: edge-icell${NS_SUFFIX}"
+          echo "Edge Security Artifact Secrets:  edge-icell-secrets${NS_SUFFIX}"
+          echo "Edge Local Authorization:        edge-icell-ela${NS_SUFFIX}"
+          echo "Default Virtual Host:            ${INSTANCE}.${INGRESS_DOMAIN:-<ingress domain of the hosted cluster>}"
+          echo "Default Virtual Host Key Alias:  slv-ic"
+          echo "Checkboxes:                      all unchecked; SAP Monitoring Integration: None"
+          echo ""
+          echo "--- Edge Integration Cell Services ---"
+          echo "Deployment Name:                 ${NAME_PREFIX}-${INSTANCE}-services"
+          echo "Namespace:                       edge-icell-services${NS_SUFFIX}"
+          echo "Database Type:                   External"
+          echo "  External DB Hostname:          ${PG_HOST:-N/A}"
+          echo "  External DB Port:              ${PG_PORT:-N/A}"
+          echo "  External DB Name:              ${PG_DBNAME:-N/A}"
+          echo "  External DB Username:          ${PG_USER:-N/A}"
+          echo "  External DB Password:          ${PG_PASSWORD:-N/A}"
+          echo "  External DB TLS Root Cert:     printed above (Secret key postgres-tls-root-cert)"
+          echo "Datastore Type:                  External"
+          if [[ "${DATASTORE_TYPE}" == "redis" ]]; then
+            echo "  External Redis Addresses:      ${REDIS_SERVICE_FQDN:-N/A}:${REDIS_PORT:-N/A}"
+            echo "  External Redis Mode:           standalone"
+            echo "  External Redis Username:       [leave blank]"
+            echo "  External Redis Password:       ${REDIS_PASSWORD:-N/A}"
+            echo "  Sentinel Username/Password:    [leave blank]"
+            echo "  External Redis Server Name:    ${REDIS_SERVER_NAME:-N/A}"
+            echo "  External Redis TLS Cert:       printed above (Secret key redis-tls-cert)"
+          else
+            if [[ "${VALKEY_MODE:-}" == "standalone" ]]; then
+              VALKEY_ADDRESSES="${VALKEY_HOST:-N/A}:${VALKEY_PORT:-N/A}"
+            else
+              VALKEY_ADDRESSES="${VALKEY_HOST:-N/A}"
+            fi
+            echo "  External Redis Addresses:      ${VALKEY_ADDRESSES}"
+            echo "  External Redis Mode:           ${VALKEY_MODE:-N/A}"
+            echo "  External Redis Username:       [leave blank]"
+            echo "  External Redis Password:       ${VALKEY_PASSWORD:-N/A}"
+            echo "  Sentinel Username/Password:    [leave blank]"
+            echo "  External Redis Server Name:    ${VALKEY_SERVER_NAME:-N/A}"
+            echo "  External Redis TLS Cert:       printed above (Secret key valkey-tls-cert)"
+          fi
+          echo ""
+          echo "--- IstioGateways ---"
+          echo "Deployment Name:                 ${NAME_PREFIX}-${INSTANCE}-gateways"
+          echo "Namespace:                       istio-gateways${NS_SUFFIX}"
+          echo "Ingress Service Type:            LoadBalancer"
+          echo "Load Balancer Provider:          Other"
+          echo "Other checkboxes and ports:      unchecked / empty"
+          echo ""
+          echo "Then download the EIC restricted-resources zip of ${INSTANCE} and upload it"
+          echo "to its folder (edge-icell${NS_SUFFIX}/), see the wait-eic-zip log."
+        fi
 
         echo ""
         echo "=============================================="
