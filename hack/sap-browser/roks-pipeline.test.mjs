@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import { runBrowserTask } from './browser-session.mjs';
+import { diagnose, runBrowserTask } from './browser-session.mjs';
 import { runDeployFlow } from './elm-flow.mjs';
 import { SetupError } from './inputs.mjs';
 import { chromiumLaunchOptions, main, roksPipelineOptions, roksProfile } from './roks-pipeline.mjs';
@@ -550,6 +550,37 @@ test('playwright_error_in_step_hands_over', async () => folderTest(async (direct
   assert.ok(!h.logs.join('\n').includes('secret-value'), h.logs.join('\n'));
   assert.ok(h.logs.includes('Unexpected error; details are hidden because they can contain credentials.'));
 }));
+
+test('playwright_timeout_logs_action_and_locator_only', async () => folderTest(async (directory) => {
+  const timeout = new Error([
+    'locator.fill: Timeout 30000ms exceeded.',
+    'Call log:',
+    "  - waiting for getByRole('textbox', { name: 'Password', exact: true })",
+    '  - fill("secret-value")',
+  ].join('\n'));
+  timeout.name = 'TimeoutError';
+  const h = harness({
+    flows: { deploy: runDeployFlow },
+    deps: { steps: deploySteps([], { async edgeNodeState() { throw timeout; } }) },
+  });
+  const running = main(environment(directory), h.deps);
+  await waitForState(directory, 'failed');
+  await finishSession(directory);
+  assert.equal(await running, 'handed-over');
+  assert.ok(!h.logs.join('\n').includes('secret-value'), h.logs.join('\n'));
+  assert.ok(h.logs.includes('Unexpected error; details are hidden because they can contain credentials.'));
+  assert.ok(h.logs.includes("Error type TimeoutError in locator.fill, waiting for getByRole('textbox', { name: 'Password', exact: true })."), h.logs.join('\n'));
+}));
+
+test('diagnose_prints_nothing_without_playwright_details', () => {
+  assert.equal(diagnose(new SetupError('known')), null);
+  assert.equal(diagnose(new Error('secret-value')), null);
+  assert.equal(diagnose('secret-value'), null);
+  assert.equal(diagnose(new Error('Call log:\n  - waiting for secret-value')), null);
+  const odd = new Error('page.goto: net::ERR_NAME_NOT_RESOLVED');
+  odd.name = 'secret value!';
+  assert.equal(diagnose(odd), 'Error type Error in page.goto.');
+});
 
 test('session_limit_from_profile', async () => folderTest(async (directory) => {
   assert.equal(roksProfile.sessionLimitMinutes, 240);

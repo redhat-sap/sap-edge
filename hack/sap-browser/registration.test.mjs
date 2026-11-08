@@ -13,7 +13,8 @@ before(async () => {
 after(async () => { await browser?.close(); });
 
 // Exercise the real browser against an isolated wizard. No SAP or cluster access.
-async function fixture(existing = '') {
+// lostStep2Clicks: "Step 2" clicks ignored first, like a click during a UI5 redraw.
+async function fixture(existing = '', { lostStep2Clicks = 0 } = {}) {
   const page = await browser.newPage();
   page.setDefaultTimeout(3000);
   await page.setContent(`
@@ -39,10 +40,14 @@ async function fixture(existing = '') {
     <section id="summary" hidden><h2>Configuration Review</h2><button id="submit">Add Edge Node</button></section>
     <output id="submitted">false</output>
     <script>
+      let lostStep2Clicks = ${lostStep2Clicks};
+      document.getElementById('step2').addEventListener('click', (event) => {
+        if (lostStep2Clicks > 0) { lostStep2Clicks--; event.stopImmediatePropagation(); }
+      }, true);
       for (const [button, section] of [['add','details'],['step2','registry'],['step3','proxy'],['review','summary']]) {
-        document.getElementById(button).onclick = () => setTimeout(() => {
+        document.getElementById(button).addEventListener('click', () => setTimeout(() => {
           document.getElementById(section).hidden = false;
-        }, 75);
+        }, 75));
       }
       document.getElementById('submit').onclick = () => document.getElementById('submitted').textContent = 'true';
     </script>`);
@@ -67,6 +72,24 @@ test('stops when the requested node exists', async () => {
   try {
     await assert.rejects(reviewRegistration(page, { clusterName: 'hcp-demo' }), /already exists/);
     assert.equal(await page.locator('#details').isVisible(), false);
+    assert.equal(await page.locator('#submitted').innerText(), 'false');
+  } finally { await page.close(); }
+});
+
+test('clicks a wizard step again when the first click got lost', async () => {
+  const page = await fixture('', { lostStep2Clicks: 1 });
+  try {
+    await reviewRegistration(page, { clusterName: 'hcp-demo' });
+    assert.equal(await page.locator('#registry').isVisible(), true);
+    assert.equal(await page.locator('#summary').isVisible(), true);
+    assert.equal(await page.locator('#submitted').innerText(), 'false');
+  } finally { await page.close(); }
+});
+
+test('stops with a named step when the wizard never continues', async () => {
+  const page = await fixture('', { lostStep2Clicks: 99 });
+  try {
+    await assert.rejects(reviewRegistration(page, { clusterName: 'hcp-demo' }), /did not continue after "Step 2"/);
     assert.equal(await page.locator('#submitted').innerText(), 'false');
   } finally { await page.close(); }
 });

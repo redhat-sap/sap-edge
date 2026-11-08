@@ -66,21 +66,7 @@ export const elmPages = {
   },
 
   async addEdgeNode(page, { clusterName, registry, highAvailability = false }) {
-    await fillRegistration(page, { clusterName, highAvailability });
-
-    // Go back to Step 2 if registry is provided
-    if (registry) {
-      await page.getByRole('button', { name: 'Step 2', exact: true }).click();
-      await page.getByRole('checkbox', { name: 'Replicate Container Images', exact: true }).check();
-      await page.getByRole('textbox', { name: 'Local Container Registry URL', exact: true }).fill(registry.url);
-      await page.getByRole('textbox', { name: 'Username', exact: true }).fill(registry.username);
-      await page.getByRole('textbox', { name: 'Password', exact: true }).fill(registry.password);
-      await page.getByRole('checkbox', { name: 'Non-Trusted Certificate', exact: true }).check();
-      await page.getByRole('button', { name: 'Certificate with Public Key', exact: true }).setInputFiles(registry.caCertificateFile);
-      await page.getByRole('button', { name: 'Step 3', exact: true }).click();
-      await page.getByRole('button', { name: 'Review', exact: true }).click();
-    }
-
+    await fillRegistration(page, { clusterName, highAvailability, registry });
     await page.getByRole('button', { name: 'Add Edge Node', exact: true }).click();
   },
 

@@ -130,6 +130,25 @@ function describe(error) {
   return error instanceof SetupError ? error.message : 'Unexpected error; details are hidden because they can contain credentials.';
 }
 
+// From a Playwright error only the error type, the action and the locator it waited for are
+// printed: locators come from this code (labels, node, solution and version names), never from
+// entered values. Null when the error carries neither.
+export function diagnose(error) {
+  if (!(error instanceof Error) || error instanceof SetupError) return null;
+  const message = typeof error.message === 'string' ? error.message : '';
+  const action = message.match(/^((?:locator|page|frame)\.[A-Za-z]+):/)?.[1];
+  const target = message.match(/^\s*- waiting for ((?:getBy[A-Za-z]+|locator)\(.{1,200})$/m)?.[1];
+  if (!action && !target) return null;
+  const name = /^[A-Za-z]{1,40}$/.test(error.name) ? error.name : 'Error';
+  return `Error type ${name}${action ? ` in ${action}` : ''}${target ? `, waiting for ${target}` : ''}.`;
+}
+
+function logDetails(error, logError) {
+  logError(describe(error));
+  const details = diagnose(error);
+  if (details) logError(details);
+}
+
 // Login check: the ELM origin, then the Edge Nodes heading.
 async function waitForLogin(page, options) {
   const origin = new URL(options.url).origin;
@@ -267,7 +286,7 @@ async function runSession(env, deps, profile, log, logError) {
   const handOver = async (error) => {
     await writeStatus(directory, 'failed', metadata);
     logError('Browser automation stopped before it finished.');
-    logError(describe(error));
+    logDetails(error, logError);
     log(handOverHint(phase, options, profile.handOverFolders(options)));
     log('When done, close Chromium or run:');
     log(`oc -n ${options.namespace} exec ${options.podName} -c step-browser -- node /opt/sap-browser/control.mjs finish`);
@@ -412,7 +431,7 @@ export async function runBrowserTask(env, deps, profile) {
     outcome = await runSession(env, deps, profile, log, logError);
   } catch (error) {
     logError('SAP browser task stopped.');
-    logError(describe(error));
+    logDetails(error, logError);
     logError('The pipeline run continues on the manual path.');
     outcome = 'failed';
   }
