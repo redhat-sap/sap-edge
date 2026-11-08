@@ -110,17 +110,19 @@ SPECS = {
         },
         "run_after": {
             "wait-elm-zip": {"prepare-restricted-resources-prefix"},
-            "apply-elm-resources": {"verify-operators", "wait-elm-zip"},
+            # sap-browser-access (no `when`) reads the Edge Node ID label first
+            "apply-elm-resources": {"verify-operators", "wait-elm-zip", "sap-browser-access"},
             "prepare-namespaces": {"apply-elm-resources"},
             "configure-mesh": {"prepare-namespaces"},
             "generate-sa-based-kubeconfig": {"configure-mesh"},
-            # The optional browser session drives registration; skipped when disabled
-            "wait-eic-zip": {"get-all-accesses", "sap-browser"},
+            # Not after sap-browser-deploy: that session waits for configure-mesh-eic
+            "wait-eic-zip": {"get-all-accesses"},
             "apply-eic-resources": {"wait-eic-zip"},
             "prepare-namespaces-eic": {"apply-eic-resources"},
             "configure-mesh-eic": {"prepare-namespaces-eic"},
             "enable-monitoring": {"configure-mesh-eic"},
-            "approval-elm-eic-iflow-deployed": {"configure-mesh-eic", "enable-monitoring"},
+            # The optional deploy session deploys EIC and the iFlows; skipped when disabled
+            "approval-elm-eic-iflow-deployed": {"configure-mesh-eic", "enable-monitoring", "sap-browser-deploy"},
         },
         "task_refs": {
             "prepare-namespaces-eic": "ossm3-prepare-namespaces",

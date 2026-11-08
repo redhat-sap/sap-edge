@@ -31,14 +31,6 @@ ALLOWLIST = [
     ("rosa-validation-pipeline", "param.undeclared", "deploy-rosa.postgresAdminPassword"),
     # Pre-existing defect: .tekton-examples/rosa-edgelm-validation-run.yaml passes a param its pipeline does not declare
     ("rosa-edgelm-validation-pr{{ pull_request_number }}-", "param", "pullRequestNumber"),
-    # Temporary: hcp-sap-browser now has the Route-based interface; the
-    # port-forward sap-browser task of hcp-ossm3-validation-pipeline (default
-    # disabled) still passes the old params until the pipeline is rewired to it.
-    # Remove these entries with that rewiring.
-    ("hcp-ossm3-validation-pipeline", "param.undeclared", "sap-browser.flow"),
-    *[("hcp-ossm3-validation-pipeline", "param.required", f"sap-browser.{name}")
-      for name in ("phase", "s3Prefix", "datastoreType", "deploymentNamePrefix", "eicSolution",
-                   "eicKeyAlias", "registrySecretName", "obcName")],
 ]
 
 

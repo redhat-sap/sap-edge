@@ -5,13 +5,22 @@ SPDX-License-Identifier: Apache-2.0
 
 # SAP browser setup helper
 
-Visible-browser automation for the manual SAP step in
-`hcp-ossm3-validation-pipeline`. You complete SAP SSO/MFA in the browser; Playwright
-continues in that same session. The existing Tekton approval gate remains in place.
+Visible-browser automation for the manual SAP steps of the EIC pipelines. You
+complete SAP SSO/MFA in the browser; Playwright continues in that same session.
+The Tekton approval gates remain in place.
 
-For the optional **OpenShift pipeline runner**, including browser access from a
-Citrix desktop and standalone rehearsal runs, see [PIPELINE.md](PIPELINE.md).
-It uses noVNC over `oc port-forward`; no permanent server is required.
+**In the pipelines** (`sapBrowserMode` `inspect` or `auto`), Chromium runs in a
+task pod and you reach it through a per-run Route behind the OpenShift OAuth
+proxy. In `hcp-ossm3-validation-pipeline` a deploy session (after
+`wait-cluster-ready`) adds the Edge Node, uploads the restricted-resources zips,
+deploys EIC and the test iFlows, and a teardown session (after
+`approval-teardown`) deletes what the run created; the task also has an upgrade
+phase. The runner image is built into eic's Quay with the Secret
+`eic-quay-robot`, and "Add Edge Node" uses the registry of the Secret
+`<hubClusterName>-quay-robot` (`eli-quay-robot` or `eic-quay-robot`). Setup and
+use: [PIPELINE.md](PIPELINE.md).
+
+The rest of this page describes the local command line helper.
 
 ## Current scope
 

@@ -262,7 +262,7 @@ test('inspect_outcome', async () => folderTest(async (directory) => {
   assert.equal(outcome, 'inspection-finished');
   assert.equal(count(h.calls, 'pause'), 1);
   assert.ok(!h.calls.some((call) => call[0] === 'deploy' || call[0] === 'teardown' || call[0] === 'loadRoksInputs'));
-  // Same login checks as pipeline.mjs: ELM origin, then the Edge Nodes heading.
+  // Login checks: ELM origin, then the Edge Nodes heading.
   assert.ok(h.calls.some((call) => call[0] === 'goto' && call[1] === ELM && call[2] === 'domcontentloaded'));
   assert.ok(h.calls.includes('login-url'));
   assert.ok(h.calls.some((call) => call[0] === 'login-heading' && call[2] === 'Edge Nodes'));
