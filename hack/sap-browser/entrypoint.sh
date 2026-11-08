@@ -5,11 +5,11 @@
 
 set -euo pipefail
 umask 077
-# HCP defaults: port-forward access and pipeline.mjs. ROKS sets route + roks-pipeline.mjs.
-access="${SAP_BROWSER_ACCESS:-port-forward}"
-entry="${SAP_BROWSER_ENTRY:-pipeline.mjs}"
-if [[ "$access" != port-forward && "$access" != route ]]; then
-  echo 'SAP_BROWSER_ACCESS must be port-forward or route.' >&2
+# The browser tasks set both: route access (OAuth-proxy sidecar) and their entry
+# (hcp-pipeline.mjs, roks-pipeline.mjs).
+entry="${SAP_BROWSER_ENTRY:-}"
+if [[ "${SAP_BROWSER_ACCESS:-}" != route ]]; then
+  echo 'SAP_BROWSER_ACCESS must be route.' >&2
   exit 1
 fi
 if [[ ! "$entry" =~ ^[a-z0-9-]+\.mjs$ ]]; then
@@ -66,26 +66,16 @@ if ! xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
 fi
 openbox --sm-disable >"$SAP_BROWSER_SESSION_DIR/window-manager.log" 2>&1 &
 pids+=("$!")
-# Both listeners are loopback-only. port-forward access requires authenticated
-# Kubernetes pods/portforward permission. route access goes through the OAuth-proxy
-# sidecar, which checks the same permission; this script creates no Service or Route.
+# Both listeners are loopback-only. Access goes through the OAuth-proxy sidecar,
+# which requires the pods/portforward permission in the pipeline namespace; the
+# Node entry creates the Route and prints its link. This script creates no
+# Service or Route.
 x11vnc -display "$DISPLAY" -localhost -rfbport 5900 -forever -shared -nopw \
   >"$SAP_BROWSER_SESSION_DIR/vnc.log" 2>&1 &
 pids+=("$!")
 websockify --web /usr/share/novnc 127.0.0.1:6080 127.0.0.1:5900 \
   >"$SAP_BROWSER_SESSION_DIR/web.log" 2>&1 &
 pids+=("$!")
-
-# With route access the Node entry prints the Route link instead.
-if [[ "$access" == port-forward ]]; then
-  printf 'From your Citrix terminal (logged into the pipeline cluster):\n'
-  printf 'oc -n %s port-forward pod/%s 6080:6080\n' "$PIPELINE_NAMESPACE" "$POD_NAME"
-  printf 'Then open http://127.0.0.1:6080/vnc.html in the browser on that same Citrix desktop.\n'
-  printf 'Session status:\n'
-  printf 'oc -n %s exec %s -c step-browser -- node /opt/sap-browser/control.mjs status\n' "$PIPELINE_NAMESPACE" "$POD_NAME"
-  printf 'After review, finish the session from a second Citrix terminal:\n'
-  printf 'oc -n %s exec %s -c step-browser -- node /opt/sap-browser/control.mjs finish\n' "$PIPELINE_NAMESPACE" "$POD_NAME"
-fi
 
 node "$SAP_BROWSER_SESSION_DIR/code/$entry" &
 runner_pid=$!

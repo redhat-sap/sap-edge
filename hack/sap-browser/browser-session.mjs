@@ -130,7 +130,7 @@ function describe(error) {
   return error instanceof SetupError ? error.message : 'Unexpected error; details are hidden because they can contain credentials.';
 }
 
-// Same checks as pipeline.mjs: the ELM origin, then the Edge Nodes heading.
+// Login check: the ELM origin, then the Edge Nodes heading.
 async function waitForLogin(page, options) {
   const origin = new URL(options.url).origin;
   const timeout = options.loginMinutes * 60000;

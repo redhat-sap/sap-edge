@@ -8,8 +8,13 @@ kind: Pipeline
 metadata:
   name: hcp-ossm3-validation-pipeline
   annotations:
-    description: "Complete SAP Edge validation pipeline for HCP KubeVirt with OSSM3 restricted-access setup: creates hosted cluster, configures Service Mesh 3.x, applies the restricted-resources in two passes (ELM bundle first, EIC bundle after the Edge Node is registered), generates restricted kubeconfig, deploys PostgreSQL and Redis, runs endpoint tests, and tears down infrastructure"
+    description: "Complete SAP Edge validation pipeline for HCP KubeVirt with OSSM3 restricted-access setup: creates hosted cluster, configures Service Mesh 3.x, applies the restricted-resources in two passes (ELM bundle first, EIC bundle after the Edge Node is registered), generates restricted kubeconfig, deploys PostgreSQL and Redis, optionally drives the ELM and Integration Suite steps with a Playwright browser behind a Route (sapBrowserMode), runs endpoint tests, and tears down infrastructure"
 spec:
+  # ApprovalTasks ignore `when` on this cluster, so no gate carries one. A
+  # regular task skipped by its own `when` does not block the tasks that
+  # runAfter it. A task skipped because a result it consumes is missing (its
+  # producer was skipped) does block them: that skip cascades. So no task with
+  # a `when` produces a result that another task consumes.
   params:
     # --- Git parameters ---
     - name: repoUrl
@@ -142,35 +147,53 @@ spec:
       description: "Name of the Istio CR to patch with tracing extension providers"
       default: "default"
 
-    # --- Pipeline control ---
+    # --- SAP browser automation (optional) ---
     - name: sapBrowserMode
       type: string
-      description: "disabled, review-registration, inspect, or run; manual approval is always retained"
+      description: "Optional Playwright browser for the ELM and Integration Suite steps: disabled (default; everything by hand), inspect (log in, then record the screens with Playwright Inspector) or auto (Playwright adds the Edge Node, puts the zips into the S3 folders, deploys EIC and the test iFlows, and deletes the Edge Node at teardown; on any problem it hands over to you). Needs the taskRunSpecs of the run file; the approvals stay"
       default: "disabled"
     - name: sapBrowserImage
       type: string
-      description: "Set to the built SAP browser runner image before enabling sapBrowserMode"
-      default: "sap-browser:dev"
+      description: "SAP browser runner image to use as is; empty (default): sap-browser-image builds it from hack/sap-browser/Containerfile into eic's Quay when its content-hash tag is missing"
+      default: ""
     - name: sapElmUrl
       type: string
-      description: "Direct SAP Edge Lifecycle Management HTTPS URL"
+      description: "Direct SAP Edge Lifecycle Management HTTPS URL; required when sapBrowserMode is not disabled"
       default: ""
     - name: sapBrowserHA
       type: string
-      description: "ELM high availability for registration review (independent of PostgreSQL HA)"
+      description: "Register the Edge Node as highly available in ELM (independent of PostgreSQL HA)"
       default: "false"
-    - name: sapBrowserFlow
-      type: string
-      description: "Reviewed .mjs flow path relative to hack/sap-browser, required for run mode"
-      default: ""
     - name: sapBrowserSessionMinutes
       type: string
-      description: "Total browser session deadline, including login and inspection (1-120 minutes)"
-      default: "120"
+      description: "Limit of each browser session (deploy, teardown) including login, pipeline waits and hand-over (1-600 minutes); the deploy session spans the cluster setup and the EIC installation"
+      default: "360"
     - name: sapBrowserLoginMinutes
       type: string
-      description: "Interactive login deadline within the browser session"
+      description: "Limit for the interactive OpenShift and SAP login within a browser session"
       default: "30"
+    - name: oauthProxyImage
+      type: string
+      description: "OpenShift OAuth proxy image that protects the browser Route"
+      default: "image-registry.openshift-image-registry.svc:5000/openshift/oauth-proxy:v4.4"
+    - name: sapEicSolution
+      type: string
+      description: "Solution the browser selects in ELM for the EIC deployment"
+      default: "Edge Integration Cell (dev)"
+    - name: sapEicKeyAlias
+      type: string
+      description: "Default virtual host key alias of the EIC deployment"
+      default: "slv-ic"
+    - name: sapEicInstallVersion
+      type: string
+      description: "EIC version the browser deploys; empty (default): the version ELM preselects. A version ELM does not offer hands over"
+      default: ""
+    - name: sapEicUpgradeVersion
+      type: string
+      description: "EIC version for an upgrade; empty (default): no upgrade"
+      default: ""
+
+    # --- Pipeline control ---
     - name: skipTeardown
       type: string
       description: "Skip the teardown step at the end"
@@ -243,6 +266,32 @@ spec:
         - name: output
           workspace: source
 
+    # =============================================
+    # SAP browser automation (optional, sapBrowserMode)
+    # =============================================
+    # sap-browser-deploy and sap-browser-teardown are skipped by their own
+    # `when` (sapBrowserMode disabled, or no image), which does not block the
+    # tasks after them. sap-browser-image and sap-browser-access have no
+    # `when` because the browser tasks consume their results; with the browser
+    # off they do nothing. The browser step always exits 0 and reports its
+    # outcome in a result, so the manual path and the teardown continue after
+    # any failure inside the browser (pod-level failures still fail the task).
+    # No retries: a rerun could repeat SAP actions.
+
+    # Runner image: sapBrowserImage as is, or built into eic's Quay when its
+    # content-hash tag is missing; empty with the browser off
+    - name: sap-browser-image
+      runAfter: [fetch-repository]
+      taskRef: { name: sap-browser-image }
+      params:
+        - name: mode
+          value: $(params.sapBrowserMode)
+        - name: image
+          value: $(params.sapBrowserImage)
+      workspaces:
+        - name: source
+          workspace: source
+
     # Step 2: Create HostedCluster and NodePool
     - name: create-hosted-cluster
       runAfter: [fetch-repository, preflight-check]
@@ -289,6 +338,103 @@ spec:
         - name: source
           workspace: source
 
+    # Grant the runner ServiceAccount get on this run's Secrets (per-run Role
+    # hcp-sap-browser-<hostedClusterName>, deleted by teardown-hosted-cluster),
+    # tell whether the run uses a proxy, and read the cluster's Edge Node ID
+    # label before any zip of this run is applied (apply-elm-resources runs
+    # after it; nothing to do when the browser is off)
+    - name: sap-browser-access
+      runAfter: [wait-cluster-ready]
+      taskRef: { name: hcp-sap-browser-access }
+      params:
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: hostedClusterNamespace
+          value: $(params.hostedClusterNamespace)
+        - name: hubKubeconfigSecretName
+          value: $(params.hubClusterName)-kubeconfig
+        - name: hubClusterName
+          value: $(params.hubClusterName)
+        - name: mode
+          value: $(params.sapBrowserMode)
+        - name: cellCount
+          value: ""
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Deploy session (Route link in the log), from the cluster setup to the
+    # test iFlows: add the Edge Node, put the ELM zip into elm/, wait for the
+    # restricted kubeconfig, set up the Embedded Cloud Connector, deploy EIC,
+    # put its zip into edge-icell/, resume the deployment once configure-mesh-eic
+    # is done, then deploy the keystore and the test iFlows in Integration
+    # Suite. The session ends on its own after sapBrowserSessionMinutes (at
+    # most 600); the task timeout adds an hour for scheduling and image pull.
+    - name: sap-browser-deploy
+      runAfter: [sap-browser-access]
+      when:
+        - input: $(params.sapBrowserMode)
+          operator: notin
+          values: [disabled]
+        - input: $(tasks.sap-browser-image.results.image)
+          operator: notin
+          values: [""]
+      timeout: "11h"
+      taskRef: { name: hcp-sap-browser }
+      params:
+        - name: mode
+          value: $(params.sapBrowserMode)
+        - name: phase
+          value: deploy
+        - name: runnerImage
+          value: $(tasks.sap-browser-image.results.image)
+        - name: oauthProxyImage
+          value: $(params.oauthProxyImage)
+        - name: elmUrl
+          value: $(params.sapElmUrl)
+        - name: pipelineRun
+          value: $(context.pipelineRun.name)
+        - name: pipelineRunUID
+          value: $(context.pipelineRun.uid)
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: s3Prefix
+          value: $(params.s3Prefix)
+        - name: cellCount
+          value: ""
+        - name: datastoreType
+          value: $(params.datastoreType)
+        - name: highAvailability
+          value: $(params.sapBrowserHA)
+        - name: deploymentNamePrefix
+          value: pr-$(params.pullRequestNumber)
+        - name: eicSolution
+          value: $(params.sapEicSolution)
+        - name: eicKeyAlias
+          value: $(params.sapEicKeyAlias)
+        - name: eicInstallVersion
+          value: $(params.sapEicInstallVersion)
+        - name: eicUpgradeVersion
+          value: $(params.sapEicUpgradeVersion)
+        - name: registrySecretName
+          value: $(params.hubClusterName)-quay-robot
+        - name: proxyConfigured
+          value: $(tasks.sap-browser-access.results.proxyConfigured)
+        - name: obcName
+          value: $(params.obcName)
+        - name: clusterEdgeNodeId
+          value: $(tasks.sap-browser-access.results.clusterEdgeNodeId)
+        - name: sessionMinutes
+          value: $(params.sapBrowserSessionMinutes)
+        - name: loginMinutes
+          value: $(params.sapBrowserLoginMinutes)
+      # Only the helper code: the rest of the workspace (e.g. kubeconfigs)
+      # stays out of the pod with the shared browser
+      workspaces:
+        - name: source
+          workspace: source
+          subPath: hack/sap-browser
+
     # Step 3.5: Create NFS StorageClass (nfs-rwx) on the hosted cluster
     - name: create-nfs-storageclass
       runAfter: [wait-cluster-ready]
@@ -329,9 +475,12 @@ spec:
 
     # Step 5: Download and apply the ELM restricted-access resources (first
     #         pass): creates edgelm and applies CRDs, ClusterRoles, RoleBindings,
-    #         etc. The EIC bundle follows in apply-eic-resources.
+    #         etc. The EIC bundle follows in apply-eic-resources. After
+    #         sap-browser-access (no `when`, a no-op with the browser off), so
+    #         the cluster's pre-run Edge Node ID is read before the ELM zip is
+    #         applied, also when the zip was uploaded by hand early.
     - name: apply-elm-resources
-      runAfter: [verify-operators, wait-elm-zip]
+      runAfter: [verify-operators, wait-elm-zip, sap-browser-access]
       taskRef: { name: ossm3-download-and-apply-rbac }
       params:
         - name: hostedClusterName
@@ -538,47 +687,13 @@ spec:
     # Phase 4: Manual ELM/EIC Deployment + Tests
     # =============================================
 
-    # Optional browser session; a skipped task does not skip its runAfter dependents.
-    # No retries: replaying a browser flow might duplicate SAP-side operations.
-    - name: sap-browser
-      runAfter: [get-all-accesses]
-      when:
-        - input: $(params.sapBrowserMode)
-          operator: notin
-          values: [disabled]
-      timeout: "3h"
-      taskRef: { name: hcp-sap-browser }
-      params:
-        - name: runnerImage
-          value: $(params.sapBrowserImage)
-        - name: mode
-          value: $(params.sapBrowserMode)
-        - name: elmUrl
-          value: $(params.sapElmUrl)
-        - name: pipelineRun
-          value: $(context.pipelineRun.name)
-        - name: pipelineRunUID
-          value: $(context.pipelineRun.uid)
-        - name: hostedClusterName
-          value: $(params.hostedClusterName)
-        - name: highAvailability
-          value: $(params.sapBrowserHA)
-        - name: flow
-          value: $(params.sapBrowserFlow)
-        - name: sessionMinutes
-          value: $(params.sapBrowserSessionMinutes)
-        - name: loginMinutes
-          value: $(params.sapBrowserLoginMinutes)
-      workspaces:
-        - name: source
-          workspace: source
-
     # Step 13a: Wait for the EIC zip (second pass; log: what to do in ELM and
     #           the upload plan). After the credentials, which deploying EIC in
-    #           ELM needs, and after the optional browser session (skipped when
-    #           disabled, which does not block).
+    #           ELM needs. Not after sap-browser-deploy: that session puts the
+    #           EIC zip into edge-icell/ and then waits for configure-mesh-eic,
+    #           which comes after this task.
     - name: wait-eic-zip
-      runAfter: [get-all-accesses, sap-browser]
+      runAfter: [get-all-accesses]
       taskRef: { name: ossm3-wait-for-restricted-resources }
       params:
         - name: obcName
@@ -669,9 +784,10 @@ spec:
           workspace: source
 
     # Step 13: Manual approval after confirming the EIC resources in ELM and
-    #          deploying iFlows
+    #          deploying iFlows (after the optional deploy session, which does
+    #          both; skipped when disabled, which does not block)
     - name: approval-elm-eic-iflow-deployed
-      runAfter: [configure-mesh-eic, enable-monitoring]
+      runAfter: [configure-mesh-eic, enable-monitoring, sap-browser-deploy]
       taskRef:
         apiVersion: openshift-pipelines.org/v1alpha1
         kind: ApprovalTask
@@ -697,10 +813,11 @@ spec:
 
             Restricted kubeconfig stored as Secret 'edgelm-kubeconfig-generated-$(params.hostedClusterName)'.
 
-            Optional SAP browser mode: $(params.sapBrowserMode).
-            Registration review and inspection modes do not verify deployment readiness.
-            Confirm the following are complete (finish any remaining steps manually; registration,
-            EIC deployment and the EIC zip upload happened before this gate, see wait-eic-zip):
+            SAP browser mode: $(params.sapBrowserMode). With auto, sap-browser-deploy did the ELM and
+            Integration Suite steps unless its result outcome is not deployed (handed-over, failed,
+            inspection-finished): then finish the remaining steps by hand.
+            Confirm the following are complete (registration, EIC deployment and the EIC zip upload
+            happened before this gate, see wait-eic-zip):
             1. In ELM, confirm the EIC restricted resources as applied and wait until EIC is deployed
             2. Deploy iFlows for testing
 
@@ -1196,9 +1313,12 @@ spec:
             Before approving, open the runtime page in SAP Integration Suite and
             check that every Edge Integration Cell runtime of this cluster shows
             a healthy status, with no errors.
-            Then delete every Edge Integration Cell deployment of this cluster in ELM
-            (Operations > Delete) and remove its Edge Node(s) (Remove, confirm with the
-            node name): the teardown deletes only the cluster, not its ELM entries.
+            With sapBrowserMode disabled, then delete every Edge Integration Cell
+            deployment of this cluster in ELM (Operations > Delete) and remove its
+            Edge Node (Remove, confirm with the node name): the teardown deletes only
+            the cluster, not its ELM entries. With the browser on, sap-browser-teardown
+            does this after you approve (an Edge Node this run did not create is
+            handed over to you, never deleted).
 
             Cluster: $(params.hostedClusterName)
 
@@ -1209,9 +1329,73 @@ spec:
         - name: timeout
           value: '336h'
 
-    # Step 25: Teardown hosted cluster
-    - name: teardown-hosted-cluster
+    # Optional teardown session after approval (second login): delete the EIC
+    # deployment and the Edge Node this run created in ELM.
+    # teardown-hosted-cluster runs after it whatever its outcome.
+    - name: sap-browser-teardown
       runAfter: [approval-teardown]
+      when:
+        - input: $(params.sapBrowserMode)
+          operator: notin
+          values: [disabled]
+        - input: $(tasks.sap-browser-image.results.image)
+          operator: notin
+          values: [""]
+      taskRef: { name: hcp-sap-browser }
+      params:
+        - name: mode
+          value: $(params.sapBrowserMode)
+        - name: phase
+          value: teardown
+        - name: runnerImage
+          value: $(tasks.sap-browser-image.results.image)
+        - name: oauthProxyImage
+          value: $(params.oauthProxyImage)
+        - name: elmUrl
+          value: $(params.sapElmUrl)
+        - name: pipelineRun
+          value: $(context.pipelineRun.name)
+        - name: pipelineRunUID
+          value: $(context.pipelineRun.uid)
+        - name: hostedClusterName
+          value: $(params.hostedClusterName)
+        - name: s3Prefix
+          value: $(params.s3Prefix)
+        - name: cellCount
+          value: ""
+        - name: datastoreType
+          value: $(params.datastoreType)
+        - name: highAvailability
+          value: $(params.sapBrowserHA)
+        - name: deploymentNamePrefix
+          value: pr-$(params.pullRequestNumber)
+        - name: eicSolution
+          value: $(params.sapEicSolution)
+        - name: eicKeyAlias
+          value: $(params.sapEicKeyAlias)
+        - name: eicInstallVersion
+          value: $(params.sapEicInstallVersion)
+        - name: eicUpgradeVersion
+          value: $(params.sapEicUpgradeVersion)
+        - name: registrySecretName
+          value: $(params.hubClusterName)-quay-robot
+        - name: obcName
+          value: $(params.obcName)
+        - name: sessionMinutes
+          value: $(params.sapBrowserSessionMinutes)
+        - name: loginMinutes
+          value: $(params.sapBrowserLoginMinutes)
+      # Only the helper code: the rest of the workspace (e.g. kubeconfigs)
+      # stays out of the pod with the shared browser
+      workspaces:
+        - name: source
+          workspace: source
+          subPath: hack/sap-browser
+
+    # Step 25: Teardown hosted cluster (also deletes the per-run browser Role
+    #          and RoleBinding of sap-browser-access)
+    - name: teardown-hosted-cluster
+      runAfter: [approval-teardown, sap-browser-teardown]
       when:
         - input: "$(params.skipTeardown)"
           operator: in

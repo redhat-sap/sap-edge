@@ -26,7 +26,7 @@ zips to upload.
 | `aro-eic-ossm3` | restricted | ARO with Azure PostgreSQL/Redis and Quay, EIC, endpoint tests, teardown |
 | `rosa-eic-ossm3` | restricted | ROSA HCP with RDS PostgreSQL, ElastiCache Redis and Quay, EIC, endpoint tests, teardown |
 | `roks-eic-ossm3` | restricted | ROKS with IBM Cloud Databases and Container Registry, optional ELM browser automation, EIC, endpoint tests, teardown |
-| `hcp-ossm3-validation` | restricted | HCP KubeVirt, one Edge Node with one EIC on the shared mesh |
+| `hcp-ossm3-validation` | restricted | HCP KubeVirt, one Edge Node with one EIC on the shared mesh, optional ELM browser automation |
 | `hcp-ossm3-dedicated-validation` | restricted | HCP KubeVirt, one Edge Node with one or two EICs on a dedicated mesh (topology A) |
 | `hcp-ossm3-multi-stack-validation` | restricted | HCP KubeVirt, two Edge Nodes with one EIC and a dedicated mesh each (topology B) |
 | `hcp-kubevirt-validation` | full | HCP KubeVirt with PostgreSQL/Redis, EIC, endpoint tests, teardown |
@@ -66,6 +66,8 @@ zips to upload.
 - `hcp-wait-cluster-ready-task`: Wait for cluster readiness
 - `hcp-deploy-postgres-task`, `hcp-deploy-redis-task`: Deploy external services
 - `hcp-get-all-accesses-task`: Retrieve service credentials
+- `hcp-sap-browser-access-task`: Optional browser automation: let the runner ServiceAccount read this run's Secrets (per-run Role `hcp-sap-browser-<cluster>`), check for a proxy run and read the cluster's Edge Node ID label; does nothing when `sapBrowserMode` is disabled
+- `hcp-sap-browser-task`: Optional browser automation: Playwright browser for the ELM and Integration Suite steps (deploy, upgrade or teardown phase) behind a per-run Route with the OpenShift OAuth proxy; the step always exits 0 and reports the result `outcome` (see [`hack/sap-browser/PIPELINE.md`](../hack/sap-browser/PIPELINE.md))
 - `hcp-validate-and-create-configmap-task`: Validate and configure
 - `hcp-teardown-task`: Clean up resources
 
@@ -189,8 +191,7 @@ tkn pipelinerun list
 ```
 
 **Example PipelineRuns** are in `.tekton-examples/`, named after their pipeline
-(see [Pipelines](#pipelines)), for example `hcp-ossm3-validation-run.yaml`;
-`hcp-sap-browser-taskrun.yaml` rehearses the SAP browser task on its own.
+(see [Pipelines](#pipelines)), for example `hcp-ossm3-validation-run.yaml`.
 
 ### 4. Manual Approvals
 ```bash
@@ -203,8 +204,9 @@ in SAP Integration Suite and check that every Edge Integration Cell runtime of
 the cluster shows a healthy status, with no errors. Then delete every EIC
 deployment of the cluster in ELM (Operations > Delete) and remove its Edge
 Node(s) (Remove, confirm with the node name): the teardown deletes only the
-cluster, not its ELM entries. ROKS with `sapBrowserMode` on does this in
-`sap-browser-teardown` after the approval. Approving starts the teardown.
+cluster, not its ELM entries. ROKS and `hcp-ossm3-validation` with
+`sapBrowserMode` on do this in `sap-browser-teardown` after the approval.
+Approving starts the teardown.
 
 ## Multi-EIC restricted resources
 
@@ -306,7 +308,7 @@ wait-elm-zip -> apply-elm-resources -> ELM namespace labels, mesh -> restricted 
 | Pipeline | S3 folders | Notes |
 |---|---|---|
 | `roks-eic-ossm3` | `restricted-resources/<clusterName>/elm/`, `edge-icell/` | earlier zips are archived (new cluster each run) |
-| `hcp-ossm3-validation` | `restricted-resources/<hostedClusterName>/elm/`, `edge-icell/` | EIC wait after PostgreSQL/Redis and the optional `sap-browser` |
+| `hcp-ossm3-validation` | `restricted-resources/<hostedClusterName>/elm/`, `edge-icell/` | EIC wait after PostgreSQL/Redis; the optional `sap-browser-deploy` uploads both zips |
 | `hcp-ossm3-dedicated-validation` | `restricted-resources/pr<N>/elm/`, `edge-icell-N/` | see the topology A notes above |
 | `hcp-ossm3-multi-stack-validation` | `restricted-resources/pr<N>-multi-stack/elm-N/`, `edge-icell-N/` | see the topology B notes above |
 | `aro-eic-ossm3`, `rosa-eic-ossm3` | `restricted-resources/<cluster name>/elm/`, `edge-icell/` | EIC wait after the Quay registry; `skipEicValidation: "true"` skips the whole second pass |
@@ -400,6 +402,11 @@ result `image`:
   revision of these files always gives the same tag; other changes in the
   repository do not trigger a build. Default `repository`:
   `quay.apps.eic.ocp.sap.local/sap_elm_eic/sap-browser` (public).
+
+**Before the first run** the repository `sap_elm_eic/sap-browser` must exist
+and be public on eic's Quay (the runner pods pull without a pull secret), and
+the robot account of the Secret `eic-quay-robot` needs Write on it: its Creator
+role covers the repositories it creates itself, not one created by a user.
 
 When `skopeo inspect` does not find the tag, buildah builds
 `hack/sap-browser/Containerfile` with the repository root as context and pushes
@@ -773,7 +780,7 @@ With `sapBrowserMode` other than `disabled`, the run starts a Chromium browser i
 
 **One-time setup** (pipeline namespace):
 
-1. Build and push the runner image as described in [`hack/sap-browser/PIPELINE.md`](../hack/sap-browser/PIPELINE.md#build-and-install-once) (the HCP steps after the push are not needed for ROKS).
+1. Build and push the runner image as described in [`hack/sap-browser/PIPELINE.md`](../hack/sap-browser/PIPELINE.md#build-the-image-by-hand).
 2. `oc -n <pipeline namespace> apply -f hack/sap-browser/roks-runner-rbac.yaml`: the ServiceAccount `roks-sap-browser-runner` (reads PipelineRuns/TaskRuns, creates and deletes its Route and Service, gets no Secrets namespace-wide) and the right of the `pipeline` ServiceAccount to create the per-run Role `roks-sap-browser-<cluster>`. That Role grants `get` on this run's three Secrets only, so the `pipeline` ServiceAccount must hold `get` on them itself. If the OAuth proxy logs 403 on `subjectaccessreviews`, bind `system:auth-delegator` to the runner (command in the file).
 3. Download the Linux x86_64 `elm` CLI from the SAP Software Download Center and upload it (the binary, a `.zip` or a `.tar.gz`; not a `.SAR`) to `tools/elm/` in the OBC bucket. The browser takes the newest file there. Upload a new one when ELM needs a newer CLI.
 

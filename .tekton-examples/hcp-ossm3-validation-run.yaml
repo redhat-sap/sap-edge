@@ -12,6 +12,12 @@
 #
 # 2. Ensure the Service Mesh 3.x operator is installed on the target cluster
 #    (via OperatorHub or CLI before running this pipeline)
+#
+# 3. Only for the optional browser automation (sapBrowserMode below), once per
+#    pipeline namespace: apply hack/sap-browser/hcp-runner-rbac.yaml, create the
+#    Secrets eic-quay-robot (pushes the runner image) and <hubClusterName>-quay-robot
+#    (registry for "Add Edge Node"), and make sure the public repository
+#    sap_elm_eic/sap-browser exists on eic's Quay (hack/sap-browser/PIPELINE.md)
 
 ---
 apiVersion: tekton.dev/v1
@@ -27,10 +33,13 @@ metadata:
 spec:
   pipelineRef:
     name: hcp-ossm3-validation-pipeline
-  # When enabling sapBrowserMode, install the runner's RBAC and uncomment:
+  # When enabling sapBrowserMode, uncomment (the browser tasks run as the
+  # ServiceAccount from hack/sap-browser/hcp-runner-rbac.yaml):
   # taskRunSpecs:
-  #   - pipelineTaskName: sap-browser
-  #     serviceAccountName: sap-browser-runner
+  #   - pipelineTaskName: sap-browser-deploy
+  #     serviceAccountName: hcp-sap-browser-runner
+  #   - pipelineTaskName: sap-browser-teardown
+  #     serviceAccountName: hcp-sap-browser-runner
   timeouts:
     pipeline: "336h"      # Total pipeline timeout (14 days)
     tasks: "335h"         # Individual task timeout (tasks + finally must be <= pipeline)
@@ -105,15 +114,23 @@ spec:
     - name: jiraIssueKey
       value: ""
 
-    # --- Pipeline control ---
-    # Optional browser runner (disabled unless explicitly configured).
-    # Build/install/access instructions: hack/sap-browser/PIPELINE.md
-    # - name: sapBrowserMode
-    #   value: "review-registration"
-    # - name: sapBrowserImage
-    #   value: "YOUR_REGISTRY/YOUR_PROJECT/sap-browser:dev"
+    # --- SAP browser automation (optional) ---
+    # disabled, inspect or auto (hack/sap-browser/PIPELINE.md). With inspect or
+    # auto, also set sapElmUrl and uncomment taskRunSpecs above. The runner image
+    # is built into eic's Quay when missing (sapBrowserImage overrides it).
+    - name: sapBrowserMode
+      value: "disabled"
     # - name: sapElmUrl
     #   value: "https://YOUR-TENANT/comsapclmedgelm.comsapclmedgelm/index.html"
+    # - name: sapBrowserImage
+    #   value: "quay.apps.eic.ocp.sap.local/sap_elm_eic/sap-browser:YOUR_TAG"
+    # Empty: the version ELM preselects / no upgrade
+    # - name: sapEicInstallVersion
+    #   value: ""
+    # - name: sapEicUpgradeVersion
+    #   value: ""
+
+    # --- Pipeline control ---
     - name: skipTeardown
       value: "false"
   workspaces:
