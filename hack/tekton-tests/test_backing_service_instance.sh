@@ -220,6 +220,7 @@ write_pg_rules() {
   cat > "$1" <<EOF
 get secret c1-admin-kubeconfig -n clusters*	0	{"data":{"kubeconfig":"YWJjCg=="}}
 get nodes*	0	node1
+get ingresses.config.openshift.io cluster -o jsonpath={.spec.domain}	0	apps.c1.example.com
 get secret edgedb-pguser-edgedb -n sap-eic-external-postgres -o jsonpath={.data.host}	0	cGctaG9zdA==
 get secret edgedb-pguser-edgedb -n sap-eic-external-postgres -o jsonpath={.data.port}	0	NTQzMg==
 get secret edgedb-pguser-edgedb -n sap-eic-external-postgres -o jsonpath={.data.dbname}	0	ZWRnZWRi
@@ -437,6 +438,77 @@ if grep -qF "{.data.kubeconfig}" <<< "${TASK_OUT}"; then
 fi
 
 echo "✅ PASS: accesses_missing_kubeconfig"
+
+# Test case: ingress_domain_stored
+# Every run (single and per instance) stores the hosted cluster's ingress domain
+# under the credentials Secret key ingress-domain (the SAP browser builds the
+# virtual host from it); it is read once, and a domain that cannot be read
+# fails the task.
+echo ""
+echo "Test: ingress_domain_stored"
+echo "--------------------------------------------"
+
+FAKE_OC_LOG=$(tmp_file)
+FAKE_OC_RULES=$(tmp_file)
+WORKSPACE_DIR=$(tmp_dir)
+RESULTS_DIR=$(tmp_dir)
+write_pg_rules "${FAKE_OC_RULES}"
+write_redis_rules "${FAKE_OC_RULES}" sap-eic-external-redis "redis-cert"
+export FAKE_OC_LOG FAKE_OC_RULES
+run_accesses --param datastoreType=redis
+assert_rc 0
+assert_called "^create secret generic eic-credentials-hcp-c1 .*--from-literal=ingress-domain=apps\.c1\.example\.com( |$)"
+
+# Per instance, through the end of the script: the ELM deploy form uses the
+# stored domain and the task does not read it a second time
+FAKE_OC_LOG=$(tmp_file)
+FAKE_OC_RULES=$(tmp_file)
+WORKSPACE_DIR=$(tmp_dir)
+RESULTS_DIR=$(tmp_dir)
+write_pg_rules "${FAKE_OC_RULES}"
+write_redis_rules "${FAKE_OC_RULES}" sap-eic-external-redis-eic-2 "redis-cert-eic-2"
+export FAKE_OC_LOG FAKE_OC_RULES
+TASK_CWD="${WORKSPACE_DIR}" run_task ../../.tekton/tasks/hcp-get-all-accesses-task.yaml \
+  --param hostedClusterName=c1 \
+  --param datastoreType=redis \
+  --param instance=eic-2 \
+  --workspace-dir source="${WORKSPACE_DIR}" \
+  --results-dir "${RESULTS_DIR}" \
+  --from 'echo "🔍 Verifying access to hosted cluster..."' \
+  --drop 'Install required packages' 'oc version --client' \
+  --drop '# Switch back to hosted cluster' '.kubeconfig-rewrite.sh'
+if [[ "${TASK_RC}" -ne 0 ]]; then echo "${TASK_OUT}"; fi
+assert_rc 0
+assert_called "^create secret generic eic-credentials-hcp-c1-eic-2 .*--from-literal=ingress-domain=apps\.c1\.example\.com( |$)"
+grep -qF "Default Virtual Host:            eic-2.apps.c1.example.com" <<< "${TASK_OUT}" \
+  || { echo "${TASK_OUT}"; fail "deploy form does not use the ingress domain"; }
+[[ "$(grep -c "get ingresses.config.openshift.io" "${FAKE_OC_LOG}")" -eq 1 ]] \
+  || fail "the ingress domain must be read exactly once: $(grep "get ingresses" "${FAKE_OC_LOG}")"
+
+# The domain cannot be read: the task fails before any Secret is written
+FAKE_OC_LOG=$(tmp_file)
+FAKE_OC_RULES=$(tmp_file)
+WORKSPACE_DIR=$(tmp_dir)
+RESULTS_DIR=$(tmp_dir)
+RULES_REST=$(tmp_file)
+printf '%s\t%s\t%s\n' "get ingresses.config.openshift.io cluster -o jsonpath={.spec.domain}" 1 "" > "${FAKE_OC_RULES}"
+write_pg_rules "${RULES_REST}"
+cat "${RULES_REST}" >> "${FAKE_OC_RULES}"
+export FAKE_OC_LOG FAKE_OC_RULES
+TASK_CWD="${WORKSPACE_DIR}" run_task ../../.tekton/tasks/hcp-get-all-accesses-task.yaml \
+  --param hostedClusterName=c1 \
+  --param datastoreType=redis \
+  --workspace-dir source="${WORKSPACE_DIR}" \
+  --results-dir "${RESULTS_DIR}" \
+  --from 'echo "🔍 Verifying access to hosted cluster..."' \
+  --to '# Switch back to hosted cluster' \
+  --drop 'Install required packages' 'oc version --client'
+[[ "${TASK_RC}" -ne 0 ]] || fail "an unreadable ingress domain must fail the task"
+grep -qF "Could not read the ingress domain of hosted cluster c1" <<< "${TASK_OUT}" \
+  || { echo "${TASK_OUT}"; fail "ingress domain error not printed"; }
+assert_not_called "^create secret"
+
+echo "✅ PASS: ingress_domain_stored"
 
 echo ""
 echo "✅ ALL TESTS PASSED"

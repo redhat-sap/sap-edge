@@ -11,8 +11,9 @@ spec:
   description: >-
     Retrieves and displays all PostgreSQL and Redis/Valkey credentials from the hosted
     cluster after deployment. Also displays the content of generated certificate files
-    and stores everything in the Secret eic-credentials-hcp-<cluster> on the pipeline
-    cluster (eic-credentials-hcp-<cluster>-<instance> when instance is set, so per-cell
+    and stores everything, with the hosted cluster's ingress domain (key ingress-domain),
+    in the Secret eic-credentials-hcp-<cluster> on the pipeline cluster
+    (eic-credentials-hcp-<cluster>-<instance> when instance is set, so per-cell
     runs in parallel never overwrite each other's Secret or certificate files).
     When instance is set (eic-N), it also prints the values of the ELM "Deploy Solution"
     form for that cell, tab by tab (namespaces with the -N suffix, virtual host, external
@@ -158,6 +159,16 @@ spec:
         echo "🔍 Verifying access to hosted cluster..."
         oc get nodes
         echo "✅ Successfully connected to hosted cluster"
+
+        # Ingress domain of the hosted cluster, stored in the credentials Secret
+        # (key ingress-domain): the SAP browser builds the EIC virtual host from it
+        INGRESS_DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null || true)
+        if [[ -z "${INGRESS_DOMAIN}" ]]; then
+          echo "❌ Could not read the ingress domain of hosted cluster ${HOSTED_CLUSTER_NAME} (ingresses.config.openshift.io cluster, .spec.domain)"
+          echo "   The credentials Secret needs it (key ingress-domain) for the EIC virtual host"
+          exit 1
+        fi
+        echo "Ingress domain: ${INGRESS_DOMAIN}"
         echo ""
 
         # ================== PostgreSQL ==================
@@ -353,6 +364,7 @@ spec:
         SECRET_ARGS+=(--from-literal=postgres-dbname="${PG_DBNAME:-N/A}")
         SECRET_ARGS+=(--from-literal=postgres-user="${PG_USER:-N/A}")
         SECRET_ARGS+=(--from-literal=postgres-password="${PG_PASSWORD:-N/A}")
+        SECRET_ARGS+=(--from-literal=ingress-domain="${INGRESS_DOMAIN}")
 
         if [[ -f "${PG_CERT_FILE}" ]]; then
           SECRET_ARGS+=(--from-file=postgres-tls-root-cert="${PG_CERT_FILE}")
@@ -419,7 +431,6 @@ spec:
             NS_SUFFIX="-${INSTANCE}"
           fi
           NAME_PREFIX="${DEPLOYMENT_NAME_PREFIX:-${HOSTED_CLUSTER_NAME}}"
-          INGRESS_DOMAIN=$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null || true)
 
           echo ""
           echo "=============================================="
@@ -434,7 +445,7 @@ spec:
           echo "Edge Integration Cell namespace: edge-icell${NS_SUFFIX}"
           echo "Edge Security Artifact Secrets:  edge-icell-secrets${NS_SUFFIX}"
           echo "Edge Local Authorization:        edge-icell-ela${NS_SUFFIX}"
-          echo "Default Virtual Host:            ${INSTANCE}.${INGRESS_DOMAIN:-<ingress domain of the hosted cluster>}"
+          echo "Default Virtual Host:            ${INSTANCE}.${INGRESS_DOMAIN}"
           echo "Default Virtual Host Key Alias:  slv-ic"
           echo "Checkboxes:                      all unchecked; SAP Monitoring Integration: None"
           echo ""
