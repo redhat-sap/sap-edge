@@ -108,6 +108,31 @@ export const elmPages = {
     return path;
   },
 
+  async downloadElmCli(page, { dir, timeoutMs = 60000 }) {
+    // Click Linux tab to show the download link
+    await page.getByRole('button', { name: 'Linux', exact: true }).click();
+
+    // Use context-level waitForEvent to handle popups (SAP Download Center)
+    try {
+      const downloadPromise = page.context().waitForEvent('download', { timeout: timeoutMs });
+
+      // Find and click the download link (starts with "Download ELMB00_")
+      const downloadLink = page.locator('a[download^="ELMB00_"]').first();
+      await downloadLink.click();
+
+      const download = await downloadPromise;
+      const filename = download.suggestedFilename();
+      const path = join(dir, filename);
+      await download.saveAs(path);
+      return path;
+    } catch (error) {
+      if (error.message?.includes('Timeout')) {
+        throw new SetupError('ELM CLI download timed out. Upload the Linux x86_64 elm binary to tools/elm/ in the bucket.');
+      }
+      throw error;
+    }
+  },
+
   async deployEic(page, { clusterName, cell }) {
     await page.getByRole('button', { name: 'Deploy Solution', exact: true }).click();
 
