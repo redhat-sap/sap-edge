@@ -841,6 +841,71 @@ exit 0
   }
 });
 
+test('init_answers_follow_listed_numbers', async () => {
+  const folder = await mkdtemp(join(tmpdir(), 'elm-init-test-'));
+  try {
+    const elmPath = join(folder, 'fake-elm');
+    const contextFile = join(folder, 'context.cfg');
+    const password = 'test-password';
+    // Simulates SAP reordering the options - Red Hat OpenShift is now option 5, No feedback is option 2
+    await writeFile(elmPath, `#!/bin/bash
+read -rs -p 'Enter Context Password: ' pw
+echo
+if [ "$pw" != "${password}" ]; then
+  echo "Wrong password"
+  exit 3
+fi
+echo "Select the Kubernetes Provider"
+echo "  1. Amazon EKS"
+echo "  2. Google GKE"
+echo "  3. Azure AKS"
+echo "  4. SUSE Rancher"
+echo "> 5. Red Hat OpenShift"
+echo "  6. Generic"
+read -p 'possible values [1,2...6]: ' provider
+if [ "$provider" != "5" ]; then
+  echo "Wrong provider, got $provider expected 5"
+  exit 1
+fi
+read -p 'Choose action (Back [b], Next [n], Help [F1]): ' action1
+if [ "$action1" != "n" ]; then
+  echo "Expected n"
+  exit 1
+fi
+read -p 'Choose action (Next [n], Help [F1]): ' action2
+if [ "$action2" != "n" ]; then
+  echo "Expected n"
+  exit 1
+fi
+echo "elm init succeeded"
+echo "Provide Feedback to SAP SE"
+echo "  1. Fill out questionnaire"
+echo "> 2. No feedback"
+echo "  3. Send analytics data only"
+read -p 'possible values [1,2,3]: ' feedback
+if [ "$feedback" != "2" ]; then
+  echo "Wrong feedback, got $feedback expected 2"
+  exit 1
+fi
+exit 0
+`);
+    await chmod(elmPath, 0o755);
+    await writeFile(contextFile, 'test-context');
+
+    await runElmInit({
+      elmPath,
+      contextFile,
+      password,
+      cwd: folder,
+      timeoutMs: 10000,
+      platform: process.platform,
+      log: () => {},
+    });
+  } finally {
+    await rm(folder, { recursive: true, force: true });
+  }
+});
+
 test('init_unknown_prompt_hands_over', async () => {
   const folder = await mkdtemp(join(tmpdir(), 'elm-init-test-'));
   try {

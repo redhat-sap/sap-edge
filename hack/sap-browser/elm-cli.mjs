@@ -172,7 +172,8 @@ export async function runElmInit({
       const expectScript = `
 log_user 1
 set timeout ${expectTimeout}
-set unknown_prompt_timer 0
+set provider_answered 0
+set feedback_answered 0
 spawn "${escapedElm}" init -c "${escapedCfg}"
 expect {
   -nocase -re "password" {
@@ -180,7 +181,17 @@ expect {
     exp_continue
   }
   -re "possible values .1,2...6.:" {
-    send "4\\r"
+    if {!$provider_answered} {
+      set provider_answered 1
+      # Extract the number for "Red Hat OpenShift" from the buffer
+      if {[regexp {([0-9]+)\\.[^\\n]*Red Hat OpenShift} $expect_out(buffer) -> provider_num]} {
+        send "$provider_num\\r"
+        exp_continue
+      } else {
+        puts "elm init asks something unexpected; continue by hand"
+        exit 1
+      }
+    }
     exp_continue
   }
   -re "Choose action .Back .b., Next .n., Help .F1..:" {
@@ -195,7 +206,17 @@ expect {
     exp_continue
   }
   -re "possible values .1,2,3.:" {
-    send "3\\r"
+    if {!$feedback_answered} {
+      set feedback_answered 1
+      # Extract the number for "No feedback" from the buffer
+      if {[regexp {([0-9]+)\\.[^\\n]*No feedback} $expect_out(buffer) -> feedback_num]} {
+        send "$feedback_num\\r"
+        exp_continue
+      } else {
+        puts "elm init asks something unexpected; continue by hand"
+        exit 1
+      }
+    }
     exp_continue
   }
   eof {
@@ -213,6 +234,8 @@ expect {
       let lineBuffer = '';
       let fullOutput = '';
       let elmInitSucceeded = false;
+      let sawProviderPrompt = false;
+      let sawFeedbackPrompt = false;
       let timeoutHandle;
       let killHandle;
 
@@ -246,6 +269,14 @@ expect {
         const text = data.toString();
         fullOutput += text;
         lineBuffer += text;
+
+        // Track which prompts we saw
+        if (fullOutput.includes('possible values [1,2...6]')) {
+          sawProviderPrompt = true;
+        }
+        if (fullOutput.includes('possible values [1,2,3]')) {
+          sawFeedbackPrompt = true;
+        }
 
         // Check for success message
         if (fullOutput.includes('elm init succeeded')) {
@@ -296,9 +327,9 @@ expect {
           return;
         }
 
-        // Check that we saw elm init succeeded (only if we saw provider prompt in output)
-        const sawProviderPrompt = fullOutput.includes('possible values [1,2...6]');
-        if (exitCode === 0 && sawProviderPrompt && !elmInitSucceeded) {
+        // Check that we saw elm init succeeded (only if we answered prompts beyond password)
+        const answeredBeyondPassword = sawProviderPrompt || sawFeedbackPrompt;
+        if (exitCode === 0 && answeredBeyondPassword && !elmInitSucceeded) {
           reject(new SetupError('elm init exited 0 but did not print "elm init succeeded"'));
           return;
         }
