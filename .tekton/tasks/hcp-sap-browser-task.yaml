@@ -37,8 +37,8 @@ spec:
       description: Image built with hack/sap-browser/Containerfile
     - name: oauthProxyImage
       type: string
-      description: OpenShift OAuth proxy image in front of the noVNC page
-      default: image-registry.openshift-image-registry.svc:5000/openshift/oauth-proxy:v4.4
+      description: "OpenShift OAuth proxy image in front of the noVNC page (registry.redhat.io, not the openshift/oauth-proxy ImageStream: hubs such as eic have no internal image registry)"
+      default: registry.redhat.io/openshift4/ose-oauth-proxy-rhel9:v4.20
     - name: elmUrl
       type: string
       description: "Direct SAP Edge Lifecycle Management HTTPS URL; empty: key url of the Secret elmUrlSecretName (keeps the tenant out of the repository)"

@@ -174,8 +174,8 @@ spec:
       default: "30"
     - name: oauthProxyImage
       type: string
-      description: "OpenShift OAuth proxy image that protects the browser Route"
-      default: "image-registry.openshift-image-registry.svc:5000/openshift/oauth-proxy:v4.4"
+      description: "OpenShift OAuth proxy image that protects the browser Route (registry.redhat.io: the pipeline cluster may have no internal image registry)"
+      default: "registry.redhat.io/openshift4/ose-oauth-proxy-rhel9:v4.20"
     - name: sapEicSolution
       type: string
       description: "Solution the browser selects in ELM for the EIC deployment"

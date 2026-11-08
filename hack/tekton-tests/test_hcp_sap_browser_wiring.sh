@@ -39,7 +39,7 @@ expected = {
     "sapBrowserHA": "false",
     "sapBrowserSessionMinutes": "360",
     "sapBrowserLoginMinutes": "30",
-    "oauthProxyImage": "image-registry.openshift-image-registry.svc:5000/openshift/oauth-proxy:v4.4",
+    "oauthProxyImage": "registry.redhat.io/openshift4/ose-oauth-proxy-rhel9:v4.20",
     "sapEicSolution": "Edge Integration Cell (dev)",
     "sapEicKeyAlias": "slv-ic",
     "sapEicInstallVersion": "",
