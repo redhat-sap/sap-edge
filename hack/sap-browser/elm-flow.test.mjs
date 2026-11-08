@@ -19,6 +19,16 @@ function makeFakeSteps(overrides = {}) {
   };
 }
 
+// Helper to create fake page with standard methods
+function makeFakePage(calls = []) {
+  return {
+    url() { return 'https://example.com#/clusters/123'; },
+    async goto(url) { calls.push({ goto: url }); },
+      async reload() { calls.push({ reload: true }); },
+    async reload() { calls.push({ reload: true }); },
+  };
+}
+
 test('fresh_run_order', async () => {
   const calls = [];
   const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
@@ -118,6 +128,7 @@ test('fresh_run_order', async () => {
     const fakePage = {
       url() { return 'https://example.com/some/page'; },
       async goto(url) { calls.push({ goto: url }); },
+      async reload() { calls.push({ reload: true }); },
     };
 
     const ctx = {
@@ -190,7 +201,7 @@ test('fresh_run_order', async () => {
       { waitForTask: 'configure-mesh-eic' },
       { method: 'eicDeploymentStatus', clusterName: 'test-cluster', deployment: 'pr-123-eic' },
       { method: 'resumeEicDeployment', clusterName: 'test-cluster', deployment: 'pr-123-eic' },
-      { method: 'openEdgeNode', clusterName: 'test-cluster' },
+      { reload: true },
       { method: 'eicDeploymentStatus', clusterName: 'test-cluster', deployment: 'pr-123-eic' },
       { goto: 'https://example.com/shell/home' },
       { isMethod: 'deployKeystore', runtimes: ['pr-123-eic'] },
@@ -274,6 +285,7 @@ test('resume_initialized_skips_sap_changes', async () => {
     const fakePage = {
       url() { return 'https://example.com/some/page'; },
       async goto(url) { calls.push({ goto: url }); },
+      async reload() { calls.push({ reload: true }); },
     };
 
     const ctx = {
@@ -311,6 +323,7 @@ test('resume_initialized_skips_sap_changes', async () => {
       { method: 'downloadElmZip', clusterName: 'test-cluster', dir },
       { s3put: { file: join(dir, 'restricted-resources-elm.zip'), key: 'test-prefix/elm/restricted-resources-elm.zip' } },
       { waitForTask: 'generate-sa-based-kubeconfig' },
+      { reload: true },
       { method: 'eicDeploymentStatus', clusterName: 'test-cluster', deployment: 'pr-123-eic' },
       { method: 'deployEic', clusterName: 'test-cluster', cell },
       { method: 'eicDeploymentStatus', clusterName: 'test-cluster', deployment: 'pr-123-eic' },
@@ -319,7 +332,7 @@ test('resume_initialized_skips_sap_changes', async () => {
       { waitForTask: 'configure-mesh-eic' },
       { method: 'eicDeploymentStatus', clusterName: 'test-cluster', deployment: 'pr-123-eic' },
       { method: 'resumeEicDeployment', clusterName: 'test-cluster', deployment: 'pr-123-eic' },
-      { method: 'openEdgeNode', clusterName: 'test-cluster' },
+      { reload: true },
       { method: 'eicDeploymentStatus', clusterName: 'test-cluster', deployment: 'pr-123-eic' },
       { goto: 'https://example.com/shell/home' },
       { isMethod: 'deployKeystore', runtimes: ['pr-123-eic'] },
@@ -404,6 +417,7 @@ test('resume_eic_deployed_skips_deploy', async () => {
     const fakePage = {
       url() { return 'https://example.com/some/page'; },
       async goto(url) { calls.push({ goto: url }); },
+      async reload() { calls.push({ reload: true }); },
     };
 
     const ctx = {
@@ -441,14 +455,16 @@ test('resume_eic_deployed_skips_deploy', async () => {
       { method: 'downloadElmZip', clusterName: 'test-cluster', dir },
       { s3put: { file: join(dir, 'restricted-resources-elm.zip'), key: 'test-prefix/elm/restricted-resources-elm.zip' } },
       { waitForTask: 'generate-sa-based-kubeconfig' },
+      { reload: true },
       { method: 'eicDeploymentStatus', clusterName: 'test-cluster', deployment: 'pr-123-eic' },
       // No deployEic (status is Successful)
       { method: 'eicDeploymentStatus', clusterName: 'test-cluster', deployment: 'pr-123-eic' },
       // No downloadEicZip or upload (status is Successful)
       { waitForTask: 'configure-mesh-eic' },
+      { reload: true },
       { method: 'eicDeploymentStatus', clusterName: 'test-cluster', deployment: 'pr-123-eic' },
       // No resumeEicDeployment (status is Successful)
-      { method: 'openEdgeNode', clusterName: 'test-cluster' },
+       { reload: true },
       { method: 'eicDeploymentStatus', clusterName: 'test-cluster', deployment: 'pr-123-eic' },
       { goto: 'https://example.com/shell/home' },
       { isMethod: 'deployKeystore', runtimes: ['pr-123-eic'] },
@@ -529,10 +545,7 @@ test('leftover_node_is_recreated', async () => {
       proxy: null,
     };
 
-    const fakePage = {
-      url() { return 'https://example.com/some/page'; },
-      async goto() {},
-    };
+    const fakePage = makeFakePage(calls);
 
     const ctx = {
       page: fakePage,
@@ -592,7 +605,7 @@ test('unknown_cluster_id_never_deletes', async () => {
     });
 
     const ctx = {
-      page: {},
+      page: makeFakePage(calls),
       steps: fakeSteps,
       isSteps: {},
       inputs: { clusterName: 'test-cluster', registry: {}, highAvailability: false, proxy: null },
@@ -693,10 +706,7 @@ test('empty_cluster_id_recreates_existing_node', async () => {
       proxy: null,
     };
 
-    const fakePage = {
-      url() { return 'https://example.com/some/page'; },
-      async goto() {},
-    };
+    const fakePage = makeFakePage(calls);
 
     const ctx = {
       page: fakePage,
@@ -798,10 +808,7 @@ test('id_comparison_is_normalized', async () => {
       proxy: null,
     };
 
-    const fakePage = {
-      url() { return 'https://example.com/some/page'; },
-      async goto() {},
-    };
+    const fakePage = makeFakePage(calls);
 
     const ctx = {
       page: fakePage,
@@ -851,7 +858,7 @@ test('deploy_rejects_unexpected_state', async () => {
     });
 
     const ctx = {
-      page: {},
+      page: makeFakePage(calls),
       steps: fakeSteps,
       isSteps: {},
       inputs: { clusterName: 'test-cluster', registry: {}, highAvailability: false, proxy: null },
@@ -942,10 +949,7 @@ test('kubeconfig_file_private', async () => {
 
     const kubeconfigContent = 'kubeconfig-test-content';
 
-    const fakePage = {
-      url() { return 'https://example.com/some/page'; },
-      async goto() {},
-    };
+    const fakePage = makeFakePage(calls);
 
     const ctx = {
       page: fakePage,
@@ -995,7 +999,7 @@ test('unknown_leftover_policy_throws', async () => {
     });
 
     const ctx = {
-      page: {},
+      page: makeFakePage(calls),
       steps: fakeSteps,
       isSteps: {},
       inputs: { clusterName: 'test-cluster', registry: {}, highAvailability: false, proxy: null },
@@ -1085,10 +1089,7 @@ test('handover_policy_matching_record_resumes', async () => {
       proxy: null,
     };
 
-    const fakePage = {
-      url() { return 'https://example.com/some/page'; },
-      async goto() {},
-    };
+    const fakePage = makeFakePage(calls);
 
     const ctx = {
       page: fakePage,
@@ -1210,6 +1211,7 @@ test('two_cells_order', async () => {
     const fakePage = {
       url() { return 'https://example.com/some/page'; },
       async goto(url) { calls.push({ goto: url }); },
+      async reload() { calls.push({ reload: true }); },
     };
 
     const ctx = {
@@ -1278,7 +1280,7 @@ test('two_cells_order', async () => {
       { method: 'eicDeploymentStatus', deployment: 'pr-123-eic-2' },
       { method: 'resumeEicDeployment', deployment: 'pr-123-eic-2' },
       // Status poll round 1
-      { method: 'openEdgeNode', clusterName: 'test-cluster' },
+       { reload: true },
       { method: 'eicDeploymentStatus', deployment: 'pr-123-eic-1' },
       { method: 'eicDeploymentStatus', deployment: 'pr-123-eic-2' },
       // Integration Suite
@@ -1348,10 +1350,7 @@ test('expired_session_relogin_and_retry', async () => {
 
     const fakeS3 = { async put() {} };
 
-    const fakePage = {
-      url() { return 'https://example.com/some/page'; },
-      async goto() {},
-    };
+    const fakePage = makeFakePage(calls);
 
     const ctx = {
       page: fakePage,
@@ -1430,7 +1429,7 @@ test('cell_without_eic_hands_over', async () => {
     const fakeS3 = { async put() {} };
 
     const ctx = {
-      page: {},
+      page: makeFakePage(calls),
       steps: fakeSteps,
       isSteps: {},
       inputs: { clusterName: 'test-cluster', registry: {}, highAvailability: false, proxy: null },
@@ -1472,7 +1471,7 @@ test('proxy_run_hands_over_before_add', async () => {
     });
 
     const ctx = {
-      page: {},
+      page: makeFakePage(calls),
       steps: fakeSteps,
       isSteps: {},
       inputs: { clusterName: 'test-cluster', registry: {}, highAvailability: false, proxy: { host: 'proxy.example.com', port: 8080 } },
@@ -1550,10 +1549,7 @@ test('node_recorded_after_add', async () => {
 
     const fakeS3 = { async put() {} };
 
-    const fakePage = {
-      url() { return 'https://example.com/some/page'; },
-      async goto() {},
-    };
+    const fakePage = makeFakePage(calls);
 
     const ctx = {
       page: fakePage,
@@ -1620,7 +1616,7 @@ test('hcp_policy_hands_over_unproven_node', async () => {
     });
 
     const ctx = {
-      page: {},
+      page: makeFakePage(calls),
       steps: fakeSteps,
       isSteps: {},
       inputs: { clusterName: 'test-cluster', registry: {}, highAvailability: false, proxy: null },
@@ -1700,10 +1696,7 @@ test('waits_until_all_successful', async () => {
 
     const fakeS3 = { async put() {} };
 
-    const fakePage = {
-      url() { return 'https://example.com/some/page'; },
-      async goto() {},
-    };
+    const fakePage = makeFakePage(calls);
 
     const ctx = {
       page: fakePage,
@@ -1763,10 +1756,7 @@ test('status_timeout_hands_over', async () => {
 
     const fakeS3 = { async put() {} };
 
-    const fakePage = {
-      url() { return 'https://example.com/some/page'; },
-      async goto() {},
-    };
+    const fakePage = makeFakePage(calls);
 
     const fakeIsSteps = {
       async deployKeystore() {},
@@ -1844,10 +1834,7 @@ test('other_error_not_retried', async () => {
 
     const fakeS3 = { async put() {} };
 
-    const fakePage = {
-      url() { return 'https://example.com/some/page'; },
-      async goto() {},
-    };
+    const fakePage = makeFakePage(calls);
 
     const ctx = {
       page: fakePage,
@@ -1948,10 +1935,7 @@ test('integration_deploys_keystore_then_artifacts_per_cell', async () => {
 
     const fakeS3 = { async put() {} };
 
-    const fakePage = {
-      url() { return 'https://example.com/some/page'; },
-      async goto() {},
-    };
+    const fakePage = makeFakePage(calls);
 
     const ctx = {
       page: fakePage,
@@ -2056,10 +2040,7 @@ test('integration_waits_for_started', async () => {
 
     const fakeS3 = { async put() {} };
 
-    const fakePage = {
-      url() { return 'https://example.com/some/page'; },
-      async goto() {},
-    };
+    const fakePage = makeFakePage(calls);
 
     const ctx = {
       page: fakePage,
@@ -2115,10 +2096,7 @@ test('unknown_operation_hands_over', async () => {
       },
     });
 
-    const fakePage = {
-      url() { return 'https://example.com/some/page'; },
-      async goto() {},
-    };
+    const fakePage = makeFakePage(calls);
 
     const fakeS3 = { async put() {} };
 
@@ -2203,10 +2181,7 @@ test('initial_operation_skips_deploy_resumes', async () => {
 
     const fakeS3 = { async put() { calls.push({ s3put: true }); } };
 
-    const fakePage = {
-      url() { return 'https://example.com/some/page'; },
-      async goto() {},
-    };
+    const fakePage = makeFakePage(calls);
 
     const ctx = {
       page: fakePage,
@@ -2270,7 +2245,7 @@ test('teardown_deletes', async () => {
   });
 
   const result = await runTeardownFlow({
-    page: {},
+    page: makeFakePage(calls),
     steps: fakeSteps,
     inputs: { clusterName: 'test-cluster' },
     cells: [],
@@ -2303,7 +2278,7 @@ test('teardown_absent', async () => {
   });
 
   const result = await runTeardownFlow({
-    page: {},
+    page: makeFakePage(calls),
     steps: fakeSteps,
     inputs: { clusterName: 'test-cluster' },
     cells: [],
@@ -2337,7 +2312,7 @@ test('teardown_rejects_unexpected_state', async () => {
 
   await assert.rejects(
     async () => await runTeardownFlow({
-      page: {},
+      page: makeFakePage(calls),
       steps: fakeSteps,
       inputs: { clusterName: 'test-cluster' },
       cells: [],
@@ -2369,7 +2344,7 @@ test('upgrade_empty_version_skips', async () => {
     const fakeSteps = makeFakeSteps({});
 
     const result = await runUpgradeFlow({
-      page: {},
+      page: makeFakePage(calls),
       steps: fakeSteps,
       inputs: { clusterName: 'test-cluster' },
       cells: [cell],
@@ -2414,7 +2389,7 @@ test('upgrade_without_resources_only_waits', async () => {
     });
 
     const result = await runUpgradeFlow({
-      page: {},
+      page: makeFakePage(calls),
       steps: fakeSteps,
       inputs: { clusterName: 'test-cluster' },
       cells: [cell],
@@ -2483,7 +2458,7 @@ test('upgrade_with_resources_uploads_waits_marker_then_resumes', async () => {
 
     let markerWaited = false;
     const result = await runUpgradeFlow({
-      page: {},
+      page: makeFakePage(calls),
       steps: fakeSteps,
       inputs: { clusterName: 'test-cluster' },
       cells: [cell],
@@ -2511,7 +2486,7 @@ test('upgrade_with_resources_uploads_waits_marker_then_resumes', async () => {
       { s3put: { file: join(dir, 'restricted-resources-pr-123-eic.zip'), key: 'test-prefix/edge-icell/restricted-resources-pr-123-eic.zip' } },
       { waitForMarker: 'test-prefix/.applied/restricted-resources-pr-123-eic.zip' },
       { method: 'resumeEicDeployment', clusterName: 'test-cluster', deployment: 'pr-123-eic' },
-      { method: 'openEdgeNode', clusterName: 'test-cluster' },
+       { reload: true },
       { method: 'eicDeploymentStatus', clusterName: 'test-cluster', deployment: 'pr-123-eic', callCount: 2 },
     ];
 
@@ -2563,7 +2538,7 @@ test('teardown_deletes_cells_then_node', async () => {
     });
 
     const result = await runTeardownFlow({
-      page: {},
+      page: makeFakePage(calls),
       steps: fakeSteps,
       inputs: { clusterName: 'test-cluster' },
       cells: [cell1, cell2],
@@ -2598,6 +2573,11 @@ test('teardown_without_record_hands_over', async () => {
   const calls = [];
   const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
   try {
+    const cell = {
+      component: 'edge-icell',
+      deployment: 'pr-123-eic',
+    };
+
     const fakeSteps = makeFakeSteps({
       async edgeNodeState(page, clusterName) {
         calls.push({ method: 'edgeNodeState', clusterName });
@@ -2607,6 +2587,12 @@ test('teardown_without_record_hands_over', async () => {
         calls.push({ method: 'edgeNodeElmId' });
         return '12345';
       },
+      async deleteEicDeployment(page, { clusterName, deployment }) {
+        calls.push({ method: 'deleteEicDeployment', clusterName, deployment });
+      },
+      async removeEdgeNode(page, { clusterName }) {
+        calls.push({ method: 'removeEdgeNode', clusterName });
+      },
       async openEdgeNode(page, clusterName) {
         calls.push({ method: 'openEdgeNode', clusterName });
       },
@@ -2614,10 +2600,10 @@ test('teardown_without_record_hands_over', async () => {
 
     await assert.rejects(
       async () => await runTeardownFlow({
-        page: {},
+        page: makeFakePage(calls),
         steps: fakeSteps,
         inputs: { clusterName: 'test-cluster' },
-        cells: [],
+        cells: [cell],
         readNodeRecord: async () => {
           calls.push({ readNodeRecord: true });
           return null; // No record
@@ -2632,6 +2618,8 @@ test('teardown_without_record_hands_over', async () => {
     );
 
     assert.ok(calls.some(c => c.readNodeRecord));
+    assert.ok(!calls.some(c => c.method === 'deleteEicDeployment'), 'Should not call deleteEicDeployment');
+    assert.ok(!calls.some(c => c.method === 'removeEdgeNode'), 'Should not call removeEdgeNode');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -2641,6 +2629,11 @@ test('teardown_other_elm_id_hands_over', async () => {
   const calls = [];
   const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
   try {
+    const cell = {
+      component: 'edge-icell',
+      deployment: 'pr-123-eic',
+    };
+
     const fakeSteps = makeFakeSteps({
       async edgeNodeState(page, clusterName) {
         calls.push({ method: 'edgeNodeState', clusterName });
@@ -2650,6 +2643,12 @@ test('teardown_other_elm_id_hands_over', async () => {
         calls.push({ method: 'edgeNodeElmId' });
         return '99999'; // Different from record
       },
+      async deleteEicDeployment(page, { clusterName, deployment }) {
+        calls.push({ method: 'deleteEicDeployment', clusterName, deployment });
+      },
+      async removeEdgeNode(page, { clusterName }) {
+        calls.push({ method: 'removeEdgeNode', clusterName });
+      },
       async openEdgeNode(page, clusterName) {
         calls.push({ method: 'openEdgeNode', clusterName });
       },
@@ -2657,10 +2656,10 @@ test('teardown_other_elm_id_hands_over', async () => {
 
     await assert.rejects(
       async () => await runTeardownFlow({
-        page: {},
+        page: makeFakePage(calls),
         steps: fakeSteps,
         inputs: { clusterName: 'test-cluster' },
-        cells: [],
+        cells: [cell],
         readNodeRecord: async () => {
           calls.push({ readNodeRecord: true });
           return { name: 'test-cluster', elmId: '12345' };
@@ -2676,6 +2675,8 @@ test('teardown_other_elm_id_hands_over', async () => {
 
     assert.ok(calls.some(c => c.readNodeRecord));
     assert.ok(calls.some(c => c.method === 'edgeNodeElmId'));
+    assert.ok(!calls.some(c => c.method === 'deleteEicDeployment'), 'Should not call deleteEicDeployment');
+    assert.ok(!calls.some(c => c.method === 'removeEdgeNode'), 'Should not call removeEdgeNode');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -2696,7 +2697,7 @@ test('teardown_absent_node_nothing_to_delete', async () => {
     });
 
     const result = await runTeardownFlow({
-      page: {},
+      page: makeFakePage(calls),
       steps: fakeSteps,
       inputs: { clusterName: 'test-cluster' },
       cells: [],
@@ -2714,6 +2715,271 @@ test('teardown_absent_node_nothing_to_delete', async () => {
     // Should not check record or elmId when node is absent
     assert.ok(!calls.some(c => c.readNodeRecord));
     assert.ok(!calls.some(c => c.method === 'edgeNodeElmId'));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('upgrade_prepared_handled_while_waiting', async () => {
+  const calls = [];
+  const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
+  try {
+    const cell = {
+      component: 'edge-icell',
+      deployment: 'pr-123-eic',
+    };
+
+    let statusCallCount = 0;
+    const fakeSteps = makeFakeSteps({
+      async upgradeEic(page, { clusterName, deployment, version }) {
+        calls.push({ method: 'upgradeEic', clusterName, deployment, version });
+      },
+      async eicDeploymentStatus(page, { clusterName, deployment }) {
+        statusCallCount++;
+        calls.push({ method: 'eicDeploymentStatus', clusterName, deployment, callCount: statusCallCount });
+        // Round 1: Successful@old, Round 2: Prepared, Round 3: Successful@new
+        if (statusCallCount === 1) {
+          return { operation: 'Successful', status: 'Running', version: '1.0.0' };
+        } else if (statusCallCount === 2) {
+          return { operation: 'Prepared', status: 'Preparing', version: '1.0.0' };
+        } else {
+          return { operation: 'Successful', status: 'Ready', version: '2.0.0' };
+        }
+      },
+      async downloadEicZip(page, { clusterName, deployment, dir }) {
+        calls.push({ method: 'downloadEicZip', clusterName, deployment, dir });
+        return join(dir, 'restricted-resources-pr-123-eic.zip');
+      },
+      async resumeEicDeployment(page, { clusterName, deployment }) {
+        calls.push({ method: 'resumeEicDeployment', clusterName, deployment });
+      },
+      async openEdgeNode(page, clusterName) {
+        calls.push({ method: 'openEdgeNode', clusterName });
+      },
+    });
+
+    const fakeS3 = {
+      async put(file, key) {
+        calls.push({ s3put: { file, key } });
+      },
+    };
+
+    const result = await runUpgradeFlow({
+      page: makeFakePage(calls),
+      steps: fakeSteps,
+      inputs: { clusterName: 'test-cluster' },
+      cells: [cell],
+      version: '2.0.0',
+      s3: fakeS3,
+      s3Prefix: 'test-prefix/',
+      dir,
+      waitForMarker: async (path) => {
+        calls.push({ waitForMarker: path });
+      },
+      waitForLogin: async () => {},
+      log: () => {},
+      pollMs: 10,
+      timeoutMs: 500,
+    });
+
+    assert.equal(result, 'upgraded');
+
+    // Verify: upgradeEic → poll round 1 (Successful@old) → poll round 2 (Prepared) → download/upload/marker/resume → poll round 3 (Successful@new)
+    const downloadCalls = calls.filter(c => c.method === 'downloadEicZip');
+    const resumeCalls = calls.filter(c => c.method === 'resumeEicDeployment');
+    assert.equal(downloadCalls.length, 1, 'Should download exactly once');
+    assert.equal(resumeCalls.length, 1, 'Should resume exactly once');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('upgrade_unknown_operation_while_waiting_hands_over', async () => {
+  const calls = [];
+  const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
+  try {
+    const cell = {
+      component: 'edge-icell',
+      deployment: 'pr-123-eic',
+    };
+
+    let statusCallCount = 0;
+    const fakeSteps = makeFakeSteps({
+      async upgradeEic(page, { clusterName, deployment, version }) {
+        calls.push({ method: 'upgradeEic', clusterName, deployment, version });
+      },
+      async eicDeploymentStatus(page, { clusterName, deployment }) {
+        statusCallCount++;
+        calls.push({ method: 'eicDeploymentStatus', clusterName, deployment, callCount: statusCallCount });
+        // Round 1: Successful@old, Round 2: UnknownOp
+        if (statusCallCount === 1) {
+          return { operation: 'Successful', status: 'Running', version: '1.0.0' };
+        } else {
+          return { operation: 'UnknownOperation', status: 'Unknown', version: '1.0.0' };
+        }
+      },
+      async openEdgeNode(page, clusterName) {
+        calls.push({ method: 'openEdgeNode', clusterName });
+      },
+    });
+
+    await assert.rejects(
+      async () => await runUpgradeFlow({
+        page: makeFakePage(calls),
+        steps: fakeSteps,
+        inputs: { clusterName: 'test-cluster' },
+        cells: [cell],
+        version: '2.0.0',
+        s3: {},
+        s3Prefix: 'test-prefix/',
+        dir,
+        waitForMarker: async () => {},
+        waitForLogin: async () => {},
+        log: () => {},
+        pollMs: 10,
+        timeoutMs: 500,
+      }),
+      (err) => err instanceof SetupError && err.message.includes('pr-123-eic') && err.message.includes('UnknownOperation'),
+      'Should throw SetupError naming deployment and operation'
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('teardown_skips_absent_cell', async () => {
+  const calls = [];
+  const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
+  try {
+    const cell = {
+      component: 'edge-icell',
+      deployment: 'pr-123-eic',
+    };
+
+    const fakeSteps = makeFakeSteps({
+      async edgeNodeState(page, clusterName) {
+        calls.push({ method: 'edgeNodeState', clusterName });
+        return 'initialized';
+      },
+      async edgeNodeElmId(page) {
+        calls.push({ method: 'edgeNodeElmId' });
+        return '12345';
+      },
+      async eicDeploymentStatus(page, { clusterName, deployment }) {
+        calls.push({ method: 'eicDeploymentStatus', clusterName, deployment });
+        return null; // Row is absent
+      },
+      async deleteEicDeployment(page, { clusterName, deployment }) {
+        calls.push({ method: 'deleteEicDeployment', clusterName, deployment });
+      },
+      async removeEdgeNode(page, { clusterName }) {
+        calls.push({ method: 'removeEdgeNode', clusterName });
+      },
+      async openEdgeNode(page, clusterName) {
+        calls.push({ method: 'openEdgeNode', clusterName });
+      },
+    });
+
+    const result = await runTeardownFlow({
+      page: makeFakePage(calls),
+      steps: fakeSteps,
+      inputs: { clusterName: 'test-cluster' },
+      cells: [cell],
+      readNodeRecord: async () => {
+        calls.push({ readNodeRecord: true });
+        return { name: 'test-cluster', elmId: '12345' };
+      },
+      waitForLogin: async () => {},
+      log: () => {},
+      pollMs: 10,
+      timeoutMs: 100,
+    });
+
+    assert.equal(result, 'edge-node-deleted');
+    // Verify: deleteEicDeployment was not called (row is absent), but removeEdgeNode was called
+    assert.ok(!calls.some(c => c.method === 'deleteEicDeployment'), 'Should not call deleteEicDeployment for absent row');
+    assert.ok(calls.some(c => c.method === 'removeEdgeNode'), 'Should call removeEdgeNode');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('teardown_waits_for_rows_to_disappear', async () => {
+  const calls = [];
+  const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
+  try {
+    const cell = {
+      component: 'edge-icell',
+      deployment: 'pr-123-eic',
+    };
+
+    let pollRound = 0;
+    const fakeSteps = makeFakeSteps({
+      async edgeNodeState(page, clusterName) {
+        calls.push({ method: 'edgeNodeState', clusterName });
+        return 'initialized';
+      },
+      async edgeNodeElmId(page) {
+        calls.push({ method: 'edgeNodeElmId' });
+        return '12345';
+      },
+      async eicDeploymentStatus(page, { clusterName, deployment }) {
+        calls.push({ method: 'eicDeploymentStatus', clusterName, deployment, pollRound });
+        // First call: check before delete (present)
+        // Poll round 1: still present
+        // Poll round 2: gone
+        if (pollRound === 0) {
+          return { operation: 'Successful', status: 'Ready', version: '1.0.0' };
+        } else if (pollRound === 1) {
+          return { operation: 'Successful', status: 'Ready', version: '1.0.0' };
+        } else {
+          return null;
+        }
+      },
+      async deleteEicDeployment(page, { clusterName, deployment }) {
+        calls.push({ method: 'deleteEicDeployment', clusterName, deployment });
+      },
+      async removeEdgeNode(page, { clusterName }) {
+        calls.push({ method: 'removeEdgeNode', clusterName });
+      },
+      async openEdgeNode(page, clusterName) {
+        calls.push({ method: 'openEdgeNode', clusterName });
+      },
+    });
+
+    const result = await runTeardownFlow({
+      page: {
+        url() { return 'https://example.com#/clusters/123'; },
+        async goto(url) { calls.push({ goto: url }); },
+      async reload() { calls.push({ reload: true }); },
+        async reload() {
+          calls.push({ reload: true });
+          pollRound++;
+        },
+      },
+      steps: fakeSteps,
+      inputs: { clusterName: 'test-cluster' },
+      cells: [cell],
+      readNodeRecord: async () => {
+        calls.push({ readNodeRecord: true });
+        return { name: 'test-cluster', elmId: '12345' };
+      },
+      waitForLogin: async () => {},
+      log: () => {},
+      pollMs: 10,
+      timeoutMs: 500,
+    });
+
+    assert.equal(result, 'edge-node-deleted');
+    // Verify: deleteEicDeployment called, then waited through 2 poll rounds, then removeEdgeNode
+    const deleteCalls = calls.filter(c => c.method === 'deleteEicDeployment');
+    const removeCalls = calls.filter(c => c.method === 'removeEdgeNode');
+    assert.equal(deleteCalls.length, 1);
+    assert.equal(removeCalls.length, 1);
+    // removeEdgeNode should be after the poll rounds
+    const deleteIdx = calls.findIndex(c => c.method === 'deleteEicDeployment');
+    const removeIdx = calls.findIndex(c => c.method === 'removeEdgeNode');
+    assert.ok(deleteIdx < removeIdx, 'removeEdgeNode should be after deleteEicDeployment');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
