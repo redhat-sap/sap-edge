@@ -156,6 +156,19 @@ oc create secret generic hub-admin-kubeconfig \
   --from-file=kubeconfig=/path/to/hub-kubeconfig
 ```
 
+**SAP browser automation secrets (HCP, optional):** one Secret per hub's Quay
+(`eli-quay-robot`, `eic-quay-robot`), always on the pipeline cluster. Robot
+accounts, the runner repository, the CA and the full commands:
+[Quay setup](../hack/sap-browser/PIPELINE.md#quay-setup).
+```bash
+# HUB: eli or eic; REGISTRY: that hub's Quay path for ELM image replication
+oc create secret generic ${HUB}-quay-robot \
+  --from-literal=registry="${REGISTRY}" \
+  --from-literal=username="<robot username>" \
+  --from-file=password=/path/to/robot-token \
+  --from-file=ca.crt=/tmp/${HUB}-ca.crt
+```
+
 **OSSM3 prerequisites:**
 
 The OSSM3 pipelines require:
