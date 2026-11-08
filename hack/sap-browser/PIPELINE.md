@@ -96,7 +96,8 @@ In the pipeline namespace (`sap-elm-eic-validation` on `eic`):
    `ca.crt` (the CA of that Quay's certificate). The deploy session uses the
    Secret of the run's `hubClusterName`, so the hosted cluster pulls the EIC
    images from its own hub. `eic-quay-robot` also pushes the runner image
-   (`username`, `password`, `ca.crt`).
+   (`username`, `password`, `ca.crt`). How to create the robot accounts, the
+   runner repository and the Secrets: [Quay setup](#quay-setup).
 3. **RBAC:** `oc -n sap-elm-eic-validation apply -f hack/sap-browser/hcp-runner-rbac.yaml`.
    It creates the ServiceAccount `hcp-sap-browser-runner` (gets PipelineRuns and
    TaskRuns, creates and deletes its Route and Service, gets no Secrets
@@ -113,6 +114,62 @@ In the pipeline namespace (`sap-elm-eic-validation` on `eic`):
    `tools/elm/` in the OBC bucket (the Linux x86_64 binary, a `.zip` or a
    `.tar.gz`). Without one it downloads the CLI from the SAP Software Download
    Center in the browser and stores it there for later runs.
+
+### Quay setup
+
+Each hub (`eli`, `eic`) has its own Quay. Do steps 1, 3 and 4 for each hub; the
+Secrets always go into the pipeline namespace on `eic`, where the pipeline runs.
+
+1. **Robot account.** In the hub's Quay organization (`sap_elm_eic`): Robot
+   accounts → Create robot account, for example `elm_eic_validation`, and add it
+   to a team with the **Creator** role (or to `owners`). ELM's image replication
+   pushes into a new repository per Edge Node below the registry path
+   (`eic_validation/<edge node ID>/…`), so Write on existing repositories is not
+   enough: the robot must be able to create repositories. Copy its username
+   (`sap_elm_eic+elm_eic_validation`) and token (gear menu → View credentials).
+2. **Runner repository** (`eic` only). Create the repository
+   `sap_elm_eic/sap-browser`, set it to Public, and give the `eic` robot Write
+   on it (repository Settings → User and robot permissions): the Creator role
+   only covers repositories the robot created itself.
+3. **CA of the hub's Quay**, with `oc` logged in to that hub:
+
+   ```bash
+   HUB=eli   # or eic
+   oc get configmap -n openshift-config-managed default-ingress-cert \
+     -o jsonpath='{.data.ca-bundle\.crt}' > /tmp/$HUB-ca.crt
+   curl -fsS --cacert /tmp/$HUB-ca.crt https://<hub Quay host>/health/instance && echo "CA ok"
+   ```
+
+   If the check fails, the Quay route uses a certificate from another CA;
+   export that CA instead.
+4. **Secret `<hub>-quay-robot`**, with `oc` logged in to `eic`. The token is
+   read without echo and passed as a file, so it ends up neither in the shell
+   history nor in the process list (zsh syntax; in bash use
+   `read -r -p 'Robot username: ' QUAY_USER` and
+   `read -r -s -p 'Robot token: ' QUAY_TOKEN`):
+
+   ```zsh
+   HUB=eli
+   REGISTRY=quay.apps.eli.ocpxu01.sap/sap_elm_eic/eic_validation   # "Local Container Registry URL"
+   read "QUAY_USER?Robot username ($HUB): "
+   read -s "QUAY_TOKEN?Robot token ($HUB): "; echo
+   oc -n sap-elm-eic-validation create secret generic $HUB-quay-robot \
+     --from-literal=registry="$REGISTRY" \
+     --from-literal=username="$QUAY_USER" \
+     --from-file=password=<(printf %s "$QUAY_TOKEN") \
+     --from-file=ca.crt=/tmp/$HUB-ca.crt
+   unset QUAY_TOKEN
+   # check the keys without printing values
+   oc -n sap-elm-eic-validation get secret $HUB-quay-robot -o jsonpath='{.data}' | jq 'map_values(length)'
+   ```
+
+   Repeat with `HUB=eic` and `eic`'s registry path
+   (`quay.apps.eic.ocp.sap.local/sap_elm_eic/eic_validation`).
+5. **Node trust** (`eic`). The runner pods pull the image from `eic`'s Quay. If
+   `eic`'s nodes do not trust that CA yet, add it to the cluster's image
+   configuration once (`image.config.openshift.io/cluster`,
+   `additionalTrustedCA`); `sap-browser-image` reports a pull that fails on the
+   certificate.
 
 ### Build the image by hand
 
