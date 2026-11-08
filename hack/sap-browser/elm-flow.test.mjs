@@ -2485,8 +2485,9 @@ test('upgrade_with_resources_uploads_waits_marker_then_resumes', async () => {
 
     assert.equal(result, 'upgraded');
 
-    // Verify sequence: upgradeEic → reload → status Prepared → download → upload → waitMarker → resume → reload → status Successful
+    // Verify sequence: openEdgeNode → upgradeEic → reload → status Prepared → download → upload → waitMarker → resume → reload → status Successful
     const expected = [
+      { method: 'openEdgeNode', clusterName: 'test-cluster' },
       { method: 'upgradeEic', clusterName: 'test-cluster', deployment: 'pr-123-eic', version: '2.0.0' },
       { reload: true },
       { method: 'eicDeploymentStatus', clusterName: 'test-cluster', deployment: 'pr-123-eic', callCount: 1 },
@@ -3170,7 +3171,10 @@ test('session_expired_after_node_opened_uses_goto_url', async () => {
 
     const fakeSteps = makeFakeSteps({
       async edgeNodeState() { return 'absent'; },
-      async addEdgeNode() {},
+      async addEdgeNode() {
+        calls.push({ method: 'addEdgeNode' });
+        currentUrl = capturedUrl;
+      },
       async downloadElmZip(page, { dir }) {
         downloadElmZipCallCount++;
         calls.push({ method: 'downloadElmZip', callCount: downloadElmZipCallCount });
@@ -3210,10 +3214,13 @@ test('session_expired_after_node_opened_uses_goto_url', async () => {
 
     const fakeS3 = { async put() {} };
 
-    const capturedUrl = 'https://example.com#/clusters/123';
+    // Realistic page: the list URL until the node is added, then #/clusters/123
+    const listUrl = 'https://example.com/#/';
+    const capturedUrl = 'https://example.com/#/clusters/123';
+    let currentUrl = listUrl;
     const fakePage = {
-      url() { return capturedUrl; },
-      async goto(url) { calls.push({ goto: url }); },
+      url() { return currentUrl; },
+      async goto(url) { calls.push({ goto: url }); currentUrl = url; },
       async reload() { calls.push({ reload: true }); },
     };
 
@@ -3247,14 +3254,308 @@ test('session_expired_after_node_opened_uses_goto_url', async () => {
     const result = await runDeployFlow(ctx);
     assert.equal(result, 'deployed');
 
-    // Verify: session expired during downloadElmZip (after node opened)
-    // The retry should use goto(captured #/clusters/<id> URL), not openEdgeNode
-    const gotoCallIdx = calls.findIndex(c => c.goto && c.goto === capturedUrl);
-    assert.ok(gotoCallIdx >= 0, `Should call goto with captured URL ${capturedUrl} for session-expiry reopen after node opened`);
+    // Session expired during downloadElmZip (after the node was added): the retry
+    // reopens with goto(captured #/clusters/<id> URL) after waitForLogin, never openEdgeNode
+    assert.deepEqual(calls.slice(0, 6), [
+      { method: 'addEdgeNode' },
+      { method: 'downloadElmZip', callCount: 1 },
+      { method: 'isSessionExpired', callCount: 1 },
+      { waitForLogin: true },
+      { goto: capturedUrl },
+      { method: 'downloadElmZip', callCount: 2 },
+    ]);
+    assert.ok(!calls.some(c => c.method === 'openEdgeNode'), 'openEdgeNode should not be called (node URL captured after add)');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
-    // Verify: no openEdgeNode call for that retry (finding 4)
-    const openEdgeNodeAfterGoto = calls.slice(gotoCallIdx).filter(c => c.method === 'openEdgeNode');
-    assert.equal(openEdgeNodeAfterGoto.length, 0, 'openEdgeNode should not be called for retry after node opened (should use goto)');
+// Fake page that follows the ELM routes: the list URL until a node is opened or
+// added, then `#/clusters/<id>`; goto() navigates to the given URL.
+function makeRoutedPage(calls) {
+  const listUrl = 'https://elm.example.com/#/';
+  let currentUrl = listUrl;
+  return {
+    listUrl,
+    nodeUrl: (id) => `https://elm.example.com/#/clusters/${id}`,
+    showNode(id) { currentUrl = this.nodeUrl(id); },
+    showList() { currentUrl = listUrl; },
+    page: {
+      url() { return currentUrl; },
+      async goto(url) { calls.push({ goto: url }); currentUrl = url; },
+      async reload() { calls.push({ reload: true }); },
+    },
+  };
+}
+
+function makeExpiringDeployCtx({ calls, dir, routed, steps, clusterEdgeNodeId = '' }) {
+  const cell = {
+    component: 'edge-icell',
+    deployment: 'pr-123-eic',
+    eic: { solution: 'Edge Integration Cell', version: '1.0.0', namespaces: { main: 'edge-icell', secrets: 'edge-icell-secrets', ela: 'edge-icell-ela', services: 'edge-icell-services', gateways: 'istio-gateways' }, virtualHost: 'eic.example.com', keyAlias: 'eic-key', sharedFsStorageClass: 'nfs-rwx', servicesDeployment: 'pr-123-eic-services', gatewaysDeployment: 'pr-123-eic-gateways' },
+    files: { postgresCA: join(dir, 'postgres-ca.crt'), redisCA: join(dir, 'redis-ca.crt') },
+  };
+  return {
+    page: routed.page,
+    steps,
+    isSteps: {
+      async deployKeystore() {},
+      async runtimeReady() { return true; },
+      async deployArtifact() {},
+      async artifactStates() {
+        return { ipfilterAPI: 'Started', testAPI: 'Started', Arp_https: 'Started', SLV_FLOW_ELSTER: 'Started' };
+      },
+    },
+    inputs: { clusterName: 'test-cluster', registry: {}, highAvailability: false, proxy: null },
+    clusterEdgeNodeId,
+    leftoverPolicy: 'delete',
+    loadCells: async () => [cell],
+    s3: { async put() {} },
+    s3Prefix: 'test-prefix/',
+    dir,
+    waitForTask: async () => {},
+    meshTask: 'configure-mesh-eic',
+    loadKubeconfig: async () => 'kubeconfig',
+    fetchElm: async () => join(dir, 'elm'),
+    elmInit: async () => {},
+    password: 'test-password',
+    recordNode: async (record) => { calls.push({ recordNode: record }); },
+    readNodeRecord: async () => null,
+    waitForLogin: async () => { calls.push({ waitForLogin: true }); },
+    log: () => {},
+    pollMs: 10,
+    timeoutMs: 100,
+  };
+}
+
+// Deploy steps whose first downloadElmZip fails with an expired session.
+function makeExpiringDeploySteps(calls, routed, overrides) {
+  let downloadElmZipCallCount = 0;
+  let sessionExpiredCount = 0;
+  return makeFakeSteps({
+    async edgeNodeElmId(page) {
+      const match = page.url().match(/#\/clusters\/(\d+)/);
+      if (!match) throw new SetupError('Cannot extract ELM node ID from URL.');
+      return match[1];
+    },
+    async downloadElmZip(page, { dir }) {
+      downloadElmZipCallCount++;
+      calls.push({ method: 'downloadElmZip', callCount: downloadElmZipCallCount });
+      if (downloadElmZipCallCount === 1) {
+        throw new Error('Session expired');
+      }
+      return join(dir, 'restricted-resources-elm.zip');
+    },
+    async setUpCloudConnector(page, { dir }) { return join(dir, 'context.yaml'); },
+    async deployEic() {},
+    async downloadEicZip(page, { deployment, dir }) { return join(dir, `restricted-resources-${deployment}.zip`); },
+    async resumeEicDeployment() {},
+    async eicDeploymentStatus() {
+      return { operation: 'Successful', status: 'Ready', version: '1.0.0' };
+    },
+    async isSessionExpired() {
+      sessionExpiredCount++;
+      calls.push({ method: 'isSessionExpired', callCount: sessionExpiredCount });
+      return sessionExpiredCount === 1;
+    },
+    async openEdgeNode(page, clusterName) {
+      calls.push({ method: 'openEdgeNode', clusterName });
+    },
+    ...overrides,
+  });
+}
+
+test('fresh_run_expiry_after_add_goes_to_new_node_url', async () => {
+  const calls = [];
+  const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
+  try {
+    const routed = makeRoutedPage(calls);
+    const steps = makeExpiringDeploySteps(calls, routed, {
+      async edgeNodeState(page, clusterName) {
+        calls.push({ method: 'edgeNodeState', clusterName });
+        return 'absent';
+      },
+      async addEdgeNode(page, { clusterName }) {
+        calls.push({ method: 'addEdgeNode', clusterName });
+        routed.showNode('456');
+      },
+    });
+
+    const result = await runDeployFlow(makeExpiringDeployCtx({ calls, dir, routed, steps }));
+    assert.equal(result, 'deployed');
+
+    assert.deepEqual(calls.slice(0, 8), [
+      { method: 'edgeNodeState', clusterName: 'test-cluster' },
+      { method: 'addEdgeNode', clusterName: 'test-cluster' },
+      { recordNode: { name: 'test-cluster', elmId: '456' } },
+      { method: 'downloadElmZip', callCount: 1 },
+      { method: 'isSessionExpired', callCount: 1 },
+      { waitForLogin: true },
+      { goto: routed.nodeUrl('456') },
+      { method: 'downloadElmZip', callCount: 2 },
+    ]);
+    assert.ok(!calls.some(c => c.method === 'openEdgeNode'), 'openEdgeNode should never be called');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('leftover_deleted_and_re_added_expiry_goes_to_new_node_url', async () => {
+  const calls = [];
+  const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
+  try {
+    const routed = makeRoutedPage(calls);
+    const steps = makeExpiringDeploySteps(calls, routed, {
+      async edgeNodeState(page, clusterName) {
+        calls.push({ method: 'edgeNodeState', clusterName });
+        // The leftover node exists: edgeNodeState opens it (#/clusters/111)
+        routed.showNode('111');
+        return 'added';
+      },
+      async edgeNodeId() {
+        calls.push({ method: 'edgeNodeId' });
+        return 'old-cluster-456';
+      },
+      async removeEdgeNode(page, { clusterName }) {
+        calls.push({ method: 'removeEdgeNode', clusterName });
+        routed.showList();
+      },
+      async addEdgeNode(page, { clusterName }) {
+        calls.push({ method: 'addEdgeNode', clusterName });
+        routed.showNode('222');
+      },
+    });
+
+    const result = await runDeployFlow(makeExpiringDeployCtx({ calls, dir, routed, steps, clusterEdgeNodeId: 'cluster-123' }));
+    assert.equal(result, 'deployed');
+
+    assert.deepEqual(calls.slice(0, 10), [
+      { method: 'edgeNodeState', clusterName: 'test-cluster' },
+      { method: 'edgeNodeId' },
+      { method: 'removeEdgeNode', clusterName: 'test-cluster' },
+      { method: 'addEdgeNode', clusterName: 'test-cluster' },
+      { recordNode: { name: 'test-cluster', elmId: '222' } },
+      { method: 'downloadElmZip', callCount: 1 },
+      { method: 'isSessionExpired', callCount: 1 },
+      { waitForLogin: true },
+      { goto: routed.nodeUrl('222') },
+      { method: 'downloadElmZip', callCount: 2 },
+    ]);
+    assert.ok(!calls.some(c => c.goto && c.goto.includes('/clusters/111')), 'never navigates to the deleted node 111');
+    assert.ok(!calls.some(c => c.method === 'openEdgeNode'), 'openEdgeNode should never be called');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('upgrade_expiry_in_second_upgrade_goes_to_node_url', async () => {
+  const calls = [];
+  const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
+  try {
+    const routed = makeRoutedPage(calls);
+    const cells = [
+      { component: 'edge-icell-1', deployment: 'pr-123-eic-1' },
+      { component: 'edge-icell-2', deployment: 'pr-123-eic-2' },
+    ];
+
+    let upgradeCallCount = 0;
+    let sessionExpiredCount = 0;
+    const fakeSteps = makeFakeSteps({
+      async openEdgeNode(page, clusterName) {
+        calls.push({ method: 'openEdgeNode', clusterName });
+        routed.showNode('333');
+      },
+      async upgradeEic(page, { deployment, version }) {
+        upgradeCallCount++;
+        calls.push({ method: 'upgradeEic', deployment, version });
+        if (upgradeCallCount === 2) {
+          throw new Error('Session expired');
+        }
+      },
+      async isSessionExpired() {
+        sessionExpiredCount++;
+        calls.push({ method: 'isSessionExpired', callCount: sessionExpiredCount });
+        return sessionExpiredCount === 1;
+      },
+      async eicDeploymentStatus(page, { deployment }) {
+        calls.push({ method: 'eicDeploymentStatus', deployment });
+        return { operation: 'Successful', status: 'Ready', version: '2.0.0' };
+      },
+    });
+
+    const result = await runUpgradeFlow({
+      page: routed.page,
+      steps: fakeSteps,
+      inputs: { clusterName: 'test-cluster' },
+      cells,
+      version: '2.0.0',
+      s3: {},
+      s3Prefix: 'test-prefix/',
+      dir,
+      waitForMarker: async () => {},
+      waitForLogin: async () => { calls.push({ waitForLogin: true }); },
+      log: () => {},
+      pollMs: 10,
+      timeoutMs: 100,
+    });
+    assert.equal(result, 'upgraded');
+
+    assert.deepEqual(calls, [
+      { method: 'openEdgeNode', clusterName: 'test-cluster' },
+      { method: 'upgradeEic', deployment: 'pr-123-eic-1', version: '2.0.0' },
+      { method: 'upgradeEic', deployment: 'pr-123-eic-2', version: '2.0.0' },
+      { method: 'isSessionExpired', callCount: 1 },
+      { waitForLogin: true },
+      { goto: routed.nodeUrl('333') },
+      { method: 'upgradeEic', deployment: 'pr-123-eic-2', version: '2.0.0' },
+      { reload: true },
+      { method: 'eicDeploymentStatus', deployment: 'pr-123-eic-1' },
+      { method: 'eicDeploymentStatus', deployment: 'pr-123-eic-2' },
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('expiry_during_add_retries_from_list', async () => {
+  const calls = [];
+  const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
+  try {
+    const routed = makeRoutedPage(calls);
+    let addCallCount = 0;
+    const steps = makeExpiringDeploySteps(calls, routed, {
+      async edgeNodeState(page, clusterName) {
+        calls.push({ method: 'edgeNodeState', clusterName });
+        return 'absent';
+      },
+      async addEdgeNode(page, { clusterName }) {
+        addCallCount++;
+        calls.push({ method: 'addEdgeNode', clusterName, callCount: addCallCount });
+        if (addCallCount === 1) {
+          throw new Error('Session expired');
+        }
+        routed.showNode('789');
+      },
+      async downloadElmZip(page, { dir }) {
+        calls.push({ method: 'downloadElmZip' });
+        return join(dir, 'restricted-resources-elm.zip');
+      },
+    });
+
+    const result = await runDeployFlow(makeExpiringDeployCtx({ calls, dir, routed, steps }));
+    assert.equal(result, 'deployed');
+
+    // waitForLogin returns on the Edge Nodes list: addEdgeNode retries there, no node is opened
+    assert.deepEqual(calls.slice(0, 7), [
+      { method: 'edgeNodeState', clusterName: 'test-cluster' },
+      { method: 'addEdgeNode', clusterName: 'test-cluster', callCount: 1 },
+      { method: 'isSessionExpired', callCount: 1 },
+      { waitForLogin: true },
+      { method: 'addEdgeNode', clusterName: 'test-cluster', callCount: 2 },
+      { recordNode: { name: 'test-cluster', elmId: '789' } },
+      { method: 'downloadElmZip' },
+    ]);
+    assert.ok(!calls.some(c => c.method === 'openEdgeNode'), 'openEdgeNode should never be called');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

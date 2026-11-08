@@ -146,6 +146,9 @@ export async function runDeployFlow(ctx) {
     captureNodeUrl();
   };
 
+  // waitForLogin returns on the Edge Nodes list, so list-page steps retry in place
+  const stayOnList = async () => {};
+
   // Step 1: Get edge node state and validate
   let state = await withLogin(page, steps, () => steps.edgeNodeState(page, clusterName), { waitForLogin, reopen });
   captureNodeUrl();
@@ -172,6 +175,8 @@ export async function runDeployFlow(ctx) {
       if (!clusterEdgeNodeId || normalizeId(existingId) !== normalizeId(clusterEdgeNodeId)) {
         log(`Leftover Edge Node detected (existing ID: ${existingId}, cluster ID: ${clusterEdgeNodeId}), deleting...`);
         await withLogin(page, steps, () => steps.removeEdgeNode(page, { clusterName }), { waitForLogin, reopen: reopenNode });
+        // The deleted node's URL must never be reopened
+        nodeUrl = null;
         state = 'absent';
       }
     } else if (leftoverPolicy === 'hand-over') {
@@ -192,7 +197,9 @@ export async function runDeployFlow(ctx) {
 
   // Step 5: Add edge node if absent
   if (state === 'absent') {
-    await withLogin(page, steps, () => steps.addEdgeNode(page, { clusterName, registry: inputs.registry, highAvailability: inputs.highAvailability }), { waitForLogin, reopen: reopenNode });
+    await withLogin(page, steps, () => steps.addEdgeNode(page, { clusterName, registry: inputs.registry, highAvailability: inputs.highAvailability }), { waitForLogin, reopen: stayOnList });
+    // "Add Edge Node" lands on the new node's page (#/clusters/<id>)
+    captureNodeUrl();
     state = 'added';
 
     // Record the node ownership
@@ -319,16 +326,14 @@ export async function runUpgradeFlow({ page, steps, inputs, cells, version, s3, 
     }
   };
 
-  const reopen = async () => {
-    await steps.openEdgeNode(page, clusterName);
-    captureNodeUrl();
-  };
-
-  // For each cell: upgrade EIC
-  for (const cell of cells) {
-    await withLogin(page, steps, () => steps.upgradeEic(page, { clusterName, deployment: cell.deployment, version }), { waitForLogin, reopen });
-  }
+  // Open the node from the Edge Nodes list (where waitForLogin also returns) and capture its URL
+  await withLogin(page, steps, () => steps.openEdgeNode(page, clusterName), { waitForLogin, reopen: async () => {} });
   captureNodeUrl();
+
+  // For each cell: upgrade EIC on the node page
+  for (const cell of cells) {
+    await withLogin(page, steps, () => steps.upgradeEic(page, { clusterName, deployment: cell.deployment, version }), { waitForLogin, reopen: reopenNode });
+  }
 
   // Track which cells have been handled for Prepared
   const handledPrepared = new Set();
