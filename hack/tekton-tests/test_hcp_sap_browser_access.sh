@@ -454,7 +454,8 @@ expected_params = {
     "phase": MISSING,
     "runnerImage": MISSING,
     "oauthProxyImage": "image-registry.openshift-image-registry.svc:5000/openshift/oauth-proxy:v4.4",
-    "elmUrl": MISSING,
+    "elmUrl": "",
+    "elmUrlSecretName": "sap-elm-url",
     "pipelineRun": MISSING,
     "pipelineRunUID": MISSING,
     "hostedClusterName": MISSING,
@@ -553,7 +554,10 @@ for name in secret_refs:
 for name in configmap_refs:
     if env.get(name) != {"name": name, "valueFrom": {"configMapKeyRef": {"name": "$(params.obcName)", "key": name}}}:
         errors.append(f"env {name} should come from the OBC ConfigMap, got {env.get(name)}")
-expected_names = set(values) | set(field_refs) | secret_refs | configmap_refs
+elm_url_ref = {"name": "SAP_ELM_URL_FROM_SECRET", "valueFrom": {"secretKeyRef": {"name": "$(params.elmUrlSecretName)", "key": "url", "optional": True}}}
+if env.get("SAP_ELM_URL_FROM_SECRET") != elm_url_ref:
+    errors.append(f"env SAP_ELM_URL_FROM_SECRET should come from the optional Secret elmUrlSecretName (key url), got {env.get('SAP_ELM_URL_FROM_SECRET')}")
+expected_names = set(values) | set(field_refs) | secret_refs | configmap_refs | {"SAP_ELM_URL_FROM_SECRET"}
 if set(env) != expected_names:
     errors.append(f"unexpected/missing env: extra {sorted(set(env) - expected_names)}, missing {sorted(expected_names - set(env))}")
 
@@ -618,6 +622,24 @@ export SAP_BROWSER_ENTRYPOINT="${FAKE_ENTRYPOINT}"
 run_browser_step
 expect_success
 [[ "$(result outcome)" == "handed-over" ]] || { echo "${TASK_OUT}"; fail "outcome should stay 'handed-over', got '$(result outcome)'"; }
+
+# elm_url_from_secret: an empty elmUrl param takes the URL from the Secret
+# (SAP_ELM_URL_FROM_SECRET, secretKeyRef optional); a set param wins; the
+# Secret variable never reaches the entry point.
+FAKE_ENTRYPOINT="${FAKE_BIN}/entrypoint-url.sh"
+cat > "${FAKE_ENTRYPOINT}" <<'EOF'
+printf '%s|%s' "${SAP_ELM_URL}" "${SAP_ELM_URL_FROM_SECRET-unset}" > "${URL_SEEN}"
+printf deployed > "${SAP_BROWSER_RESULT_PATH}"
+EOF
+export SAP_BROWSER_ENTRYPOINT="${FAKE_ENTRYPOINT}"
+URL_SEEN=$(tmp_file); export URL_SEEN
+SAP_ELM_URL="" SAP_ELM_URL_FROM_SECRET="https://tenant.example/elm/index.html" run_browser_step
+expect_success
+[[ "$(cat "${URL_SEEN}")" == "https://tenant.example/elm/index.html|unset" ]] || fail "empty elmUrl must take the Secret URL and unset the Secret variable, saw '$(cat "${URL_SEEN}")'"
+SAP_ELM_URL="https://param.example/elm/" SAP_ELM_URL_FROM_SECRET="https://tenant.example/elm/index.html" run_browser_step
+expect_success
+[[ "$(cat "${URL_SEEN}")" == "https://param.example/elm/|unset" ]] || fail "a set elmUrl must win over the Secret, saw '$(cat "${URL_SEEN}")'"
+echo "✅ PASS: elm_url_from_secret"
 unset SAP_BROWSER_ENTRYPOINT SAP_BROWSER_RESULT_PATH
 echo "✅ PASS: browser_step_always_exits_zero"
 

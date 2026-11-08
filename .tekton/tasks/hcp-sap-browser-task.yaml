@@ -41,7 +41,12 @@ spec:
       default: image-registry.openshift-image-registry.svc:5000/openshift/oauth-proxy:v4.4
     - name: elmUrl
       type: string
-      description: Direct SAP Edge Lifecycle Management HTTPS URL
+      description: "Direct SAP Edge Lifecycle Management HTTPS URL; empty: key url of the Secret elmUrlSecretName (keeps the tenant out of the repository)"
+      default: ""
+    - name: elmUrlSecretName
+      type: string
+      description: Secret in the pipeline namespace whose key url holds the ELM URL, used when elmUrl is empty
+      default: sap-elm-url
     - name: pipelineRun
       type: string
     - name: pipelineRunUID
@@ -215,6 +220,12 @@ spec:
           value: $(params.phase)
         - name: SAP_ELM_URL
           value: $(params.elmUrl)
+        - name: SAP_ELM_URL_FROM_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: $(params.elmUrlSecretName)
+              key: url
+              optional: true
         - name: PIPELINE_NAMESPACE
           value: $(context.taskRun.namespace)
         - name: PIPELINE_RUN
@@ -309,6 +320,13 @@ spec:
         # goes wrong (display crash, missing entry point, killed browser), this
         # step still exits 0: a failed task would stop the PipelineRun and
         # block the manual path and the cluster teardown.
+
+        # The ELM URL names the SAP tenant: when the elmUrl param is empty it
+        # comes from the Secret elmUrlSecretName (key url).
+        if [[ -z "${SAP_ELM_URL:-}" ]]; then
+          export SAP_ELM_URL="${SAP_ELM_URL_FROM_SECRET:-}"
+        fi
+        unset SAP_ELM_URL_FROM_SECRET
         dumb-init -- bash "${SAP_BROWSER_ENTRYPOINT:-/opt/sap-browser/entrypoint.sh}" || true
 
         if [[ ! -s "$(results.outcome.path)" ]]; then
