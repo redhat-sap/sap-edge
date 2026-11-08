@@ -1180,3 +1180,28 @@ test('elm_cli_download_times_out', async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('status_matches_deployment_exactly', async () => {
+  const page = await browser.newPage();
+  page.setDefaultTimeout(3000);
+  try {
+    await page.setContent(`
+      <div role="grid" aria-label="All Deployments">
+        <div>Edge Lifecycle Management 1.65.0</div>
+        <div>Running Object Status Entry successfully validated pr-1-eic-1 8.48.16 Object Status Operations Navigation Last Operation Status : Successful</div>
+        <div>Prepared Object Status Entry successfully validated pr-1-eic-1-services 8.48.17 Object Status Operations Navigation Last Operation Status : Prepared</div>
+        <div>Initial Object Status pr-1-eic-10 8.48.18 Object Status Operations Navigation</div>
+      </div>
+    `);
+
+    // Should match pr-1-eic-1 exactly, not pr-1-eic-10 or pr-1-eic-1-services
+    const status1 = await elmPages.eicDeploymentStatus(page, { clusterName: 'hcp-x', deployment: 'pr-1-eic-1' });
+    assert.deepEqual(status1, { operation: 'Successful', status: 'Running', version: '8.48.16' });
+
+    const status2 = await elmPages.eicDeploymentStatus(page, { clusterName: 'hcp-x', deployment: 'pr-1-eic-1-services' });
+    assert.deepEqual(status2, { operation: 'Prepared', status: 'Prepared', version: '8.48.17' });
+
+    const status3 = await elmPages.eicDeploymentStatus(page, { clusterName: 'hcp-x', deployment: 'pr-1-eic-10' });
+    assert.deepEqual(status3, { operation: 'Initial', status: 'Initial', version: '8.48.18' });
+  } finally { await page.close(); }
+});
