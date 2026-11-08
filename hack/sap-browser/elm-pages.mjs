@@ -268,12 +268,61 @@ export const elmPages = {
     return null;
   },
 
-  async finishEicDeployment(page, { clusterName }) {
-    notMapped('finishEicDeployment');
+  async upgradeEic(page, { clusterName, deployment, version }) {
+    // Find the deployment row and click it to open Operations menu
+    const table = page.getByRole('grid', { name: 'All Deployments', exact: true });
+    const row = table.getByText(deployment, { exact: true });
+    await row.click();
+
+    // Click Operations menu
+    await page.getByLabel('Operations', { exact: true }).click();
+
+    // Click Upgrade menu option (first occurrence)
+    await page.getByText('Upgrade', { exact: true }).first().click();
+
+    // Select the version from the list
+    const versionList = page.locator('[id$="--versionsListUpgrade-list"]');
+    const versionOption = versionList.getByText(version, { exact: true });
+    if (await versionOption.count() === 0) {
+      throw new SetupError(`EIC version ${version} is not offered by ELM.`);
+    }
+    await versionOption.click();
+
+    // Click Next Step 4 times
+    await page.getByRole('button', { name: 'Next Step', exact: true }).click();
+    await page.getByRole('button', { name: 'Next Step', exact: true }).click();
+    await page.getByRole('button', { name: 'Next Step', exact: true }).click();
+    await page.getByRole('button', { name: 'Next Step', exact: true }).click();
+
+    // Click Upgrade button
+    await page.getByRole('button', { name: 'Upgrade', exact: true }).click();
   },
 
-  async deleteEdgeNode(page, { clusterName }) {
-    notMapped('deleteEdgeNode');
+  async deleteEicDeployment(page, { clusterName, deployment }) {
+    // Find the deployment row and click it to open Operations menu
+    const table = page.getByRole('grid', { name: 'All Deployments', exact: true });
+    const row = table.getByText(deployment, { exact: true });
+    await row.click();
+
+    // Click Operations menu
+    await page.getByLabel('Operations', { exact: true }).click();
+
+    // Click Delete menu option (first occurrence)
+    await page.getByText('Delete', { exact: true }).first().click();
+
+    // Confirm deletion with the Delete button
+    await page.getByRole('button', { name: 'Delete', exact: true }).click();
+  },
+
+  async removeEdgeNode(page, { clusterName }) {
+    // Click the Remove button in the header
+    await page.getByRole('button', { name: 'Remove', exact: true }).click();
+
+    // Type the node name in the confirmation textbox
+    await page.getByRole('textbox', { name: 'Edge Node Name', exact: true }).fill(clusterName);
+
+    // Click Remove button
+    await page.getByRole('button', { name: 'Remove', description: 'Default Action' }).click();
   },
 
   async isSessionExpired(page) {
