@@ -349,3 +349,427 @@ test('session_expired_detected', async () => {
     assert.equal(await elmPages.isSessionExpired(page), false);
   } finally { await page.close(); }
 });
+
+test('deploy_fills_all_steps', async () => {
+  const page = await browser.newPage();
+  page.setDefaultTimeout(3000);
+  const dir = await mkdtemp(join(tmpdir(), 'deploy-test-'));
+  const postgresCA = join(dir, 'postgres-ca.crt');
+  const redisCA = join(dir, 'redis-ca.pem');
+  await writeFile(postgresCA, 'fake-postgres-ca\n');
+  await writeFile(redisCA, 'fake-redis-ca\n');
+  try {
+    await page.setContent(`
+      <button id="deploy-solution">Deploy Solution</button>
+      <section id="solution-step" style="display: none">
+        <div id="solutionsList-arrow" role="combobox" aria-label="Solution">
+          <span class="selected">Edge Integration Cell (dev)</span>
+        </div>
+        <label>Deployment Name<input id="deployment-name"></label>
+        <div id="deploy--versionCombo-arrow" role="combobox" aria-label="Version">
+          <span class="selected">8.48.16</span>
+          <div class="list" hidden><div>8.48.16</div></div>
+        </div>
+        <button id="step1">Next Step</button>
+      </section>
+      <section id="namespace-step" style="display: none">
+        <div id="deploy--namespacesForm--Form--Grid">
+          <label>Edge Integration Cell (main namespace)<input id="main-ns"></label>
+          <label>Edge Security Artifact Secrets<input id="secrets-ns"></label>
+          <label>Edge Local Authorization<input id="ela-ns"></label>
+          <label>Default Virtual Host<input id="vhost"></label>
+          <label>Default Virtual Host Key Alias<input id="key-alias"></label>
+          <label><input type="checkbox" id="shared-fs">Enable shared file system</label>
+          <label>Shared File System Storage<input id="storage-class"></label>
+        </div>
+        <button id="step2a">Next Step</button>
+      </section>
+      <section id="step2" style="display: none">
+        <button id="step2-next">Next Step</button>
+      </section>
+      <section id="services-step" style="display: none">
+        <label>Deployment Name<input id="services-deployment"></label>
+        <label>Edge Integration Cell<input id="services-ns"></label>
+        <div role="combobox" aria-label="Database Type"><span>PostgreSQL</span></div>
+        <div role="combobox" aria-label="Datastore Type"><span>Redis</span></div>
+        <label>PostgreSQL Hostname<input id="pg-host"></label>
+        <label>PostgreSQL Port<input id="pg-port"></label>
+        <label>PostgreSQL DB Name<input id="pg-db"></label>
+        <label>PostgreSQL Username<input id="pg-user"></label>
+        <label>PostgreSQL Password<input id="pg-pass" type="password"></label>
+        <input type="file" id="pg-ca" role="button" title="Activate to Select a File" aria-label="Browse or drop a file">
+        <label>Redis Addresses<input id="redis-addr"></label>
+        <div role="combobox" aria-label="Redis Mode"><span>standalone</span></div>
+        <label>Redis Password<input id="redis-pass" type="password"></label>
+        <input type="file" id="redis-ca" role="button" title="Activate to Select a File" aria-label="Browse or drop a file">
+        <label>Redis Server Name<input id="redis-server"></label>
+        <button id="step3">Next Step</button>
+      </section>
+      <section id="gateways-step" style="display: none">
+        <label>Deployment Name<input id="gateways-deployment"></label>
+        <label>IstioGateways (main namespace)<input id="gateways-ns"></label>
+        <div role="combobox" aria-label="Load Balancer Provider"><span>Other</span></div>
+        <button id="step4">Next Step</button>
+      </section>
+      <section id="review-step" style="display: none">
+        <button id="deploy" title="Default Action">Deploy</button>
+      </section>
+      <output id="deployed">false</output>
+      <script>
+        const sections = ['solution-step', 'namespace-step', 'step2', 'services-step', 'gateways-step', 'review-step'];
+        function showOnly(id) {
+          sections.forEach(s => document.getElementById(s).style.display = 'none');
+          document.getElementById(id).style.display = 'block';
+        }
+        document.getElementById('deploy-solution').onclick = () => showOnly('solution-step');
+        document.getElementById('deploy--versionCombo-arrow').onclick = () => {
+          const list = document.querySelector('.list');
+          list.hidden = !list.hidden;
+        };
+        document.getElementById('step1').onclick = () => showOnly('namespace-step');
+        document.getElementById('step2a').onclick = () => showOnly('step2');
+        document.getElementById('step2-next').onclick = () => showOnly('services-step');
+        document.getElementById('step3').onclick = () => showOnly('gateways-step');
+        document.getElementById('step4').onclick = () => showOnly('review-step');
+        document.getElementById('deploy').onclick = () => document.getElementById('deployed').textContent = 'true';
+      </script>
+    `);
+
+    const cell = {
+      deployment: 'pr-1-eic-1',
+      eic: {
+        solution: 'Edge Integration Cell (dev)',
+        version: '8.48.16',
+        namespaces: {
+          main: 'edge-icell-1',
+          secrets: 'edge-icell-secrets-1',
+          ela: 'edge-icell-ela-1',
+          services: 'edge-icell-services-1',
+          gateways: 'istio-gateways-1',
+        },
+        virtualHost: 'eic-1.apps.x',
+        keyAlias: 'slv-ic',
+        sharedFsStorageClass: 'nfs-rwx',
+        servicesDeployment: 'pr-1-eic-1-services',
+        gatewaysDeployment: 'pr-1-eic-1-gateways',
+      },
+      services: {
+        postgres: {
+          host: 'edgedb-primary.sap-eic-external-postgres.svc',
+          port: '5432',
+          database: 'edgedb',
+          username: 'edgedb',
+          password: 'test-pg-pass',
+        },
+        datastore: {
+          type: 'redis',
+          address: 'redb-headless.sap-eic-external-redis-eic-1.svc:6379',
+          mode: 'standalone',
+          password: 'test-redis-pass',
+          serverName: 'rec.sap-eic-external-redis-eic-1.svc.cluster.local',
+          username: '',
+        },
+      },
+      files: {
+        postgresCA,
+        redisCA,
+      },
+    };
+
+    await elmPages.deployEic(page, { clusterName: 'hcp-x', cell });
+
+    assert.equal(await page.locator('#deployment-name').inputValue(), 'pr-1-eic-1');
+    assert.equal(await page.locator('#main-ns').inputValue(), 'edge-icell-1');
+    assert.equal(await page.locator('#secrets-ns').inputValue(), 'edge-icell-secrets-1');
+    assert.equal(await page.locator('#ela-ns').inputValue(), 'edge-icell-ela-1');
+    assert.equal(await page.locator('#vhost').inputValue(), 'eic-1.apps.x');
+    assert.equal(await page.locator('#key-alias').inputValue(), 'slv-ic');
+    assert.equal(await page.locator('#shared-fs').isChecked(), true);
+    assert.equal(await page.locator('#storage-class').inputValue(), 'nfs-rwx');
+    assert.equal(await page.locator('#services-deployment').inputValue(), 'pr-1-eic-1-services');
+    assert.equal(await page.locator('#services-ns').inputValue(), 'edge-icell-services-1');
+    assert.equal(await page.locator('#pg-host').inputValue(), 'edgedb-primary.sap-eic-external-postgres.svc');
+    assert.equal(await page.locator('#pg-port').inputValue(), '5432');
+    assert.equal(await page.locator('#pg-db').inputValue(), 'edgedb');
+    assert.equal(await page.locator('#pg-user').inputValue(), 'edgedb');
+    assert.equal(await page.locator('#pg-pass').inputValue(), 'test-pg-pass');
+    assert.equal(await page.locator('#redis-addr').inputValue(), 'redb-headless.sap-eic-external-redis-eic-1.svc:6379');
+    assert.equal(await page.locator('#redis-pass').inputValue(), 'test-redis-pass');
+    assert.equal(await page.locator('#redis-server').inputValue(), 'rec.sap-eic-external-redis-eic-1.svc.cluster.local');
+    assert.equal(await page.locator('#gateways-deployment').inputValue(), 'pr-1-eic-1-gateways');
+    assert.equal(await page.locator('#gateways-ns').inputValue(), 'istio-gateways-1');
+    assert.equal(await page.locator('#deployed').innerText(), 'true');
+  } finally {
+    await page.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('deploy_version_not_offered_hands_over', async () => {
+  const page = await browser.newPage();
+  page.setDefaultTimeout(3000);
+  try {
+    await page.setContent(`
+      <button id="deploy-solution">Deploy Solution</button>
+      <section id="solution-step" hidden>
+        <div id="solutionsList-arrow" role="combobox" aria-label="Solution">
+          <span class="selected">Edge Integration Cell (dev)</span>
+        </div>
+        <label>Deployment Name<input id="deployment-name"></label>
+        <div id="deploy--versionCombo-arrow" role="combobox" aria-label="Version">
+          <span class="selected">8.48.16</span>
+          <div class="list" hidden><div>8.48.16</div></div>
+        </div>
+        <button id="step1">Next Step</button>
+      </section>
+      <output id="deployed">false</output>
+      <script>
+        document.getElementById('deploy-solution').onclick = () => {
+          document.getElementById('solution-step').hidden = false;
+        };
+        document.getElementById('deploy--versionCombo-arrow').onclick = () => {
+          const list = document.querySelector('.list');
+          list.hidden = !list.hidden;
+        };
+      </script>
+    `);
+
+    const cell = {
+      deployment: 'pr-1-eic-1',
+      eic: { version: '8.48.99', namespaces: {}, servicesDeployment: 'x', gatewaysDeployment: 'y' },
+      services: { postgres: {}, datastore: {} },
+      files: {},
+    };
+
+    await assert.rejects(
+      async () => await elmPages.deployEic(page, { clusterName: 'hcp-x', cell }),
+      /EIC version 8\.48\.99 is not offered by ELM/
+    );
+    assert.equal(await page.locator('#deployed').innerText(), 'false');
+  } finally { await page.close(); }
+});
+
+test('deploy_empty_version_keeps_preselected', async () => {
+  const page = await browser.newPage();
+  page.setDefaultTimeout(3000);
+  const dir = await mkdtemp(join(tmpdir(), 'deploy-version-test-'));
+  const postgresCA = join(dir, 'postgres-ca.crt');
+  const redisCA = join(dir, 'redis-ca.pem');
+  await writeFile(postgresCA, 'fake-ca\n');
+  await writeFile(redisCA, 'fake-ca\n');
+  try {
+    await page.setContent(`
+      <button id="deploy-solution">Deploy Solution</button>
+      <section id="solution-step" style="display: none">
+        <div id="solutionsList-arrow" role="combobox" aria-label="Solution">
+          <span class="selected">Edge Integration Cell (dev)</span>
+        </div>
+        <label>Deployment Name<input id="deployment-name"></label>
+        <div id="deploy--versionCombo-arrow" role="combobox" aria-label="Version">
+          <span class="selected">8.48.16</span>
+        </div>
+        <button id="step1">Next Step</button>
+      </section>
+      <section id="namespace-step" style="display: none">
+        <div id="deploy--namespacesForm--Form--Grid">
+          <label>Edge Integration Cell (main namespace)<input id="main-ns"></label>
+          <label>Edge Security Artifact Secrets<input id="secrets-ns"></label>
+          <label>Edge Local Authorization<input id="ela-ns"></label>
+          <label>Default Virtual Host<input id="vhost"></label>
+          <label>Default Virtual Host Key Alias<input id="key-alias"></label>
+          <label><input type="checkbox" id="shared-fs">Enable shared file system</label>
+          <label>Shared File System Storage<input id="storage-class"></label>
+        </div>
+        <button id="step2a">Next Step</button>
+      </section>
+      <section id="step2" style="display: none">
+        <button id="step2-next">Next Step</button>
+      </section>
+      <section id="services-step" style="display: none">
+        <label>Deployment Name<input id="services-deployment"></label>
+        <label>Edge Integration Cell<input id="services-ns"></label>
+        <div role="combobox" aria-label="Database Type"><span>PostgreSQL</span></div>
+        <div role="combobox" aria-label="Datastore Type"><span>Redis</span></div>
+        <label>PostgreSQL Hostname<input id="pg-host"></label>
+        <label>PostgreSQL Port<input id="pg-port"></label>
+        <label>PostgreSQL DB Name<input id="pg-db"></label>
+        <label>PostgreSQL Username<input id="pg-user"></label>
+        <label>PostgreSQL Password<input id="pg-pass" type="password"></label>
+        <input type="file" id="pg-ca" role="button" title="Activate to Select a File" aria-label="Browse or drop a file">
+        <label>Redis Addresses<input id="redis-addr"></label>
+        <div role="combobox" aria-label="Redis Mode"><span>standalone</span></div>
+        <label>Redis Password<input id="redis-pass" type="password"></label>
+        <input type="file" id="redis-ca" role="button" title="Activate to Select a File" aria-label="Browse or drop a file">
+        <label>Redis Server Name<input id="redis-server"></label>
+        <button id="step3">Next Step</button>
+      </section>
+      <section id="gateways-step" style="display: none">
+        <label>Deployment Name<input id="gateways-deployment"></label>
+        <label>IstioGateways (main namespace)<input id="gateways-ns"></label>
+        <div role="combobox" aria-label="Load Balancer Provider"><span>Other</span></div>
+        <button id="step4">Next Step</button>
+      </section>
+      <section id="review-step" style="display: none">
+        <button id="deploy" title="Default Action">Deploy</button>
+      </section>
+      <output id="deployed">false</output>
+      <script>
+        const sections = ['solution-step', 'namespace-step', 'step2', 'services-step', 'gateways-step', 'review-step'];
+        function showOnly(id) {
+          sections.forEach(s => document.getElementById(s).style.display = 'none');
+          document.getElementById(id).style.display = 'block';
+        }
+        document.getElementById('deploy-solution').onclick = () => showOnly('solution-step');
+        document.getElementById('step1').onclick = () => showOnly('namespace-step');
+        document.getElementById('step2a').onclick = () => showOnly('step2');
+        document.getElementById('step2-next').onclick = () => showOnly('services-step');
+        document.getElementById('step3').onclick = () => showOnly('gateways-step');
+        document.getElementById('step4').onclick = () => showOnly('review-step');
+        document.getElementById('deploy').onclick = () => document.getElementById('deployed').textContent = 'true';
+      </script>
+    `);
+
+    const cell = {
+      deployment: 'pr-1-eic-1',
+      eic: {
+        version: '',
+        namespaces: { main: 'edge-icell-1', secrets: 'edge-icell-secrets-1', ela: 'edge-icell-ela-1', services: 'edge-icell-services-1', gateways: 'istio-gateways-1' },
+        virtualHost: 'eic-1.apps.x',
+        keyAlias: 'slv-ic',
+        sharedFsStorageClass: 'nfs-rwx',
+        servicesDeployment: 'pr-1-eic-1-services',
+        gatewaysDeployment: 'pr-1-eic-1-gateways',
+      },
+      services: {
+        postgres: { host: 'h', port: 'p', database: 'd', username: 'u', password: 'pw' },
+        datastore: { type: 'redis', address: 'a', mode: 'standalone', password: 'pw', serverName: 's', username: '' },
+      },
+      files: { postgresCA, redisCA },
+    };
+
+    await elmPages.deployEic(page, { clusterName: 'hcp-x', cell });
+    assert.equal(await page.locator('#deployed').innerText(), 'true');
+  } finally {
+    await page.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('eic_zip_downloaded', async () => {
+  const page = await browser.newPage();
+  page.setDefaultTimeout(3000);
+  const dir = await mkdtemp(join(tmpdir(), 'eic-zip-test-'));
+  const expectedContent = 'fake-eic-zip-content-12345';
+  try {
+    await page.setContent(`
+      <div role="grid" aria-label="All Deployments">
+        <div id="row"><span>pr-1-eic-1</span> <span>8.48.16</span></div>
+      </div>
+      <button id="operations-label" aria-label="Operations" style="display: none">Operations</button>
+      <dialog id="operations-menu" style="display: none">
+        <div id="download-option">Download Kubernetes Resources</div>
+      </dialog>
+      <dialog id="download-dialog" style="display: none">
+        <button id="download-action" title="Default Action">Download</button>
+      </dialog>
+      <script>
+        document.getElementById('row').onclick = () => {
+          document.getElementById('operations-label').style.display = 'block';
+        };
+        document.getElementById('operations-label').onclick = () => {
+          document.getElementById('operations-menu').style.display = 'block';
+        };
+        document.getElementById('download-option').onclick = () => {
+          document.getElementById('operations-menu').style.display = 'none';
+          document.getElementById('download-dialog').style.display = 'block';
+        };
+        document.getElementById('download-action').onclick = () => {
+          const content = 'fake-eic-zip-content-12345';
+          const base64 = btoa(content);
+          const a = document.createElement('a');
+          a.href = 'data:application/zip;base64,' + base64;
+          a.download = 'restricted-resources-pr-1-eic-1-8.48.16.zip';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        };
+      </script>
+    `);
+
+    const zipPath = await elmPages.downloadEicZip(page, { clusterName: 'hcp-x', deployment: 'pr-1-eic-1', dir });
+
+    assert.match(zipPath, /restricted-resources-pr-1-eic-1-.*\.zip$/);
+    const fileContent = await readFile(zipPath, 'utf8');
+    assert.equal(fileContent, expectedContent);
+  } finally {
+    await page.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('resume_clicks_resume_operation', async () => {
+  const page = await browser.newPage();
+  page.setDefaultTimeout(3000);
+  try {
+    await page.setContent(`
+      <div role="grid" aria-label="All Deployments">
+        <div id="row">Initial Object Status <span>pr-1-eic-1</span> <span>8.48.16</span></div>
+      </div>
+      <button id="operations-label" aria-label="Operations" style="display: none">Operations</button>
+      <dialog id="operations-menu" style="display: none">
+        <div id="resume-option">Resume Operation</div>
+      </dialog>
+      <dialog id="resume-dialog" style="display: none">
+        <button id="resume-btn">Resume</button>
+      </dialog>
+      <output id="resumed">false</output>
+      <script>
+        document.getElementById('row').onclick = () => {
+          document.getElementById('operations-label').style.display = 'block';
+        };
+        document.getElementById('operations-label').onclick = () => {
+          document.getElementById('operations-menu').style.display = 'block';
+        };
+        document.getElementById('resume-option').onclick = () => {
+          document.getElementById('operations-menu').style.display = 'none';
+          document.getElementById('resume-dialog').style.display = 'block';
+        };
+        document.getElementById('resume-btn').onclick = () => document.getElementById('resumed').textContent = 'true';
+      </script>
+    `);
+
+    await elmPages.resumeEicDeployment(page, { clusterName: 'hcp-x', deployment: 'pr-1-eic-1' });
+    assert.equal(await page.locator('#resumed').innerText(), 'true');
+  } finally { await page.close(); }
+});
+
+test('status_parses_row', async () => {
+  const page = await browser.newPage();
+  page.setDefaultTimeout(3000);
+  try {
+    await page.setContent(`
+      <div role="grid" aria-label="All Deployments">
+        <div>Edge Lifecycle Management 1.65.0</div>
+        <div>Running Object Status Entry successfully validated pr-1-eic-1 8.48.16 Object Status Operations Navigation Last Operation Status : Successful</div>
+      </div>
+    `);
+
+    const status = await elmPages.eicDeploymentStatus(page, { clusterName: 'hcp-x', deployment: 'pr-1-eic-1' });
+    assert.deepEqual(status, { operation: 'Successful', version: '8.48.16' });
+  } finally { await page.close(); }
+});
+
+test('status_null_when_absent', async () => {
+  const page = await browser.newPage();
+  page.setDefaultTimeout(3000);
+  try {
+    await page.setContent(`
+      <div role="grid" aria-label="All Deployments">
+        <div>Edge Lifecycle Management 1.65.0</div>
+      </div>
+    `);
+
+    const status = await elmPages.eicDeploymentStatus(page, { clusterName: 'hcp-x', deployment: 'pr-1-eic-1' });
+    assert.equal(status, null);
+  } finally { await page.close(); }
+});
