@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: 2026 SAP edge team
 // SPDX-License-Identifier: Apache-2.0
-// cspell:words domcontentloaded
+// cspell:words domcontentloaded PWDEBUG
 
 // The pipeline browser session shared by the platforms. A profile supplies what differs:
 //   { name, options(env), sessionLimitMinutes, hub: 'skip' | 'ignore',
-//     loadInputs(read, options), loadCells(read, options, { waitForTask, dir }),
+//     loadInputs(read, options, { dir }), loadCells(read, options, { waitForTask, dir }),
 //     loadKubeconfig(read, options), leftoverPolicy, meshTask, handOverFolders(options) }
 // options(env) returns at least: mode, phase, url, namespace, pipelineRun, pipelineRunUID,
 // clusterName, podName, podUID, taskRunName, serviceAccount, s3Prefix, clusterEdgeNodeId,
@@ -43,6 +43,54 @@ export function browserPhase(env, phases = PHASES) {
   const phase = env.SAP_BROWSER_PHASE || 'deploy';
   if (!phases.includes(phase)) throw new SetupError(`SAP browser phase must be ${joinWords(phases, 'or')}.`);
   return phase;
+}
+
+const namePattern = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/;
+
+// The run, pod and ELM URL every platform's options start from.
+export function pipelinePodOptions(env) {
+  const mode = env.SAP_BROWSER_MODE;
+  if (!['inspect', 'auto'].includes(mode)) throw new SetupError('SAP browser mode must be inspect or auto.');
+  let url;
+  try { url = new URL(env.SAP_ELM_URL); } catch { throw new SetupError('Set sapElmUrl to the ELM HTTPS URL.'); }
+  if (url.protocol !== 'https:' || url.username || url.password) throw new SetupError('Use an ELM HTTPS URL without credentials.');
+  for (const key of ['PIPELINE_NAMESPACE', 'PIPELINE_RUN', 'POD_NAME', 'TASKRUN_NAME', 'RUNNER_SERVICE_ACCOUNT', 'POD_SERVICE_ACCOUNT']) {
+    if (!namePattern.test(env[key] ?? '')) throw new SetupError(`Missing or invalid ${key}.`);
+  }
+  // Without the run file's taskRunSpecs the pod runs as the pipeline SA, which
+  // cannot read the PipelineRun or create the Route: stop before anything else.
+  if (env.POD_SERVICE_ACCOUNT !== env.RUNNER_SERVICE_ACCOUNT) {
+    throw new SetupError(`The browser pod runs as ${env.POD_SERVICE_ACCOUNT}, not ${env.RUNNER_SERVICE_ACCOUNT}: add the taskRunSpecs from the run file.`);
+  }
+  for (const key of ['PIPELINE_RUN_UID', 'POD_UID']) {
+    if (!/^[a-zA-Z0-9-]+$/.test(env[key] ?? '')) throw new SetupError(`Missing or invalid ${key}.`);
+  }
+  if (env.PWDEBUG || env.DEBUG?.includes('pw:')) throw new SetupError('Disable Playwright debug logging before handling credentials.');
+  return {
+    mode, url: url.href, namespace: env.PIPELINE_NAMESPACE,
+    pipelineRun: env.PIPELINE_RUN, pipelineRunUID: env.PIPELINE_RUN_UID,
+    podName: env.POD_NAME, podUID: env.POD_UID, taskRunName: env.TASKRUN_NAME,
+    serviceAccount: env.RUNNER_SERVICE_ACCOUNT,
+    // '' (no node id on the cluster) and 'unknown' (could not read it) mean different things to the flow.
+    clusterEdgeNodeId: env.CLUSTER_EDGE_NODE_ID ?? '',
+    directory: env.SAP_BROWSER_SESSION_DIR || '/tmp/sap-browser-session',
+  };
+}
+
+// The ObjectBucketClaim's bucket; extraKeys are further secrets the caller needs with it.
+export function bucketOptions(env, { extraKeys = [], purpose }) {
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(env.BUCKET_HOST ?? '')) throw new SetupError('Missing or invalid BUCKET_HOST.');
+  const port = Number(env.BUCKET_PORT);
+  if (!/^[0-9]{1,5}$/.test(env.BUCKET_PORT ?? '') || port < 1 || port > 65535) throw new SetupError('Missing or invalid BUCKET_PORT.');
+  if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(env.BUCKET_NAME ?? '')) throw new SetupError('Missing or invalid BUCKET_NAME.');
+  for (const key of ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', ...extraKeys]) {
+    if (!env[key]?.trim()) throw new SetupError(`Missing ${key}; ${purpose} needs it.`);
+  }
+  return {
+    endpoint: `https://${env.BUCKET_HOST}:${port}`,
+    name: env.BUCKET_NAME,
+    credentials: { accessKeyId: env.AWS_ACCESS_KEY_ID, secretAccessKey: env.AWS_SECRET_ACCESS_KEY },
+  };
 }
 
 function limitMessage(limitMinutes) {
@@ -203,15 +251,18 @@ async function runSession(env, deps, profile, log, logError) {
     }
   };
 
-  const waitForPipeline = async (pipelineTaskName) => {
+  // After the wait the status returns to resumeState: 'automating' once the browser runs.
+  const waitForPipeline = async (pipelineTaskName, resumeState = 'automating') => {
     abort.signal.throwIfAborted();
     log(`Waiting for pipeline task ${pipelineTaskName}.`);
     await writeStatus(directory, 'waiting-for-pipeline', { ...metadata, pipelineTask: pipelineTaskName });
     await waitForTask(read, { pipelineRun, pipelineRunUID, pipelineTaskName, signal: abort.signal });
-    await writeStatus(directory, 'automating', metadata);
+    await writeStatus(directory, resumeState, metadata);
   };
 
-  const loadCells = () => profile.loadCells(read, options, { waitForTask: waitForPipeline, dir: workDir });
+  const loadCells = (resumeState) => profile.loadCells(read, options, {
+    waitForTask: (pipelineTaskName) => waitForPipeline(pipelineTaskName, resumeState), dir: workDir,
+  });
 
   const handOver = async (error) => {
     await writeStatus(directory, 'failed', metadata);
@@ -235,7 +286,7 @@ async function runSession(env, deps, profile, log, logError) {
     if (mode === 'auto') {
       await writeStatus(directory, 'loading-inputs', metadata);
       // Only the deploy needs the run's credentials; upgrade and teardown need the node name.
-      inputs = phase === 'deploy' ? await profile.loadInputs(read, options) : { clusterName };
+      inputs = phase === 'deploy' ? await profile.loadInputs(read, options, { dir: workDir }) : { clusterName };
       if (options.bucket) {
         s3 = s3Factory({
           endpoint: options.bucket.endpoint, bucket: options.bucket.name,
@@ -244,7 +295,8 @@ async function runSession(env, deps, profile, log, logError) {
       } else if (phase !== 'teardown') {
         throw new SetupError(`The ${phase} phase needs the bucket.`);
       }
-      if (phase !== 'deploy') cells = await loadCells();
+      // Before the browser exists, waits for pipeline tasks return to loading-inputs.
+      if (phase !== 'deploy') cells = await loadCells('loading-inputs');
     }
     abort.signal.throwIfAborted();
     await writeStatus(directory, 'opening-route', metadata);
@@ -296,8 +348,8 @@ async function runSession(env, deps, profile, log, logError) {
           clusterEdgeNodeId: options.clusterEdgeNodeId,
           leftoverPolicy: profile.leftoverPolicy,
           meshTask: profile.meshTask,
-          loadCells,
-          waitForTask: waitForPipeline,
+          loadCells: () => loadCells(),
+          waitForTask: (pipelineTaskName) => waitForPipeline(pipelineTaskName),
           loadKubeconfig: () => profile.loadKubeconfig(read, options),
           fetchElm: (dir) => fetchElm(s3, dir, { downloadInBrowser: () => steps.downloadElmCli(page, { dir }) }),
           elmInit: (elmOptions) => elmInit({ ...elmOptions, log }),
