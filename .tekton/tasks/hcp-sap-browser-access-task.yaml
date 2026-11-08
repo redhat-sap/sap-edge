@@ -1,0 +1,278 @@
+# SPDX-FileCopyrightText: 2026 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: hcp-sap-browser-access
+spec:
+  description: >-
+    Grants the browser runner ServiceAccount hcp-sap-browser-runner get access to
+    the current run's Secrets on the pipeline cluster via a per-run Role and
+    RoleBinding named hcp-sap-browser-<hostedClusterName>:
+    edgelm-kubeconfig-generated-<cluster>, the run's credentials Secrets
+    (eic-credentials-hcp-<cluster> with an empty cellCount,
+    eic-credentials-hcp-<cluster>-eic-1..N otherwise) and the registry Secret
+    <hubClusterName>-quay-robot. Returns whether the run uses a proxy (Secret
+    <hubClusterName>-proxy-config exists) and the Edge Node ID label
+    (edgelm.sap.com/edge-node-id) of the edgelm namespace on the hosted cluster,
+    read through the hub (empty string if the namespace or label is absent,
+    "unknown" if it cannot be read). Does nothing when mode is disabled, so the
+    pipeline can run it without a `when`.
+  params:
+    - name: hostedClusterName
+      type: string
+      description: "Name of the hosted cluster (also the Edge Node name)"
+    - name: hostedClusterNamespace
+      type: string
+      description: "Namespace for HostedCluster resources on the hub"
+      default: "clusters"
+    - name: hubKubeconfigSecretName
+      type: string
+      description: "Secret with the hub cluster kubeconfig (empty: the hub is the pipeline cluster)"
+      default: ""
+    - name: hubClusterName
+      type: string
+      description: "Hub cluster name: names the Secrets <hubClusterName>-quay-robot and <hubClusterName>-proxy-config"
+    - name: mode
+      type: string
+      description: "sapBrowserMode of the run: with disabled the task does nothing"
+    - name: cellCount
+      type: string
+      description: "Number of EIC cells of the dedicated pipeline (empty: the single-EIC pipeline)"
+      default: ""
+  workspaces:
+    - name: source
+      description: "Pipeline workspace (holds .kubeconfig-rewrite.sh for a remote hub)"
+  results:
+    - name: clusterEdgeNodeId
+      description: "Edge Node ID label from the edgelm namespace on the hosted cluster (empty if absent, unknown if unreadable)"
+    - name: proxyConfigured
+      description: "true when the Secret <hubClusterName>-proxy-config exists (or cannot be checked), else false"
+  steps:
+    - name: grant-access-and-read-edge-node-id
+      image: registry.access.redhat.com/ubi9/ubi
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: HOSTED_CLUSTER_NAME
+          value: "$(params.hostedClusterName)"
+        - name: HOSTED_CLUSTER_NAMESPACE
+          value: "$(params.hostedClusterNamespace)"
+        - name: HUB_KUBECONFIG_SECRET_NAME
+          value: "$(params.hubKubeconfigSecretName)"
+        - name: HUB_CLUSTER_NAME
+          value: "$(params.hubClusterName)"
+        - name: SAP_BROWSER_MODE
+          value: "$(params.mode)"
+        - name: CELL_COUNT
+          value: "$(params.cellCount)"
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        # The pipeline runs this task without a `when`: the browser tasks
+        # consume its results, and a skipped producer would skip every later
+        # task. With the browser off it does nothing (no tools, no oc calls).
+        if [[ "${SAP_BROWSER_MODE}" == "disabled" ]]; then
+          echo "ℹ️  SAP browser automation disabled; nothing to do"
+          printf '' > "$(results.clusterEdgeNodeId.path)"
+          printf 'false' > "$(results.proxyConfigured.path)"
+          exit 0
+        fi
+
+        RUNNER_SERVICE_ACCOUNT="hcp-sap-browser-runner"
+        ROLE_NAME="hcp-sap-browser-${HOSTED_CLUSTER_NAME}"
+        REWRITE_SCRIPT="$(workspaces.source.path)/.kubeconfig-rewrite.sh"
+
+        # Pipeline cluster calls use the in-cluster ServiceAccount
+        unset KUBECONFIG
+        TMP_DIR=$(mktemp -d)
+        trap 'rm -rf "${TMP_DIR}"' EXIT
+
+        fail() {
+          echo "❌ $*" >&2
+          exit 1
+        }
+
+        echo "✅ Granting browser access for hosted cluster ${HOSTED_CLUSTER_NAME}"
+        echo "=============================================="
+
+        NAME_PATTERN='^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
+        [[ "${HOSTED_CLUSTER_NAME}" =~ ${NAME_PATTERN} ]] || fail "Invalid hostedClusterName '${HOSTED_CLUSTER_NAME}': lowercase letters, digits and hyphens only"
+        [[ "${HOSTED_CLUSTER_NAMESPACE}" =~ ${NAME_PATTERN} ]] || fail "Invalid hostedClusterNamespace '${HOSTED_CLUSTER_NAMESPACE}'"
+        [[ "${HUB_CLUSTER_NAME}" =~ ${NAME_PATTERN} ]] || fail "Invalid hubClusterName '${HUB_CLUSTER_NAME}': it names the Secrets <hubClusterName>-quay-robot and <hubClusterName>-proxy-config"
+        [[ "${CELL_COUNT}" =~ ^[1-9]?$ ]] || fail "Invalid cellCount '${CELL_COUNT}': empty (single EIC) or 1-9"
+
+        # Install tools (jq, oc)
+        echo "📦 Installing required packages..."
+        dnf install -y jq tar gzip
+        echo "📦 Installing OpenShift CLI..."
+        curl -fsSL -o "${TMP_DIR}/oc.tar.gz" https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz
+        tar xzf "${TMP_DIR}/oc.tar.gz" -C "${TMP_DIR}" oc
+        mv "${TMP_DIR}/oc" /usr/local/bin/oc
+        rm -f "${TMP_DIR}/oc.tar.gz"
+        oc version --client
+        echo "✅ Tools installed"
+
+        # --- Grant access to this run's Secrets via a per-run Role + RoleBinding ---
+        SECRET_NAMES=("edgelm-kubeconfig-generated-${HOSTED_CLUSTER_NAME}")
+        if [[ -z "${CELL_COUNT}" ]]; then
+          SECRET_NAMES+=("eic-credentials-hcp-${HOSTED_CLUSTER_NAME}")
+        else
+          for ((CELL = 1; CELL <= CELL_COUNT; CELL++)); do
+            SECRET_NAMES+=("eic-credentials-hcp-${HOSTED_CLUSTER_NAME}-eic-${CELL}")
+          done
+        fi
+        SECRET_NAMES+=("${HUB_CLUSTER_NAME}-quay-robot")
+        RESOURCE_NAMES=$(printf '      - %s\n' "${SECRET_NAMES[@]}")
+
+        echo ""
+        echo "📝 Creating Role and RoleBinding '${ROLE_NAME}' on the pipeline cluster..."
+        printf '   get on Secret %s\n' "${SECRET_NAMES[@]}"
+
+        RBAC_ERROR=""
+        set +e
+        oc apply -f - <<EOF 2>"${TMP_DIR}/rbac-error.log"
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: Role
+        metadata:
+          name: ${ROLE_NAME}
+        rules:
+          - apiGroups: [""]
+            resources: [secrets]
+            verbs: [get]
+            resourceNames:
+        ${RESOURCE_NAMES}
+        EOF
+        ROLE_RC=$?
+        set -e
+        if [[ "${ROLE_RC}" -ne 0 ]]; then
+          RBAC_ERROR="Role"
+        fi
+
+        if [[ -z "${RBAC_ERROR}" ]]; then
+          set +e
+          oc apply -f - <<EOF 2>"${TMP_DIR}/rbac-error.log"
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: RoleBinding
+        metadata:
+          name: ${ROLE_NAME}
+        subjects:
+          - kind: ServiceAccount
+            name: ${RUNNER_SERVICE_ACCOUNT}
+        roleRef:
+          apiGroup: rbac.authorization.k8s.io
+          kind: Role
+          name: ${ROLE_NAME}
+        EOF
+          BINDING_RC=$?
+          set -e
+          if [[ "${BINDING_RC}" -ne 0 ]]; then
+            RBAC_ERROR="RoleBinding"
+          fi
+        fi
+
+        if [[ -n "${RBAC_ERROR}" ]]; then
+          echo "❌ Failed to create ${RBAC_ERROR} ${ROLE_NAME}: the browser will not be able to read this run's Secrets"
+          echo "   Likely cause: the pipeline ServiceAccount lacks rbac.authorization.k8s.io role/rolebinding create rights,"
+          echo "   or does not itself hold 'get' on these Secrets (Kubernetes RBAC escalation check)"
+          echo "   See hack/sap-browser/hcp-runner-rbac.yaml for the required pipeline SA permissions"
+        else
+          echo "✅ Role and RoleBinding created"
+        fi
+
+        # --- Proxy run: does <hubClusterName>-proxy-config exist? ---
+        echo ""
+        PROXY_SECRET="${HUB_CLUSTER_NAME}-proxy-config"
+        PROXY_RC=0
+        PROXY_OUTPUT=$(oc get secret "${PROXY_SECRET}" --ignore-not-found -o name 2>/dev/null) || PROXY_RC=$?
+        if [[ "${PROXY_RC}" -ne 0 ]]; then
+          # The browser hands over at "Add Edge Node" on a proxy run: safer than guessing "no proxy"
+          PROXY_CONFIGURED="true"
+          echo "⚠️  Could not check Secret ${PROXY_SECRET}; treating the run as a proxy run"
+        elif [[ -n "${PROXY_OUTPUT//[[:space:]]/}" ]]; then
+          PROXY_CONFIGURED="true"
+          echo "ℹ️  Secret ${PROXY_SECRET} exists: proxy run"
+        else
+          PROXY_CONFIGURED="false"
+          echo "ℹ️  Secret ${PROXY_SECRET} not found: no proxy"
+        fi
+        printf '%s' "${PROXY_CONFIGURED}" > "$(results.proxyConfigured.path)"
+
+        # --- Read the Edge Node ID from the hosted cluster ---
+        echo ""
+        echo "📋 Reading Edge Node ID from hosted cluster ${HOSTED_CLUSTER_NAME}..."
+
+        # Hosted cluster admin kubeconfig through the hub (rewritten for a
+        # remote hub by .kubeconfig-rewrite.sh of wait-cluster-ready)
+        HOSTED_KUBECONFIG="${TMP_DIR}/hosted-kubeconfig"
+        read_hosted_kubeconfig() {
+          local HUB_OC=(oc) KEY
+          if [[ -n "${HUB_KUBECONFIG_SECRET_NAME}" ]]; then
+            local HUB_KUBECONFIG="${TMP_DIR}/hub-kubeconfig"
+            for KEY in kubeconfig config value; do
+              if oc get secret "${HUB_KUBECONFIG_SECRET_NAME}" -o jsonpath="{.data.${KEY}}" 2>/dev/null \
+                | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+                break
+              fi
+            done
+            [[ -s "${HUB_KUBECONFIG}" ]] || return 1
+            chmod 600 "${HUB_KUBECONFIG}"
+            HUB_OC=(oc --kubeconfig "${HUB_KUBECONFIG}")
+          fi
+          "${HUB_OC[@]}" get secret "${HOSTED_CLUSTER_NAME}-admin-kubeconfig" -n "${HOSTED_CLUSTER_NAMESPACE}" \
+            -o jsonpath='{.data.kubeconfig}' 2>/dev/null | base64 -d > "${HOSTED_KUBECONFIG}" 2>/dev/null || return 1
+          [[ -s "${HOSTED_KUBECONFIG}" ]] || return 1
+          chmod 600 "${HOSTED_KUBECONFIG}"
+          if [[ -f "${REWRITE_SCRIPT}" ]]; then
+            # shellcheck disable=SC1090
+            source "${REWRITE_SCRIPT}" "${HOSTED_KUBECONFIG}"
+          fi
+        }
+
+        # "" only when the namespace or the label is truly absent; anything
+        # that cannot be read or parsed is "unknown". stderr (warnings, errors)
+        # stays out of the JSON and is used only for the error category.
+        EDGE_NODE_ID=""
+        if ! read_hosted_kubeconfig; then
+          EDGE_NODE_ID="unknown"
+          echo "⚠️  Could not read the hosted cluster kubeconfig (Secret ${HOSTED_CLUSTER_NAME}-admin-kubeconfig in ${HOSTED_CLUSTER_NAMESPACE}${HUB_KUBECONFIG_SECRET_NAME:+ on the hub of ${HUB_KUBECONFIG_SECRET_NAME}}); Edge Node ID set to 'unknown'"
+        else
+          NS_ERR="${TMP_DIR}/ns-error.log"
+          NS_RC=0
+          NS_OUTPUT=$(oc --kubeconfig "${HOSTED_KUBECONFIG}" get ns edgelm --ignore-not-found -o json 2>"${NS_ERR}") || NS_RC=$?
+          if [[ "${NS_RC}" -eq 0 ]]; then
+            if [[ -z "${NS_OUTPUT//[[:space:]]/}" ]]; then
+              echo "ℹ️  Namespace edgelm not found"
+            elif EDGE_NODE_ID=$(jq -er '.metadata.labels["edgelm.sap.com/edge-node-id"] // ""' <<< "${NS_OUTPUT}" 2>/dev/null); then
+              if [[ -n "${EDGE_NODE_ID}" ]]; then
+                echo "✅ Edge Node ID: ${EDGE_NODE_ID}"
+              else
+                echo "ℹ️  Edge Node ID label not found"
+              fi
+            else
+              EDGE_NODE_ID="unknown"
+              echo "⚠️  Could not parse namespace edgelm; Edge Node ID set to 'unknown'"
+            fi
+          else
+            EDGE_NODE_ID="unknown"
+            # Error category only (Unauthorized, Forbidden, connection refused, etc.), never the raw error
+            ERROR_CATEGORY=$(grep -m 1 -oE "(Unauthorized|Forbidden|connection refused|unable to connect|timeout)" "${NS_ERR}" || true)
+            ERROR_CATEGORY="${ERROR_CATEGORY%%$'\n'*}"
+            echo "⚠️  Could not read namespace edgelm (${ERROR_CATEGORY:-read error}); Edge Node ID set to 'unknown'"
+          fi
+        fi
+
+        printf '%s' "${EDGE_NODE_ID}" > "$(results.clusterEdgeNodeId.path)"
+
+        echo ""
+        echo "=============================================="
+        echo "✅ Browser access granted"
+        echo "  Hosted cluster:  ${HOSTED_CLUSTER_NAME}"
+        echo "  Role/Binding:    ${ROLE_NAME}"
+        echo "  ServiceAccount:  ${RUNNER_SERVICE_ACCOUNT}"
+        echo "  Proxy run:       ${PROXY_CONFIGURED}"
+        echo "  Edge Node ID:    ${EDGE_NODE_ID:-<not set>}"
+        echo "=============================================="

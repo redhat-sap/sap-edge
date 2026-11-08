@@ -1,4 +1,6 @@
 # SPDX-FileCopyrightText: 2026 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
 # SPDX-License-Identifier: Apache-2.0
 # cspell:words Containerfile
 
@@ -8,43 +10,111 @@ metadata:
   name: hcp-sap-browser
 spec:
   description: >-
-    Interactive SAP browser session for a specific HCP PipelineRun. Access noVNC
-    through oc port-forward; complete SAP login/MFA manually. Review mode does
-    not register an edge node or verify EIC readiness. The approval gate remains.
+    Optional Playwright browser session for the SAP ELM and Integration Suite
+    steps of an HCP PipelineRun (phase deploy, upgrade or teardown). Chromium
+    runs on a virtual display in the task pod; the user reaches it through a
+    per-run Route behind the OpenShift OAuth proxy (only users allowed to
+    create pods/portforward in the pipeline namespace get through) and logs in
+    to OpenShift and SAP. The Route link is printed in the log. The step always
+    exits 0: its result outcome tells what happened, and after any failure
+    inside the browser the run continues on the manual path (pod-level
+    failures, such as a wrong image or a missing ServiceAccount, still fail the
+    task). Needs the ServiceAccount hcp-sap-browser-runner
+    (hack/sap-browser/hcp-runner-rbac.yaml) via taskRunSpecs and the per-run
+    Secret access of hcp-sap-browser-access.
   params:
+    - name: mode
+      type: string
+      description: inspect or auto
+    - name: phase
+      type: string
+      description: >-
+        deploy (Edge Node, zips, EIC per cell, iFlows), upgrade (EIC upgrade
+        to eicUpgradeVersion) or teardown (delete the Edge Node created by
+        this run)
     - name: runnerImage
       type: string
       description: Image built with hack/sap-browser/Containerfile
-    - name: mode
+    - name: oauthProxyImage
       type: string
-      default: review-registration
-      description: review-registration, inspect, or run (requires a reviewed flow)
+      description: OpenShift OAuth proxy image in front of the noVNC page
+      default: image-registry.openshift-image-registry.svc:5000/openshift/oauth-proxy:v4.4
     - name: elmUrl
       type: string
+      description: Direct SAP Edge Lifecycle Management HTTPS URL
     - name: pipelineRun
       type: string
     - name: pipelineRunUID
       type: string
     - name: hostedClusterName
       type: string
+      description: Hosted cluster name (also the Edge Node name)
+    - name: s3Prefix
+      type: string
+      description: Bucket prefix of this run's restricted-resources zips (restricted-resources/<folder>/)
+    - name: cellCount
+      type: string
+      default: ''
+      description: Number of EIC cells of the dedicated pipeline (empty for the single-EIC pipeline)
+    - name: datastoreType
+      type: string
+      description: redis, valkey-standalone or valkey-cluster
     - name: highAvailability
       type: string
       default: 'false'
-    - name: flow
+      description: true registers the Edge Node as highly available
+    - name: deploymentNamePrefix
+      type: string
+      description: Prefix of the ELM deployment names (pr-<number>)
+    - name: eicSolution
+      type: string
+      description: Solution offered by ELM for the EIC deployment
+    - name: eicKeyAlias
+      type: string
+      description: Default virtual host key alias of the EIC deployment
+    - name: eicInstallVersion
       type: string
       default: ''
-      description: Relative .mjs path inside hack/sap-browser, only for run mode
+      description: EIC version to deploy (empty for the version ELM preselects)
+    - name: eicUpgradeVersion
+      type: string
+      default: ''
+      description: EIC version for the upgrade phase (empty for no upgrade)
+    - name: registrySecretName
+      type: string
+      description: Secret with the keys registry, username, password and ca.crt for "Add Edge Node"
+    - name: proxyConfigured
+      type: string
+      default: 'false'
+      description: true on a proxy run (the session hands over at "Add Edge Node")
+    - name: obcName
+      type: string
+      description: ObjectBucketClaim whose Secret and ConfigMap give the bucket for the restricted-resources zips and the elm CLI
+    - name: clusterEdgeNodeId
+      type: string
+      default: ''
+      description: Edge Node ID label of the hosted cluster's edgelm namespace before this run ('' none, 'unknown' unreadable)
+    - name: runnerServiceAccount
+      type: string
+      default: hcp-sap-browser-runner
+      description: ServiceAccount the TaskRun runs as (taskRunSpecs); also the OAuth client of the proxy
     - name: sessionMinutes
       type: string
-      default: '120'
+      default: '360'
+      description: Session limit in minutes (1-600)
     - name: loginMinutes
       type: string
       default: '30'
   results:
     - name: outcome
-      description: registration-reviewed, inspection-finished, or deployment-verified
+      description: >-
+        deployed, upgraded, nothing-to-upgrade, inspection-finished,
+        edge-node-deleted, nothing-to-delete, handed-over or failed
   workspaces:
     - name: source
+      description: >-
+        The checkout's hack/sap-browser folder (bind with subPath:
+        hack/sap-browser), so no other workspace file reaches the pod
       readOnly: true
       optional: true
   volumes:
@@ -56,10 +126,66 @@ spec:
       emptyDir:
         medium: Memory
         sizeLimit: 512Mi
+    - name: oauth-proxy-cookie
+      emptyDir:
+        medium: Memory
+        sizeLimit: 1Mi
+  sidecars:
+    # Listens on :4180 for the per-run Route (created by the browser step) and
+    # forwards authenticated requests to noVNC on 127.0.0.1:6080. The cookie
+    # secret is new for every pod and stays in memory. oauth-proxy runs as a
+    # child and the sidecar always exits 0: with restartPolicy Never a sidecar
+    # exiting non-zero can turn the pod, and so the TaskRun, Failed. Without
+    # oauth-proxy the user cannot log in and the session ends as failed.
+    - name: oauth-proxy
+      image: $(params.oauthProxyImage)
+      command:
+        - /bin/bash
+        - -c
+        - |
+          set -euo pipefail
+          umask 077
+          if ! head -c 24 /dev/urandom | base64 | tr -d '\n' > /run/oauth-proxy/cookie-secret; then
+            echo "oauth-proxy not started: cannot write the cookie secret" >&2
+            exit 0
+          fi
+          status=0
+          oauth-proxy "$@" || status=$?
+          echo "oauth-proxy exited with status ${status}" >&2
+          exit 0
+        - oauth-proxy
+      args:
+        - --provider=openshift
+        - --http-address=:4180
+        - --https-address=
+        - --upstream=http://127.0.0.1:6080
+        - --openshift-service-account=$(params.runnerServiceAccount)
+        - --cookie-secret-file=/run/oauth-proxy/cookie-secret
+        - --cookie-secure=true
+        - --skip-provider-button
+        - --pass-access-token=false
+        - --email-domain=*
+        - '--openshift-sar={"namespace":"$(context.taskRun.namespace)","resource":"pods","subresource":"portforward","verb":"create"}'
+      computeResources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      securityContext:
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seccompProfile:
+          type: RuntimeDefault
+      volumeMounts:
+        - name: oauth-proxy-cookie
+          mountPath: /run/oauth-proxy
   steps:
     - name: browser
       image: $(params.runnerImage)
-      command: [/usr/bin/dumb-init, '--', /bin/bash, /opt/sap-browser/entrypoint.sh]
       computeResources:
         requests:
           cpu: 500m
@@ -75,12 +201,18 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       env:
+        - name: SAP_BROWSER_ACCESS
+          value: route
+        - name: SAP_BROWSER_ENTRY
+          value: hcp-pipeline.mjs
         - name: SAP_BROWSER_SOURCE_BOUND
           value: $(workspaces.source.bound)
         - name: SAP_BROWSER_SOURCE
-          value: $(workspaces.source.path)/hack/sap-browser
+          value: $(workspaces.source.path)
         - name: SAP_BROWSER_MODE
           value: $(params.mode)
+        - name: SAP_BROWSER_PHASE
+          value: $(params.phase)
         - name: SAP_ELM_URL
           value: $(params.elmUrl)
         - name: PIPELINE_NAMESPACE
@@ -91,22 +223,96 @@ spec:
           value: $(params.pipelineRunUID)
         - name: HOSTED_CLUSTER_NAME
           value: $(params.hostedClusterName)
-        - name: SAP_BROWSER_HA
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_UID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.uid
+        - name: TASKRUN_NAME
+          value: $(context.taskRun.name)
+        - name: RUNNER_SERVICE_ACCOUNT
+          value: $(params.runnerServiceAccount)
+        # The ServiceAccount the pod really runs as (taskRunSpecs of the run file)
+        - name: POD_SERVICE_ACCOUNT
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.serviceAccountName
+        - name: S3_PREFIX
+          value: $(params.s3Prefix)
+        - name: CELL_COUNT
+          value: $(params.cellCount)
+        - name: DATASTORE_TYPE
+          value: $(params.datastoreType)
+        - name: HIGH_AVAILABILITY
           value: $(params.highAvailability)
-        - name: SAP_BROWSER_FLOW
-          value: $(params.flow)
+        - name: DEPLOYMENT_NAME_PREFIX
+          value: $(params.deploymentNamePrefix)
+        - name: SAP_EIC_SOLUTION
+          value: $(params.eicSolution)
+        - name: SAP_EIC_KEY_ALIAS
+          value: $(params.eicKeyAlias)
+        - name: SAP_EIC_INSTALL_VERSION
+          value: $(params.eicInstallVersion)
+        - name: SAP_EIC_UPGRADE_VERSION
+          value: $(params.eicUpgradeVersion)
+        # Only the Secret name: the session reads it through the per-run Role
+        - name: REGISTRY_SECRET
+          value: $(params.registrySecretName)
+        - name: PROXY_CONFIGURED
+          value: $(params.proxyConfigured)
+        - name: BUCKET_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: $(params.obcName)
+              key: BUCKET_HOST
+        - name: BUCKET_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: $(params.obcName)
+              key: BUCKET_PORT
+        - name: BUCKET_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: $(params.obcName)
+              key: BUCKET_NAME
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: $(params.obcName)
+              key: AWS_ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: $(params.obcName)
+              key: AWS_SECRET_ACCESS_KEY
+        - name: CLUSTER_EDGE_NODE_ID
+          value: $(params.clusterEdgeNodeId)
         - name: SAP_BROWSER_SESSION_MINUTES
           value: $(params.sessionMinutes)
         - name: SAP_BROWSER_LOGIN_MINUTES
           value: $(params.loginMinutes)
         - name: SAP_BROWSER_RESULT_PATH
           value: $(results.outcome.path)
-        - name: POD_NAME
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.name
       volumeMounts:
         - name: browser-runtime
           mountPath: /tmp
         - name: browser-shm
           mountPath: /dev/shm
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        # hcp-pipeline.mjs writes the outcome and never fails. Whatever else
+        # goes wrong (display crash, missing entry point, killed browser), this
+        # step still exits 0: a failed task would stop the PipelineRun and
+        # block the manual path and the cluster teardown.
+        dumb-init -- bash "${SAP_BROWSER_ENTRYPOINT:-/opt/sap-browser/entrypoint.sh}" || true
+
+        if [[ ! -s "$(results.outcome.path)" ]]; then
+          echo "SAP browser task reported no outcome: failed. The pipeline run continues on the manual path."
+          printf 'failed' > "$(results.outcome.path)"
+        fi
+        exit 0
