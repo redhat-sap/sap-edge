@@ -99,6 +99,32 @@ spec:
           echo "ℹ️  No hub kubeconfig secret provided, using in-cluster service account"
         fi
 
+        # Per-run SAP browser access: hcp-sap-browser-access creates the Role and
+        # RoleBinding hcp-sap-browser-<cluster> in the pipeline namespace with the
+        # in-cluster service account (also with a hub), so delete them there.
+        # Before the HostedCluster check, which ends the task when the cluster
+        # is gone. A pipeline service account without RBAC verbs (no
+        # hack/sap-browser/hcp-runner-rbac.yaml) cannot have created them, so
+        # Forbidden leaves nothing behind. Never fails the teardown.
+        echo ""
+        echo "🧹 Cleaning up the per-run SAP browser access (Role and RoleBinding)..."
+        BROWSER_ROLE_NAME="hcp-sap-browser-${CLUSTER_NAME}"
+        BROWSER_RBAC_NS="$(context.taskRun.namespace)"
+        delete_browser_rbac() {
+          local KIND="$1" LABEL="$2" OUT
+          if OUT=$(KUBECONFIG="" oc delete "${KIND}" "${BROWSER_ROLE_NAME}" -n "${BROWSER_RBAC_NS}" --ignore-not-found=true 2>&1); then
+            if [[ -n "${OUT}" ]]; then
+              echo "   ${OUT}"
+            fi
+          elif grep -qF "(Forbidden)" <<< "${OUT}"; then
+            echo "   ℹ️  The pipeline service account cannot manage ${LABEL}s, so hcp-sap-browser-access cannot have created ${KIND}/${BROWSER_ROLE_NAME}; skipping"
+          else
+            echo "   ⚠️  Could not delete ${LABEL} ${BROWSER_ROLE_NAME} in ${BROWSER_RBAC_NS}; delete it by hand: oc -n ${BROWSER_RBAC_NS} delete ${KIND} ${BROWSER_ROLE_NAME}"
+          fi
+        }
+        delete_browser_rbac role Role
+        delete_browser_rbac rolebinding RoleBinding
+
         # Check if HostedCluster exists
         echo "🔍 Checking if HostedCluster exists..."
         if ! oc get hostedcluster "${CLUSTER_NAME}" -n "${CLUSTER_NS}" > /dev/null 2>&1; then

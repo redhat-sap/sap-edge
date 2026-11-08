@@ -10,6 +10,12 @@ if [[ -n "${FAKE_OC_LOG:-}" ]]; then
   echo "$*" >> "${FAKE_OC_LOG}"
 fi
 
+# Log the kubeconfig of each call if FAKE_OC_KUBECONFIG_LOG is set
+# (<in-cluster> when KUBECONFIG is empty or unset)
+if [[ -n "${FAKE_OC_KUBECONFIG_LOG:-}" ]]; then
+  echo "${KUBECONFIG:-<in-cluster>} $*" >> "${FAKE_OC_KUBECONFIG_LOG}"
+fi
+
 # Save stdin if FAKE_OC_STDIN_DIR is set and this is an apply/create -f -
 if [[ -n "${FAKE_OC_STDIN_DIR:-}" ]]; then
   if [[ "$*" =~ (apply|create)[[:space:]]+-f[[:space:]]- ]]; then
