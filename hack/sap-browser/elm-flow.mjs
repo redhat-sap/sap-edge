@@ -171,12 +171,17 @@ export async function runDeployFlow(ctx) {
     // R5: Check deployment status for idempotency
     const status = await withLogin(page, steps, () => steps.eicDeploymentStatus(page, { clusterName, deployment: cell.deployment }), { waitForLogin, reopen });
 
-    if (!status || (status.operation !== 'Initial' && status.operation !== 'Prepared' && status.operation !== 'Successful')) {
-      // null or unknown status: deploy from scratch
+    if (!status) {
+      // null: deploy from scratch
       await withLogin(page, steps, () => steps.deployEic(page, { clusterName, cell }), { waitForLogin, reopen });
+    } else if (status.operation === 'Initial' || status.operation === 'Prepared') {
+      // Initial/Prepared: skip deployEic, will download zip and resume
+    } else if (status.operation === 'Successful') {
+      // Successful: skip deployEic and zip/resume (handled below)
+    } else {
+      // Unknown operation: hand over
+      throw new SetupError(`EIC deployment ${cell.deployment} has unknown operation ${status.operation}; continue manually`);
     }
-    // Initial/Prepared: skip deployEic, will download zip and resume
-    // Successful: skip deployEic and zip/resume (handled below)
   }
 
   // Step 11: Download EIC zip and upload to S3 for each cell (skip if Successful)
