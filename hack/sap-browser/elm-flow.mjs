@@ -238,8 +238,103 @@ export async function runDeployFlow(ctx) {
   return 'deployed';
 }
 
-export async function runTeardownFlow({ page, steps, clusterName, log }) {
-  const state = await steps.edgeNodeState(page, clusterName);
+export async function runUpgradeFlow({ page, steps, inputs, cells, version, s3, s3Prefix, dir, waitForMarker, waitForLogin, log, pollMs, timeoutMs }) {
+  const { clusterName } = inputs;
+
+  // If version is empty, nothing to upgrade
+  if (!version) {
+    return 'nothing-to-upgrade';
+  }
+
+  const reopen = async () => {
+    await steps.openEdgeNode(page, clusterName);
+  };
+
+  // For each cell: upgrade EIC
+  for (const cell of cells) {
+    await withLogin(page, steps, () => steps.upgradeEic(page, { clusterName, deployment: cell.deployment, version }), { waitForLogin, reopen });
+  }
+
+  // For each cell: check status, download/upload/resume if Prepared, wait for Successful
+  for (const cell of cells) {
+    const status = await withLogin(page, steps, () => steps.eicDeploymentStatus(page, { clusterName, deployment: cell.deployment }), { waitForLogin, reopen });
+
+    if (!status) {
+      throw new SetupError(`EIC deployment ${cell.deployment} status is absent after upgrade.`);
+    }
+
+    if (status.operation === 'Prepared') {
+      // Download zip
+      const eicZipPath = await withLogin(page, steps, () => steps.downloadEicZip(page, { clusterName, deployment: cell.deployment, dir }), { waitForLogin, reopen });
+
+      // Upload bundle
+      const zipName = eicZipPath.split('/').pop();
+      await uploadBundle(s3, { file: eicZipPath, s3Prefix, component: cell.component });
+
+      // Wait for marker
+      const markerPath = `${s3Prefix}.applied/${zipName}`;
+      await waitForMarker(markerPath);
+
+      // Resume deployment
+      await withLogin(page, steps, () => steps.resumeEicDeployment(page, { clusterName, deployment: cell.deployment }), { waitForLogin, reopen });
+    } else if (status.operation !== 'Successful') {
+      // Unknown operation
+      throw new SetupError(`EIC deployment ${cell.deployment} has unknown operation ${status.operation}; continue manually`);
+    }
+  }
+
+  // Poll until all cells are Successful at the new version
+  const startTime = Date.now();
+  let allSuccessful = false;
+  while (!allSuccessful) {
+    if (Date.now() - startTime > timeoutMs) {
+      const pending = cells.map(cell => cell.deployment).join(', ');
+      throw new SetupError(`EIC upgrade status did not reach Successful for all cells (${pending}) within timeout.`);
+    }
+
+    // Reload the node page before polling statuses
+    await withLogin(page, steps, reopen, { waitForLogin, reopen });
+
+    // Poll each cell sequentially
+    const statuses = [];
+    for (const cell of cells) {
+      const status = await withLogin(page, steps, () => steps.eicDeploymentStatus(page, { clusterName, deployment: cell.deployment }), { waitForLogin, reopen });
+      statuses.push(status);
+    }
+
+    allSuccessful = statuses.every(status => status && status.operation === 'Successful' && status.version === version);
+
+    if (!allSuccessful) {
+      // Check for unknown operations during polling
+      for (let i = 0; i < statuses.length; i++) {
+        const status = statuses[i];
+        const cell = cells[i];
+        if (status && status.operation !== 'Successful' && status.operation !== 'Prepared' && status.operation !== 'Initial') {
+          throw new SetupError(`EIC deployment ${cell.deployment} has unknown operation ${status.operation}; continue manually`);
+        }
+      }
+
+      await new Promise(resolve => setTimeout(resolve, pollMs));
+    }
+  }
+
+  return 'upgraded';
+}
+
+export async function runTeardownFlow({ page, steps, inputs, cells, readNodeRecord, waitForLogin, log, pollMs, timeoutMs, clusterName: legacyClusterName }) {
+  // Handle old ROKS signature (Task 8 will update the caller)
+  if (!inputs && legacyClusterName) {
+    throw new SetupError('ROKS teardown requires Task 8 changes; continue manually');
+  }
+
+  const { clusterName } = inputs;
+
+  const reopen = async () => {
+    await steps.openEdgeNode(page, clusterName);
+  };
+
+  // Check node state
+  const state = await withLogin(page, steps, () => steps.edgeNodeState(page, clusterName), { waitForLogin, reopen });
 
   if (!VALID_STATES.includes(state)) {
     throw new SetupError(`Edge Node has unrecognised state: ${state}. Cannot proceed safely.`);
@@ -249,6 +344,51 @@ export async function runTeardownFlow({ page, steps, clusterName, log }) {
     return 'nothing-to-delete';
   }
 
-  await steps.removeEdgeNode(page, { clusterName });
+  // Check ownership
+  const record = await readNodeRecord();
+  const currentElmId = await withLogin(page, steps, () => steps.edgeNodeElmId(page), { waitForLogin, reopen });
+
+  if (!record || normalizeId(record.elmId) !== normalizeId(currentElmId)) {
+    throw new SetupError('The Edge Node was not created by this run; remove it by hand');
+  }
+
+  // Delete each cell's deployment (skip if absent)
+  for (const cell of cells) {
+    const status = await withLogin(page, steps, () => steps.eicDeploymentStatus(page, { clusterName, deployment: cell.deployment }), { waitForLogin, reopen });
+
+    if (status) {
+      await withLogin(page, steps, () => steps.deleteEicDeployment(page, { clusterName, deployment: cell.deployment }), { waitForLogin, reopen });
+    }
+  }
+
+  // Wait until all deployment rows are gone
+  const startTime = Date.now();
+  let allGone = false;
+  while (!allGone) {
+    if (Date.now() - startTime > timeoutMs) {
+      const pending = cells.map(cell => cell.deployment).join(', ');
+      throw new SetupError(`EIC deployments (${pending}) did not disappear within timeout.`);
+    }
+
+    // Reload the node page before polling
+    await withLogin(page, steps, reopen, { waitForLogin, reopen });
+
+    // Poll each cell sequentially
+    const statuses = [];
+    for (const cell of cells) {
+      const status = await withLogin(page, steps, () => steps.eicDeploymentStatus(page, { clusterName, deployment: cell.deployment }), { waitForLogin, reopen });
+      statuses.push(status);
+    }
+
+    allGone = statuses.every(status => status === null);
+
+    if (!allGone) {
+      await new Promise(resolve => setTimeout(resolve, pollMs));
+    }
+  }
+
+  // Remove the edge node
+  await withLogin(page, steps, () => steps.removeEdgeNode(page, { clusterName }), { waitForLogin, reopen });
+
   return 'edge-node-deleted';
 }

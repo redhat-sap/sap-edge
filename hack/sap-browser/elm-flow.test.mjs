@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { SetupError } from './inputs.mjs';
-import { runDeployFlow, runTeardownFlow } from './elm-flow.mjs';
+import { runDeployFlow, runTeardownFlow, runUpgradeFlow } from './elm-flow.mjs';
 
 // Helper to create fake steps with default session methods
 function makeFakeSteps(overrides = {}) {
@@ -2249,21 +2249,39 @@ test('initial_operation_skips_deploy_resumes', async () => {
 test('teardown_deletes', async () => {
   const calls = [];
 
-  const fakeSteps = {
+  const fakeSteps = makeFakeSteps({
     async edgeNodeState() {
       calls.push({ method: 'edgeNodeState' });
       return 'initialized';
     },
+    async edgeNodeElmId() {
+      calls.push({ method: 'edgeNodeElmId' });
+      return '12345';
+    },
     async removeEdgeNode(page, { clusterName }) {
       calls.push({ method: 'removeEdgeNode', clusterName });
     },
-  };
+    async eicDeploymentStatus() {
+      return null; // No cells
+    },
+    async openEdgeNode(page, clusterName) {
+      calls.push({ method: 'openEdgeNode', clusterName });
+    },
+  });
 
   const result = await runTeardownFlow({
     page: {},
     steps: fakeSteps,
-    clusterName: 'test-cluster',
+    inputs: { clusterName: 'test-cluster' },
+    cells: [],
+    readNodeRecord: async () => {
+      calls.push({ readNodeRecord: true });
+      return { name: 'test-cluster', elmId: '12345' };
+    },
+    waitForLogin: async () => {},
     log: () => {},
+    pollMs: 10,
+    timeoutMs: 100,
   });
 
   assert.equal(result, 'edge-node-deleted');
@@ -2274,18 +2292,29 @@ test('teardown_deletes', async () => {
 test('teardown_absent', async () => {
   const calls = [];
 
-  const fakeSteps = {
+  const fakeSteps = makeFakeSteps({
     async edgeNodeState() {
       calls.push({ method: 'edgeNodeState' });
       return 'absent';
     },
-  };
+    async openEdgeNode(page, clusterName) {
+      calls.push({ method: 'openEdgeNode', clusterName });
+    },
+  });
 
   const result = await runTeardownFlow({
     page: {},
     steps: fakeSteps,
-    clusterName: 'test-cluster',
+    inputs: { clusterName: 'test-cluster' },
+    cells: [],
+    readNodeRecord: async () => {
+      calls.push({ readNodeRecord: true });
+      return null;
+    },
+    waitForLogin: async () => {},
     log: () => {},
+    pollMs: 10,
+    timeoutMs: 100,
   });
 
   assert.equal(result, 'nothing-to-delete');
@@ -2296,23 +2325,396 @@ test('teardown_absent', async () => {
 test('teardown_rejects_unexpected_state', async () => {
   const calls = [];
 
-  const fakeSteps = {
+  const fakeSteps = makeFakeSteps({
     async edgeNodeState() {
       calls.push('edgeNodeState');
       return undefined;
     },
-  };
+    async openEdgeNode() {
+      calls.push('openEdgeNode');
+    },
+  });
 
   await assert.rejects(
     async () => await runTeardownFlow({
       page: {},
       steps: fakeSteps,
-      clusterName: 'test-cluster',
+      inputs: { clusterName: 'test-cluster' },
+      cells: [],
+      readNodeRecord: async () => {
+        calls.push('readNodeRecord');
+        return null;
+      },
+      waitForLogin: async () => {},
       log: () => {},
+      pollMs: 10,
+      timeoutMs: 100,
     }),
     (err) => err instanceof SetupError && err.message.includes('unrecognised state'),
     'Should reject with SetupError for unrecognised state'
   );
 
   assert.deepEqual(calls, ['edgeNodeState']);
+});
+
+test('upgrade_empty_version_skips', async () => {
+  const calls = [];
+  const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
+  try {
+    const cell = {
+      component: 'edge-icell',
+      deployment: 'pr-123-eic',
+    };
+
+    const fakeSteps = makeFakeSteps({});
+
+    const result = await runUpgradeFlow({
+      page: {},
+      steps: fakeSteps,
+      inputs: { clusterName: 'test-cluster' },
+      cells: [cell],
+      version: '',
+      s3: {},
+      s3Prefix: 'test-prefix/',
+      dir,
+      waitForMarker: async () => {},
+      waitForLogin: async () => {},
+      log: () => {},
+      pollMs: 10,
+      timeoutMs: 100,
+    });
+
+    assert.equal(result, 'nothing-to-upgrade');
+    assert.equal(calls.length, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('upgrade_without_resources_only_waits', async () => {
+  const calls = [];
+  const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
+  try {
+    const cell = {
+      component: 'edge-icell',
+      deployment: 'pr-123-eic',
+    };
+
+    const fakeSteps = makeFakeSteps({
+      async upgradeEic(page, { clusterName, deployment, version }) {
+        calls.push({ method: 'upgradeEic', clusterName, deployment, version });
+      },
+      async eicDeploymentStatus(page, { clusterName, deployment }) {
+        calls.push({ method: 'eicDeploymentStatus', clusterName, deployment });
+        return { operation: 'Successful', status: 'Ready', version: '2.0.0' };
+      },
+      async openEdgeNode(page, clusterName) {
+        calls.push({ method: 'openEdgeNode', clusterName });
+      },
+    });
+
+    const result = await runUpgradeFlow({
+      page: {},
+      steps: fakeSteps,
+      inputs: { clusterName: 'test-cluster' },
+      cells: [cell],
+      version: '2.0.0',
+      s3: {},
+      s3Prefix: 'test-prefix/',
+      dir,
+      waitForMarker: async () => {},
+      waitForLogin: async () => {},
+      log: () => {},
+      pollMs: 10,
+      timeoutMs: 100,
+    });
+
+    assert.equal(result, 'upgraded');
+
+    // Verify: upgradeEic called, then status polled until Successful at new version
+    assert.ok(calls.some(c => c.method === 'upgradeEic'));
+    assert.ok(calls.some(c => c.method === 'eicDeploymentStatus'));
+    assert.ok(!calls.some(c => c.method === 'downloadEicZip'));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('upgrade_with_resources_uploads_waits_marker_then_resumes', async () => {
+  const calls = [];
+  const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
+  try {
+    const cell = {
+      component: 'edge-icell',
+      deployment: 'pr-123-eic',
+    };
+
+    let statusCallCount = 0;
+    const fakeSteps = makeFakeSteps({
+      async upgradeEic(page, { clusterName, deployment, version }) {
+        calls.push({ method: 'upgradeEic', clusterName, deployment, version });
+      },
+      async eicDeploymentStatus(page, { clusterName, deployment }) {
+        statusCallCount++;
+        calls.push({ method: 'eicDeploymentStatus', clusterName, deployment, callCount: statusCallCount });
+        // First call: Prepared, second call (after resume): Successful
+        if (statusCallCount === 1) {
+          return { operation: 'Prepared', status: 'Preparing', version: '1.0.0' };
+        }
+        return { operation: 'Successful', status: 'Ready', version: '2.0.0' };
+      },
+      async downloadEicZip(page, { clusterName, deployment, dir }) {
+        calls.push({ method: 'downloadEicZip', clusterName, deployment, dir });
+        return join(dir, 'restricted-resources-pr-123-eic.zip');
+      },
+      async resumeEicDeployment(page, { clusterName, deployment }) {
+        calls.push({ method: 'resumeEicDeployment', clusterName, deployment });
+      },
+      async openEdgeNode(page, clusterName) {
+        calls.push({ method: 'openEdgeNode', clusterName });
+      },
+    });
+
+    const fakeS3 = {
+      async put(file, key) {
+        calls.push({ s3put: { file, key } });
+      },
+    };
+
+    let markerWaited = false;
+    const result = await runUpgradeFlow({
+      page: {},
+      steps: fakeSteps,
+      inputs: { clusterName: 'test-cluster' },
+      cells: [cell],
+      version: '2.0.0',
+      s3: fakeS3,
+      s3Prefix: 'test-prefix/',
+      dir,
+      waitForMarker: async (path) => {
+        markerWaited = true;
+        calls.push({ waitForMarker: path });
+      },
+      waitForLogin: async () => {},
+      log: () => {},
+      pollMs: 10,
+      timeoutMs: 100,
+    });
+
+    assert.equal(result, 'upgraded');
+
+    // Verify sequence: upgradeEic → status Prepared → download → upload → waitMarker → resume → status Successful
+    const expected = [
+      { method: 'upgradeEic', clusterName: 'test-cluster', deployment: 'pr-123-eic', version: '2.0.0' },
+      { method: 'eicDeploymentStatus', clusterName: 'test-cluster', deployment: 'pr-123-eic', callCount: 1 },
+      { method: 'downloadEicZip', clusterName: 'test-cluster', deployment: 'pr-123-eic', dir },
+      { s3put: { file: join(dir, 'restricted-resources-pr-123-eic.zip'), key: 'test-prefix/edge-icell/restricted-resources-pr-123-eic.zip' } },
+      { waitForMarker: 'test-prefix/.applied/restricted-resources-pr-123-eic.zip' },
+      { method: 'resumeEicDeployment', clusterName: 'test-cluster', deployment: 'pr-123-eic' },
+      { method: 'openEdgeNode', clusterName: 'test-cluster' },
+      { method: 'eicDeploymentStatus', clusterName: 'test-cluster', deployment: 'pr-123-eic', callCount: 2 },
+    ];
+
+    assert.deepEqual(calls, expected);
+    assert.ok(markerWaited);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('teardown_deletes_cells_then_node', async () => {
+  const calls = [];
+  const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
+  try {
+    const cell1 = {
+      component: 'edge-icell-1',
+      deployment: 'pr-123-eic-1',
+    };
+    const cell2 = {
+      component: 'edge-icell-2',
+      deployment: 'pr-123-eic-2',
+    };
+
+    let statusCallCount = 0;
+    const fakeSteps = makeFakeSteps({
+      async edgeNodeState(page, clusterName) {
+        calls.push({ method: 'edgeNodeState', clusterName });
+        return 'initialized';
+      },
+      async edgeNodeElmId(page) {
+        calls.push({ method: 'edgeNodeElmId' });
+        return '12345';
+      },
+      async eicDeploymentStatus(page, { clusterName, deployment }) {
+        statusCallCount++;
+        calls.push({ method: 'eicDeploymentStatus', clusterName, deployment, callCount: statusCallCount });
+        // First 2 calls (one per cell) return present, then null (gone) on poll
+        return statusCallCount <= 2 ? { operation: 'Successful', status: 'Ready', version: '1.0.0' } : null;
+      },
+      async deleteEicDeployment(page, { clusterName, deployment }) {
+        calls.push({ method: 'deleteEicDeployment', clusterName, deployment });
+      },
+      async removeEdgeNode(page, { clusterName }) {
+        calls.push({ method: 'removeEdgeNode', clusterName });
+      },
+      async openEdgeNode(page, clusterName) {
+        calls.push({ method: 'openEdgeNode', clusterName });
+      },
+    });
+
+    const result = await runTeardownFlow({
+      page: {},
+      steps: fakeSteps,
+      inputs: { clusterName: 'test-cluster' },
+      cells: [cell1, cell2],
+      readNodeRecord: async () => {
+        calls.push({ readNodeRecord: true });
+        return { name: 'test-cluster', elmId: '12345' };
+      },
+      waitForLogin: async () => {},
+      log: () => {},
+      pollMs: 10,
+      timeoutMs: 100,
+    });
+
+    assert.equal(result, 'edge-node-deleted');
+
+    // Verify sequence: state check → elmId → record → delete cells → wait until gone → remove node
+    const deleteCell1Idx = calls.findIndex(c => c.method === 'deleteEicDeployment' && c.deployment === 'pr-123-eic-1');
+    const deleteCell2Idx = calls.findIndex(c => c.method === 'deleteEicDeployment' && c.deployment === 'pr-123-eic-2');
+    const removeNodeIdx = calls.findIndex(c => c.method === 'removeEdgeNode');
+
+    assert.ok(deleteCell1Idx >= 0);
+    assert.ok(deleteCell2Idx >= 0);
+    assert.ok(removeNodeIdx >= 0);
+    assert.ok(deleteCell1Idx < removeNodeIdx);
+    assert.ok(deleteCell2Idx < removeNodeIdx);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('teardown_without_record_hands_over', async () => {
+  const calls = [];
+  const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
+  try {
+    const fakeSteps = makeFakeSteps({
+      async edgeNodeState(page, clusterName) {
+        calls.push({ method: 'edgeNodeState', clusterName });
+        return 'initialized';
+      },
+      async edgeNodeElmId(page) {
+        calls.push({ method: 'edgeNodeElmId' });
+        return '12345';
+      },
+      async openEdgeNode(page, clusterName) {
+        calls.push({ method: 'openEdgeNode', clusterName });
+      },
+    });
+
+    await assert.rejects(
+      async () => await runTeardownFlow({
+        page: {},
+        steps: fakeSteps,
+        inputs: { clusterName: 'test-cluster' },
+        cells: [],
+        readNodeRecord: async () => {
+          calls.push({ readNodeRecord: true });
+          return null; // No record
+        },
+        waitForLogin: async () => {},
+        log: () => {},
+        pollMs: 10,
+        timeoutMs: 100,
+      }),
+      (err) => err instanceof SetupError && err.message.includes('not created by this run') && err.message.includes('remove it by hand'),
+      'Should throw SetupError when no record exists'
+    );
+
+    assert.ok(calls.some(c => c.readNodeRecord));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('teardown_other_elm_id_hands_over', async () => {
+  const calls = [];
+  const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
+  try {
+    const fakeSteps = makeFakeSteps({
+      async edgeNodeState(page, clusterName) {
+        calls.push({ method: 'edgeNodeState', clusterName });
+        return 'initialized';
+      },
+      async edgeNodeElmId(page) {
+        calls.push({ method: 'edgeNodeElmId' });
+        return '99999'; // Different from record
+      },
+      async openEdgeNode(page, clusterName) {
+        calls.push({ method: 'openEdgeNode', clusterName });
+      },
+    });
+
+    await assert.rejects(
+      async () => await runTeardownFlow({
+        page: {},
+        steps: fakeSteps,
+        inputs: { clusterName: 'test-cluster' },
+        cells: [],
+        readNodeRecord: async () => {
+          calls.push({ readNodeRecord: true });
+          return { name: 'test-cluster', elmId: '12345' };
+        },
+        waitForLogin: async () => {},
+        log: () => {},
+        pollMs: 10,
+        timeoutMs: 100,
+      }),
+      (err) => err instanceof SetupError && err.message.includes('not created by this run') && err.message.includes('remove it by hand'),
+      'Should throw SetupError when elmId does not match'
+    );
+
+    assert.ok(calls.some(c => c.readNodeRecord));
+    assert.ok(calls.some(c => c.method === 'edgeNodeElmId'));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('teardown_absent_node_nothing_to_delete', async () => {
+  const calls = [];
+  const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
+  try {
+    const fakeSteps = makeFakeSteps({
+      async edgeNodeState(page, clusterName) {
+        calls.push({ method: 'edgeNodeState', clusterName });
+        return 'absent';
+      },
+      async openEdgeNode(page, clusterName) {
+        calls.push({ method: 'openEdgeNode', clusterName });
+      },
+    });
+
+    const result = await runTeardownFlow({
+      page: {},
+      steps: fakeSteps,
+      inputs: { clusterName: 'test-cluster' },
+      cells: [],
+      readNodeRecord: async () => {
+        calls.push({ readNodeRecord: true });
+        return null;
+      },
+      waitForLogin: async () => {},
+      log: () => {},
+      pollMs: 10,
+      timeoutMs: 100,
+    });
+
+    assert.equal(result, 'nothing-to-delete');
+    // Should not check record or elmId when node is absent
+    assert.ok(!calls.some(c => c.readNodeRecord));
+    assert.ok(!calls.some(c => c.method === 'edgeNodeElmId'));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
