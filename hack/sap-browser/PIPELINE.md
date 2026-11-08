@@ -110,7 +110,16 @@ In the pipeline namespace (`sap-elm-eic-validation` on `eic`):
    on these Secrets itself. `teardown-hosted-cluster` deletes the Role and
    RoleBinding. If the OAuth proxy logs 403 on `subjectaccessreviews`, bind
    `system:auth-delegator` to the runner (command in the file).
-4. **elm CLI** (optional): the deploy session takes the newest file under
+4. **ELM URL:** the Secret `sap-elm-url` (key `url`, the direct ELM URL
+   `https://<tenant>/comsapclmedgelm.comsapclmedgelm/index.html`) keeps the
+   tenant out of the repository; `sapElmUrl` in the run file overrides it:
+
+   ```bash
+   oc -n sap-elm-eic-validation create secret generic sap-elm-url \
+     --from-literal=url="https://<tenant>/comsapclmedgelm.comsapclmedgelm/index.html"
+   ```
+
+5. **elm CLI** (optional): the deploy session takes the newest file under
    `tools/elm/` in the OBC bucket (the Linux x86_64 binary, a `.zip` or a
    `.tar.gz`). Without one it downloads the CLI from the SAP Software Download
    Center in the browser and stores it there for later runs.

@@ -116,8 +116,9 @@ spec:
 
     # --- SAP browser automation (optional) ---
     # disabled, inspect or auto (hack/sap-browser/PIPELINE.md). With inspect or
-    # auto, also set sapElmUrl and uncomment taskRunSpecs above. The runner image
-    # is built into eic's Quay when missing (sapBrowserImage overrides it).
+    # auto, uncomment taskRunSpecs above. The ELM URL comes from the Secret
+    # sap-elm-url (key url) unless sapElmUrl is set. The runner image is built
+    # into eic's Quay when missing (sapBrowserImage overrides it).
     - name: sapBrowserMode
       value: "disabled"
     # - name: sapElmUrl
