@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from 'node:assert/strict';
-import { writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
@@ -51,7 +51,22 @@ test('state_added_when_not_initialized', async () => {
   const page = await browser.newPage();
   page.setDefaultTimeout(3000);
   try {
-    await nodePageFixture(page, { status: 'Not Initialized' });
+    // Start on list page with the node listed, clicking it opens node page with Not Initialized
+    await page.setContent(`
+      <label>Search by Edge Node name<input type="search"></label>
+      <div role="grid" aria-label="All Edge Nodes">
+        <div id="node-row">hcp-x</div>
+      </div>
+      <script>
+        document.getElementById('node-row').onclick = () => {
+          // Simulate navigation to node page
+          document.body.innerHTML = \`
+            <div>Status: Not Initialized</div>
+            <div role="tab">Initialize Edge Node</div>
+          \`;
+        };
+      </script>
+    `);
     const state = await elmPages.edgeNodeState(page, 'hcp-x');
     assert.equal(state, 'added');
   } finally { await page.close(); }
@@ -61,7 +76,22 @@ test('state_initialized_on_deployments_tab', async () => {
   const page = await browser.newPage();
   page.setDefaultTimeout(3000);
   try {
-    await nodePageFixture(page, { hasDeploymentsTab: true });
+    // Start on list page with the node listed, clicking it opens node page with Deployments tab
+    await page.setContent(`
+      <label>Search by Edge Node name<input type="search"></label>
+      <div role="grid" aria-label="All Edge Nodes">
+        <div id="node-row">hcp-x</div>
+      </div>
+      <script>
+        document.getElementById('node-row').onclick = () => {
+          // Simulate navigation to initialized node page
+          document.body.innerHTML = \`
+            <div role="tab">Deployments</div>
+            <div role="tab">Configuration</div>
+          \`;
+        };
+      </script>
+    `);
     const state = await elmPages.edgeNodeState(page, 'hcp-x');
     assert.equal(state, 'initialized');
   } finally { await page.close(); }
@@ -71,7 +101,11 @@ test('state_returns_unknown_status_text', async () => {
   const page = await browser.newPage();
   page.setDefaultTimeout(3000);
   try {
-    await nodePageFixture(page, { status: 'Initializing' });
+    // Already on node page (no list table)
+    await page.setContent(`
+      <div>Status: Initializing</div>
+      <div role="tab">Initialize Edge Node</div>
+    `);
     const state = await elmPages.edgeNodeState(page, 'hcp-x');
     assert.equal(state, 'Initializing');
   } finally { await page.close(); }
@@ -206,7 +240,8 @@ test('add_with_registry_fills_replication', async () => {
 test('elm_zip_downloaded_and_confirmed', async () => {
   const page = await browser.newPage();
   page.setDefaultTimeout(3000);
-  const dir = tmpdir();
+  const dir = await mkdtemp(join(tmpdir(), 'elm-zip-test-'));
+  const expectedContent = 'fake-elm-zip-content-12345';
   try {
     await page.setContent(`
       <label><input type="checkbox" id="confirm">I confirm that I have downloaded and applied resources.</label>
@@ -216,7 +251,6 @@ test('elm_zip_downloaded_and_confirmed', async () => {
       </dialog>
       <button id="next">Next Step</button>
       <output id="next-clicked">false</output>
-      <output id="download-clicked">false</output>
       <script>
         document.getElementById('download-btn').onclick = () => {
           const dialog = document.getElementById('dialog');
@@ -224,35 +258,39 @@ test('elm_zip_downloaded_and_confirmed', async () => {
           dialog.style.display = 'block';
         };
         document.getElementById('download-action').onclick = () => {
-          document.getElementById('download-clicked').textContent = 'true';
+          // Trigger a real download using data URI
+          const content = 'fake-elm-zip-content-12345';
+          const base64 = btoa(content);
+          const a = document.createElement('a');
+          a.href = 'data:application/zip;base64,' + base64;
+          a.download = 'restricted-resources-Edge_Lifecycle_Management-1.65.0.zip';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
         };
         document.getElementById('next').onclick = () => document.getElementById('next-clicked').textContent = 'true';
       </script>
     `);
 
-    // Test the selectors work correctly
-    await page.getByRole('button', { name: 'Download Kubernetes Resources', exact: true }).click();
-    await page.getByRole('button', { name: 'Download', description: 'Default Action' }).click();
-    assert.equal(await page.locator('#download-clicked').innerText(), 'true');
-
-    // Simulate the file being downloaded
-    const zipPath = join(dir, 'restricted-resources-Edge_Lifecycle_Management-1.65.0.zip');
-    await writeFile(zipPath, 'fake-zip-content');
-
-    await page.getByRole('checkbox', { name: 'I confirm that I have downloaded and applied resources.', exact: true }).check();
-    await page.getByRole('button', { name: 'Next Step', exact: true }).click();
+    const zipPath = await elmPages.downloadElmZip(page, { clusterName: 'hcp-x', dir });
 
     assert.match(zipPath, /restricted-resources-Edge_Lifecycle_Management-.*\.zip$/);
+    const fileContent = await readFile(zipPath, 'utf8');
+    assert.equal(fileContent, expectedContent);
     assert.equal(await page.locator('#confirm').isChecked(), true);
     assert.equal(await page.locator('#next-clicked').innerText(), 'true');
-  } finally { await page.close(); }
+  } finally {
+    await page.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test('cloud_connector_returns_context_cfg', async () => {
   const page = await browser.newPage();
   page.setDefaultTimeout(3000);
-  const kubeconfigFile = join(tmpdir(), `test-kubeconfig-${Date.now()}.yaml`);
-  const dir = tmpdir();
+  const dir = await mkdtemp(join(tmpdir(), 'cloud-connector-test-'));
+  const kubeconfigFile = join(dir, `test-kubeconfig-${Date.now()}.yaml`);
+  const expectedContent = 'fake-context-cfg-content-67890';
   await writeFile(kubeconfigFile, 'fake-kubeconfig\n');
   try {
     await page.setContent(`
@@ -264,32 +302,40 @@ test('cloud_connector_returns_context_cfg', async () => {
       <label>Context Password<input id="password" type="password"></label>
       <button id="download-btn">Download Bootstrapping File</button>
       <output id="kube-name"></output>
-      <output id="download-clicked">false</output>
       <script>
         document.getElementById('kubeconfig-upload').addEventListener('input', (e) => {
           if (e.target.files?.[0]) document.getElementById('kube-name').textContent = e.target.files[0].name;
         });
         document.getElementById('download-btn').onclick = () => {
-          document.getElementById('download-clicked').textContent = 'true';
+          // Trigger a real download using data URI
+          const content = 'fake-context-cfg-content-67890';
+          const base64 = btoa(content);
+          const a = document.createElement('a');
+          a.href = 'data:application/octet-stream;base64,' + base64;
+          a.download = 'context.cfg';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
         };
       </script>
     `);
 
-    // Test the flow manually
-    await page.getByLabel('Browse or drop a file', { exact: true }).getByTitle('Browse or drop a file', { exact: true }).click();
-    await page.getByRole('button', { name: 'Kubeconfig File', exact: true }).setInputFiles(kubeconfigFile);
-    await page.getByRole('textbox', { name: 'Context Password', exact: true }).fill('test-password');
-    await page.getByRole('button', { name: 'Download Bootstrapping File', exact: true }).click();
-    assert.equal(await page.locator('#download-clicked').innerText(), 'true');
-
-    // Simulate download completion
-    const contextPath = join(dir, 'context.cfg');
-    await writeFile(contextPath, 'fake-context-cfg');
+    const contextPath = await elmPages.setUpCloudConnector(page, {
+      clusterName: 'hcp-x',
+      kubeconfigFile,
+      password: 'test-password',
+      dir,
+    });
 
     assert.match(contextPath, /context\.cfg$/);
+    const fileContent = await readFile(contextPath, 'utf8');
+    assert.equal(fileContent, expectedContent);
     assert.match(await page.locator('#kube-name').innerText(), /test-kubeconfig.*\.yaml/);
     assert.equal(await page.locator('#password').inputValue(), 'test-password');
-  } finally { await page.close(); }
+  } finally {
+    await page.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test('session_expired_detected', async () => {

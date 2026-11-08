@@ -22,9 +22,9 @@ export const elmPages = {
       if (nodeCount === 0) {
         return 'absent';
       }
-      // Node exists in list but we need to open it to check status
-      // This shouldn't happen in normal flow, but return 'added' as safe default
-      return 'added';
+      // Node exists in list - open it to check its actual state
+      await this.openEdgeNode(page, clusterName);
+      // Fall through to check the node page
     }
 
     // We're on a node page - check for Deployments tab (initialized state)
