@@ -744,8 +744,6 @@ test('teardown_deletes', async () => {
 
 test('stubs_say_not_mapped', async () => {
   const methods = [
-    'deployEic',
-    'downloadEicZip',
     'finishEicDeployment',
     'deleteEdgeNode',
   ];
