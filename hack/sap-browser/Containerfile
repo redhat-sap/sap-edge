@@ -3,7 +3,7 @@
 # cspell:words xvfb novnc websockify openbox
 
 # Build from the repository root. Browser revision comes from package-lock.json.
-FROM node:24-bookworm-slim
+FROM docker.io/library/node:24-bookworm-slim
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 WORKDIR /opt/sap-browser
 COPY package.json package-lock.json ./
