@@ -24,7 +24,6 @@ function makeFakePage(calls = []) {
   return {
     url() { return 'https://example.com#/clusters/123'; },
     async goto(url) { calls.push({ goto: url }); },
-      async reload() { calls.push({ reload: true }); },
     async reload() { calls.push({ reload: true }); },
   };
 }
@@ -1381,16 +1380,19 @@ test('expired_session_relogin_and_retry', async () => {
     const result = await runDeployFlow(ctx);
     assert.equal(result, 'deployed');
 
-    // Verify deployEic was called twice
+    // Verify deployEic was called twice (first call threw session expired, second succeeded)
     assert.equal(deployEicCallCount, 2);
 
     // Verify waitForLogin was called exactly once
     const waitForLoginCalls = calls.filter(c => c.waitForLogin);
     assert.equal(waitForLoginCalls.length, 1, 'waitForLogin should be called exactly once');
 
-    // Verify openEdgeNode was called once for initial node opening; retry reopen uses goto(captured URL), poll uses reload()
-    const openEdgeNodeCalls = calls.filter(c => c.method === 'openEdgeNode');
-    assert.equal(openEdgeNodeCalls.length, 1, 'openEdgeNode should be called once for initial opening');
+    // Verify retry reopen uses goto(captured URL) instead of openEdgeNode (after node opened)
+    const waitForLoginIdx = calls.findIndex(c => c.waitForLogin);
+    const gotoAfterWaitForLogin = calls.slice(waitForLoginIdx).filter(c => c.goto);
+    assert.ok(gotoAfterWaitForLogin.length > 0, 'Should use goto for reopen after session expiry (node already opened)');
+    const openEdgeNodeAfterWaitForLogin = calls.slice(waitForLoginIdx).filter(c => c.method === 'openEdgeNode');
+    assert.equal(openEdgeNodeAfterWaitForLogin.length, 0, 'Should not use openEdgeNode for retry after node opened');
 
     // Verify isSessionExpired was called exactly once
     assert.equal(sessionExpiredCount, 1, 'isSessionExpired should be called exactly once');
@@ -2957,7 +2959,6 @@ test('teardown_waits_for_rows_to_disappear', async () => {
       page: {
         url() { return 'https://example.com#/clusters/123'; },
         async goto(url) { calls.push({ goto: url }); },
-      async reload() { calls.push({ reload: true }); },
         async reload() {
           calls.push({ reload: true });
           pollRound++;
@@ -2977,15 +2978,283 @@ test('teardown_waits_for_rows_to_disappear', async () => {
     });
 
     assert.equal(result, 'edge-node-deleted');
-    // Verify: deleteEicDeployment called, then waited through 2 poll rounds, then removeEdgeNode
-    const deleteCalls = calls.filter(c => c.method === 'deleteEicDeployment');
-    const removeCalls = calls.filter(c => c.method === 'removeEdgeNode');
-    assert.equal(deleteCalls.length, 1);
-    assert.equal(removeCalls.length, 1);
-    // removeEdgeNode should be after the poll rounds
-    const deleteIdx = calls.findIndex(c => c.method === 'deleteEicDeployment');
-    const removeIdx = calls.findIndex(c => c.method === 'removeEdgeNode');
-    assert.ok(deleteIdx < removeIdx, 'removeEdgeNode should be after deleteEicDeployment');
+    // Prove the wait: removeEdgeNode comes after the second reload/status round (finding 5)
+    // Expected sequence: delete, reload, status(pollRound=1, present), reload, status(pollRound=2, gone), remove
+    assert.deepEqual(
+      calls.filter(c => c.method === 'deleteEicDeployment' || c.reload === true || (c.method === 'eicDeploymentStatus' && c.pollRound >= 1) || c.method === 'removeEdgeNode'),
+      [
+        { method: 'deleteEicDeployment', clusterName: 'test-cluster', deployment: 'pr-123-eic' },
+        { reload: true },
+        { method: 'eicDeploymentStatus', clusterName: 'test-cluster', deployment: 'pr-123-eic', pollRound: 1 },
+        { reload: true },
+        { method: 'eicDeploymentStatus', clusterName: 'test-cluster', deployment: 'pr-123-eic', pollRound: 2 },
+        { method: 'removeEdgeNode', clusterName: 'test-cluster' },
+      ]
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('upgrade_timeout_hands_over', async () => {
+  const calls = [];
+  const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
+  try {
+    const cell = {
+      component: 'edge-icell',
+      deployment: 'pr-123-eic',
+    };
+
+    const fakeSteps = makeFakeSteps({
+      async upgradeEic(page, { clusterName, deployment, version }) {
+        calls.push({ method: 'upgradeEic', clusterName, deployment, version });
+      },
+      async eicDeploymentStatus(page, { clusterName, deployment }) {
+        calls.push({ method: 'eicDeploymentStatus', clusterName, deployment });
+        // Cell stays Successful at old version (1.0.0), never reaches target version (2.0.0)
+        return { operation: 'Successful', status: 'Ready', version: '1.0.0' };
+      },
+      async openEdgeNode(page, clusterName) {
+        calls.push({ method: 'openEdgeNode', clusterName });
+      },
+    });
+
+    await assert.rejects(
+      async () => await runUpgradeFlow({
+        page: makeFakePage(calls),
+        steps: fakeSteps,
+        inputs: { clusterName: 'test-cluster' },
+        cells: [cell],
+        version: '2.0.0',
+        s3: {},
+        s3Prefix: 'test-prefix/',
+        dir,
+        waitForMarker: async () => {},
+        waitForLogin: async () => {},
+        log: () => {},
+        pollMs: 10,
+        timeoutMs: 50,
+      }),
+      (err) => err instanceof SetupError && err.message.includes('pr-123-eic') && err.message.includes('EIC upgrade'),
+      'Should throw SetupError when upgrade times out, naming the pending deployment'
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('upgrade_initial_while_waiting_hands_over', async () => {
+  const calls = [];
+  const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
+  try {
+    const cell = {
+      component: 'edge-icell',
+      deployment: 'pr-123-eic',
+    };
+
+    let statusCallCount = 0;
+    const fakeSteps = makeFakeSteps({
+      async upgradeEic(page, { clusterName, deployment, version }) {
+        calls.push({ method: 'upgradeEic', clusterName, deployment, version });
+      },
+      async eicDeploymentStatus(page, { clusterName, deployment }) {
+        statusCallCount++;
+        calls.push({ method: 'eicDeploymentStatus', clusterName, deployment, callCount: statusCallCount });
+        // First round: Successful at old version, second round: Initial (not allowed)
+        if (statusCallCount === 1) {
+          return { operation: 'Successful', status: 'Ready', version: '1.0.0' };
+        } else {
+          return { operation: 'Initial', status: 'Deploying', version: '1.0.0' };
+        }
+      },
+      async openEdgeNode(page, clusterName) {
+        calls.push({ method: 'openEdgeNode', clusterName });
+      },
+    });
+
+    await assert.rejects(
+      async () => await runUpgradeFlow({
+        page: makeFakePage(calls),
+        steps: fakeSteps,
+        inputs: { clusterName: 'test-cluster' },
+        cells: [cell],
+        version: '2.0.0',
+        s3: {},
+        s3Prefix: 'test-prefix/',
+        dir,
+        waitForMarker: async () => {},
+        waitForLogin: async () => {},
+        log: () => {},
+        pollMs: 10,
+        timeoutMs: 500,
+      }),
+      (err) => err instanceof SetupError && err.message.includes('pr-123-eic') && err.message.includes('Initial'),
+      'Should throw SetupError when cell has Initial while waiting, not timeout'
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('teardown_timeout_names_only_pending_cells', async () => {
+  const calls = [];
+  const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
+  try {
+    const cellA = {
+      component: 'edge-icell-a',
+      deployment: 'pr-123-eic-a',
+    };
+    const cellB = {
+      component: 'edge-icell-b',
+      deployment: 'pr-123-eic-b',
+    };
+
+    const fakeSteps = makeFakeSteps({
+      async edgeNodeState(page, clusterName) {
+        calls.push({ method: 'edgeNodeState', clusterName });
+        return 'initialized';
+      },
+      async edgeNodeElmId(page) {
+        calls.push({ method: 'edgeNodeElmId' });
+        return '12345';
+      },
+      async eicDeploymentStatus(page, { clusterName, deployment }) {
+        calls.push({ method: 'eicDeploymentStatus', clusterName, deployment });
+        // Cell A: gone (null), Cell B: still present
+        return deployment === 'pr-123-eic-a' ? null : { operation: 'Successful', status: 'Ready', version: '1.0.0' };
+      },
+      async deleteEicDeployment(page, { clusterName, deployment }) {
+        calls.push({ method: 'deleteEicDeployment', clusterName, deployment });
+      },
+      async openEdgeNode(page, clusterName) {
+        calls.push({ method: 'openEdgeNode', clusterName });
+      },
+    });
+
+    await assert.rejects(
+      async () => await runTeardownFlow({
+        page: makeFakePage(calls),
+        steps: fakeSteps,
+        inputs: { clusterName: 'test-cluster' },
+        cells: [cellA, cellB],
+        readNodeRecord: async () => {
+          calls.push({ readNodeRecord: true });
+          return { name: 'test-cluster', elmId: '12345' };
+        },
+        waitForLogin: async () => {},
+        log: () => {},
+        pollMs: 10,
+        timeoutMs: 50,
+      }),
+      (err) => err instanceof SetupError && err.message.includes('pr-123-eic-b') && !err.message.includes('pr-123-eic-a'),
+      'Should throw SetupError naming only pr-123-eic-b (still pending), not pr-123-eic-a (already gone)'
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('session_expired_after_node_opened_uses_goto_url', async () => {
+  const calls = [];
+  const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
+  try {
+    const cell = {
+      component: 'edge-icell',
+      deployment: 'pr-123-eic',
+      eic: { solution: 'Edge Integration Cell', version: '1.0.0', namespaces: { main: 'edge-icell', secrets: 'edge-icell-secrets', ela: 'edge-icell-ela', services: 'edge-icell-services', gateways: 'istio-gateways' }, virtualHost: 'eic.example.com', keyAlias: 'eic-key', sharedFsStorageClass: 'nfs-rwx', servicesDeployment: 'pr-123-eic-services', gatewaysDeployment: 'pr-123-eic-gateways' },
+      files: { postgresCA: join(dir, 'postgres-ca.crt'), redisCA: join(dir, 'redis-ca.crt') },
+    };
+
+    let downloadElmZipCallCount = 0;
+    let sessionExpiredCount = 0;
+
+    const fakeSteps = makeFakeSteps({
+      async edgeNodeState() { return 'absent'; },
+      async addEdgeNode() {},
+      async downloadElmZip(page, { dir }) {
+        downloadElmZipCallCount++;
+        calls.push({ method: 'downloadElmZip', callCount: downloadElmZipCallCount });
+        if (downloadElmZipCallCount === 1) {
+          // Session expires during download (after node opened)
+          const error = new Error('Session expired');
+          error.name = 'SessionExpiredError';
+          throw error;
+        }
+        return join(dir, 'restricted-resources-elm.zip');
+      },
+      async setUpCloudConnector() { return join(dir, 'context.yaml'); },
+      async deployEic() {},
+      async downloadEicZip(page, { deployment, dir }) { return join(dir, `restricted-resources-${deployment}.zip`); },
+      async resumeEicDeployment() {},
+      async eicDeploymentStatus() {
+        return { operation: 'Successful', status: 'Ready', version: '1.0.0' };
+      },
+      async isSessionExpired() {
+        sessionExpiredCount++;
+        calls.push({ method: 'isSessionExpired', callCount: sessionExpiredCount });
+        return sessionExpiredCount === 1;
+      },
+      async openEdgeNode(page, clusterName) {
+        calls.push({ method: 'openEdgeNode', clusterName });
+      },
+    });
+
+    const fakeIsSteps = {
+      async deployKeystore() {},
+      async runtimeReady() { return true; },
+      async deployArtifact() {},
+      async artifactStates() {
+        return { ipfilterAPI: 'Started', testAPI: 'Started', Arp_https: 'Started', SLV_FLOW_ELSTER: 'Started' };
+      },
+    };
+
+    const fakeS3 = { async put() {} };
+
+    const capturedUrl = 'https://example.com#/clusters/123';
+    const fakePage = {
+      url() { return capturedUrl; },
+      async goto(url) { calls.push({ goto: url }); },
+      async reload() { calls.push({ reload: true }); },
+    };
+
+    const ctx = {
+      page: fakePage,
+      steps: fakeSteps,
+      isSteps: fakeIsSteps,
+      inputs: { clusterName: 'test-cluster', registry: {}, highAvailability: false, proxy: null },
+      clusterEdgeNodeId: '',
+      leftoverPolicy: 'delete',
+      loadCells: async () => [cell],
+      s3: fakeS3,
+      s3Prefix: 'test-prefix/',
+      dir,
+      waitForTask: async () => {},
+      meshTask: 'configure-mesh-eic',
+      loadKubeconfig: async () => 'kubeconfig',
+      fetchElm: async () => join(dir, 'elm'),
+      elmInit: async () => {},
+      password: 'test-password',
+      recordNode: async () => {},
+      readNodeRecord: async () => null,
+      waitForLogin: async () => {
+        calls.push({ waitForLogin: true });
+      },
+      log: () => {},
+      pollMs: 10,
+      timeoutMs: 100,
+    };
+
+    const result = await runDeployFlow(ctx);
+    assert.equal(result, 'deployed');
+
+    // Verify: session expired during downloadElmZip (after node opened)
+    // The retry should use goto(captured #/clusters/<id> URL), not openEdgeNode
+    const gotoCallIdx = calls.findIndex(c => c.goto && c.goto === capturedUrl);
+    assert.ok(gotoCallIdx >= 0, `Should call goto with captured URL ${capturedUrl} for session-expiry reopen after node opened`);
+
+    // Verify: no openEdgeNode call for that retry (finding 4)
+    const openEdgeNodeAfterGoto = calls.slice(gotoCallIdx).filter(c => c.method === 'openEdgeNode');
+    assert.equal(openEdgeNodeAfterGoto.length, 0, 'openEdgeNode should not be called for retry after node opened (should use goto)');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

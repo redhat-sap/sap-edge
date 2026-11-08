@@ -26,13 +26,24 @@ export async function withLogin(page, steps, fn, { waitForLogin, reopen }) {
   }
 }
 
-async function pollCellStatuses({ page, steps, cells, clusterName, statusReader, isComplete, waitForLogin, reopenNode, pollMs, timeoutMs, flowName, onRound }) {
+async function pollCellStatuses({ page, steps, cells, clusterName, statusReader, isComplete, isPending, waitForLogin, reopenNode, pollMs, timeoutMs, flowName, onRound }) {
   const startTime = Date.now();
   let complete = false;
+  let lastStatuses = null;
 
   while (!complete) {
     if (Date.now() - startTime > timeoutMs) {
-      const pending = cells.filter((_, i) => !isComplete(cells, null, i)).map(cell => cell.deployment).join(', ');
+      // Compute pending cells from last round's statuses (finding 2)
+      const pending = cells.filter((cell, i) => {
+        if (isPending) {
+          return isPending(cells, lastStatuses, i);
+        } else if (isComplete) {
+          return !isComplete(cells, lastStatuses || [], i);
+        } else {
+          // No way to determine pending - list all
+          return true;
+        }
+      }).map(cell => cell.deployment).join(', ');
       throw new SetupError(`${flowName} did not complete for all cells (${pending}) within timeout.`);
     }
 
@@ -45,6 +56,8 @@ async function pollCellStatuses({ page, steps, cells, clusterName, statusReader,
       const status = await withLogin(page, steps, () => statusReader(cell), { waitForLogin, reopen: reopenNode });
       statuses.push(status);
     }
+
+    lastStatuses = statuses;
 
     // Call per-round callback if provided (for custom logic like Prepared handling)
     if (onRound) {
@@ -150,7 +163,7 @@ export async function runDeployFlow(ctx) {
   if (state !== 'absent') {
     if (leftoverPolicy === 'delete') {
       // ROKS behavior: delete if IDs don't match or unknown
-      const existingId = await withLogin(page, steps, () => steps.edgeNodeId(page, clusterName), { waitForLogin, reopen });
+      const existingId = await withLogin(page, steps, () => steps.edgeNodeId(page, clusterName), { waitForLogin, reopen: reopenNode });
 
       if (clusterEdgeNodeId === 'unknown') {
         throw new SetupError(`Cannot verify that the existing Edge Node ${clusterName} belongs to this cluster; not deleting it. Continue manually.`);
@@ -158,13 +171,13 @@ export async function runDeployFlow(ctx) {
 
       if (!clusterEdgeNodeId || normalizeId(existingId) !== normalizeId(clusterEdgeNodeId)) {
         log(`Leftover Edge Node detected (existing ID: ${existingId}, cluster ID: ${clusterEdgeNodeId}), deleting...`);
-        await withLogin(page, steps, () => steps.removeEdgeNode(page, { clusterName }), { waitForLogin, reopen });
+        await withLogin(page, steps, () => steps.removeEdgeNode(page, { clusterName }), { waitForLogin, reopen: reopenNode });
         state = 'absent';
       }
     } else if (leftoverPolicy === 'hand-over') {
       // HCP behavior: only resume if node matches record
       const record = await readNodeRecord();
-      const existingElmId = await withLogin(page, steps, () => steps.edgeNodeElmId(page), { waitForLogin, reopen });
+      const existingElmId = await withLogin(page, steps, () => steps.edgeNodeElmId(page), { waitForLogin, reopen: reopenNode });
 
       if (!record || normalizeId(record.elmId) !== normalizeId(existingElmId)) {
         throw new SetupError(`Edge Node ${clusterName} exists but does not match the ownership record. Cannot proceed safely.`);
@@ -179,16 +192,16 @@ export async function runDeployFlow(ctx) {
 
   // Step 5: Add edge node if absent
   if (state === 'absent') {
-    await withLogin(page, steps, () => steps.addEdgeNode(page, { clusterName, registry: inputs.registry, highAvailability: inputs.highAvailability }), { waitForLogin, reopen });
+    await withLogin(page, steps, () => steps.addEdgeNode(page, { clusterName, registry: inputs.registry, highAvailability: inputs.highAvailability }), { waitForLogin, reopen: reopenNode });
     state = 'added';
 
     // Record the node ownership
-    const elmId = await withLogin(page, steps, () => steps.edgeNodeElmId(page), { waitForLogin, reopen });
+    const elmId = await withLogin(page, steps, () => steps.edgeNodeElmId(page), { waitForLogin, reopen: reopenNode });
     await recordNode({ name: clusterName, elmId });
   }
 
   // Step 6: Download ELM zip and upload to S3
-  const elmZipPath = await withLogin(page, steps, () => steps.downloadElmZip(page, { clusterName, dir }), { waitForLogin, reopen });
+  const elmZipPath = await withLogin(page, steps, () => steps.downloadElmZip(page, { clusterName, dir }), { waitForLogin, reopen: reopenNode });
   await uploadBundle(s3, { file: elmZipPath, s3Prefix, component: 'elm' });
 
   // Step 7: Wait for pipeline task
@@ -203,7 +216,7 @@ export async function runDeployFlow(ctx) {
     } catch {}
     await writeFile(kubeconfigFile, kubeconfigContent, { mode: 0o600, flag: 'wx' });
 
-    const contextFile = await withLogin(page, steps, () => steps.setUpCloudConnector(page, { clusterName, kubeconfigFile, password, dir }), { waitForLogin, reopen });
+    const contextFile = await withLogin(page, steps, () => steps.setUpCloudConnector(page, { clusterName, kubeconfigFile, password, dir }), { waitForLogin, reopen: reopenNode });
 
     const elmPath = await fetchElm(dir);
 
@@ -222,11 +235,11 @@ export async function runDeployFlow(ctx) {
     }
 
     // R5: Check deployment status for idempotency
-    const status = await withLogin(page, steps, () => steps.eicDeploymentStatus(page, { clusterName, deployment: cell.deployment }), { waitForLogin, reopen });
+    const status = await withLogin(page, steps, () => steps.eicDeploymentStatus(page, { clusterName, deployment: cell.deployment }), { waitForLogin, reopen: reopenNode });
 
     if (!status) {
       // null: deploy from scratch
-      await withLogin(page, steps, () => steps.deployEic(page, { clusterName, cell }), { waitForLogin, reopen });
+      await withLogin(page, steps, () => steps.deployEic(page, { clusterName, cell }), { waitForLogin, reopen: reopenNode });
     } else if (status.operation === 'Initial' || status.operation === 'Prepared') {
       // Initial/Prepared: skip deployEic, will download zip and resume
     } else if (status.operation === 'Successful') {
@@ -239,10 +252,10 @@ export async function runDeployFlow(ctx) {
 
   // Step 11: Download EIC zip and upload to S3 for each cell (skip if Successful)
   for (const cell of cells) {
-    const status = await withLogin(page, steps, () => steps.eicDeploymentStatus(page, { clusterName, deployment: cell.deployment }), { waitForLogin, reopen });
+    const status = await withLogin(page, steps, () => steps.eicDeploymentStatus(page, { clusterName, deployment: cell.deployment }), { waitForLogin, reopen: reopenNode });
 
     if (!status || status.operation !== 'Successful') {
-      const eicZipPath = await withLogin(page, steps, () => steps.downloadEicZip(page, { clusterName, deployment: cell.deployment, dir }), { waitForLogin, reopen });
+      const eicZipPath = await withLogin(page, steps, () => steps.downloadEicZip(page, { clusterName, deployment: cell.deployment, dir }), { waitForLogin, reopen: reopenNode });
       await uploadBundle(s3, { file: eicZipPath, s3Prefix, component: cell.component });
     }
   }
@@ -252,10 +265,10 @@ export async function runDeployFlow(ctx) {
 
   // Step 13: Resume EIC deployment for each cell (skip if Successful)
   for (const cell of cells) {
-    const status = await withLogin(page, steps, () => steps.eicDeploymentStatus(page, { clusterName, deployment: cell.deployment }), { waitForLogin, reopen });
+    const status = await withLogin(page, steps, () => steps.eicDeploymentStatus(page, { clusterName, deployment: cell.deployment }), { waitForLogin, reopen: reopenNode });
 
     if (!status || status.operation !== 'Successful') {
-      await withLogin(page, steps, () => steps.resumeEicDeployment(page, { clusterName, deployment: cell.deployment }), { waitForLogin, reopen });
+      await withLogin(page, steps, () => steps.resumeEicDeployment(page, { clusterName, deployment: cell.deployment }), { waitForLogin, reopen: reopenNode });
     }
   }
 
@@ -267,6 +280,7 @@ export async function runDeployFlow(ctx) {
     clusterName,
     statusReader: (cell) => steps.eicDeploymentStatus(page, { clusterName, deployment: cell.deployment }),
     isComplete: (cells, statuses, i) => statuses && statuses[i] && statuses[i].operation === 'Successful',
+    isPending: (cells, statuses, i) => !statuses || !statuses[i] || statuses[i].operation !== 'Successful',
     waitForLogin,
     reopenNode,
     pollMs,
@@ -327,13 +341,14 @@ export async function runUpgradeFlow({ page, steps, inputs, cells, version, s3, 
     clusterName,
     statusReader: (cell) => steps.eicDeploymentStatus(page, { clusterName, deployment: cell.deployment }),
     isComplete: null, // Using onRound callback instead
+    isPending: (cells, statuses, i) => !statuses || !statuses[i] || statuses[i].operation !== 'Successful' || statuses[i].version !== version,
     waitForLogin,
     reopenNode,
     pollMs,
     timeoutMs,
     flowName: 'EIC upgrade',
     onRound: async (statuses) => {
-      // Handle Prepared status and check completion
+      // Handle Prepared status and check completion (finding 3: only Prepared and Successful allowed)
       for (let i = 0; i < cells.length; i++) {
         const cell = cells[i];
         const status = statuses[i];
@@ -359,8 +374,8 @@ export async function runUpgradeFlow({ page, steps, inputs, cells, version, s3, 
 
           // Mark as handled
           handledPrepared.add(cell.deployment);
-        } else if (status.operation !== 'Successful' && status.operation !== 'Prepared' && status.operation !== 'Initial') {
-          // Unknown operation
+        } else if (status.operation !== 'Successful' && status.operation !== 'Prepared') {
+          // Unknown operation (including Initial, null, or any unknown text) - finding 3
           throw new SetupError(`EIC deployment ${cell.deployment} has unknown operation ${status.operation}; continue manually`);
         }
       }
@@ -440,6 +455,7 @@ export async function runTeardownFlow({ page, steps, inputs, cells, readNodeReco
     clusterName,
     statusReader: (cell) => steps.eicDeploymentStatus(page, { clusterName, deployment: cell.deployment }),
     isComplete: (cells, statuses, i) => statuses && statuses[i] === null,
+    isPending: (cells, statuses, i) => !statuses || statuses[i] !== null,
     waitForLogin,
     reopenNode,
     pollMs,
