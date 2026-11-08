@@ -155,52 +155,65 @@ test('notifications_dialog_declined', async () => {
 test('artifact_deployed_to_runtime_profile', async () => {
   const page = await browser.newPage();
   page.setDefaultTimeout(3000);
+  const requestedUrls = [];
   try {
-    await page.goto('about:blank#/shell/design/contentpackage/APIMUsecases?section=ARTIFACTS');
-    await page.setContent(`
-      <style>
-        div, button, section { min-height: 20px; padding: 5px; display: block; }
-      </style>
-      <section>
-        <h2 aria-label="Artifacts (2)">Artifacts (2)</h2>
-        <div id="artifact-row">Item Selection ipfilterAPI Flow ...</div>
-      </section>
-      <button aria-label="Actions">Actions</button>
-      <button id="deploy-option">Deploy</button>
-      <div id="deploy--runtimeProfile-arrow" role="combobox" style="display: none">
-        <div class="list" hidden>
-          <div>Edge Integration Cell - pr-1-eic-1</div>
-          <div>Edge Integration Cell - pr-1-eic-2</div>
+    // Serve fixture HTML for the package page
+    await page.route('https://tenant.test/**', (route) => {
+      const url = route.request().url();
+      requestedUrls.push(url);
+      const fixtureHtml = `
+        <style>
+          div, button, section { min-height: 20px; padding: 5px; display: block; }
+        </style>
+        <section>
+          <h2 aria-label="Artifacts (2)">Artifacts (2)</h2>
+          <div id="artifact-row">Item Selection ipfilterAPI Flow ...</div>
+        </section>
+        <button aria-label="Actions">Actions</button>
+        <button id="deploy-option">Deploy</button>
+        <div id="deploy--runtimeProfile-arrow" role="combobox" style="display: none">
+          <div class="list" hidden>
+            <div>Edge Integration Cell - pr-1-eic-1</div>
+            <div>Edge Integration Cell - pr-1-eic-2</div>
+          </div>
         </div>
-      </div>
-      <button id="deploy-btn" style="display: none">Deploy</button>
-      <output id="deployed-to"></output>
-      <script>
-        document.getElementById('deploy-option').onclick = () => {
-          document.getElementById('deploy-option').style.display = 'none';
-          document.getElementById('deploy--runtimeProfile-arrow').style.display = 'block';
-          document.getElementById('deploy-btn').style.display = 'block';
-        };
-
-        document.getElementById('deploy--runtimeProfile-arrow').onclick = () => {
-          const list = document.querySelector('#deploy--runtimeProfile-arrow .list');
-          list.hidden = !list.hidden;
-        };
-
-        document.querySelectorAll('#deploy--runtimeProfile-arrow .list div').forEach(div => {
-          div.onclick = () => {
-            document.getElementById('deployed-to').textContent = div.textContent;
-            document.querySelector('#deploy--runtimeProfile-arrow .list').hidden = true;
+        <button id="deploy-btn" style="display: none">Deploy</button>
+        <output id="deployed-to"></output>
+        <script>
+          document.getElementById('deploy-option').onclick = () => {
+            document.getElementById('deploy-option').style.display = 'none';
+            document.getElementById('deploy--runtimeProfile-arrow').style.display = 'block';
+            document.getElementById('deploy-btn').style.display = 'block';
           };
-        });
 
-        document.getElementById('deploy-btn').onclick = () => {
-          document.getElementById('deployed-to').textContent += '|deployed';
-        };
-      </script>
-    `);
+          document.getElementById('deploy--runtimeProfile-arrow').onclick = () => {
+            const list = document.querySelector('#deploy--runtimeProfile-arrow .list');
+            list.hidden = !list.hidden;
+          };
+
+          document.querySelectorAll('#deploy--runtimeProfile-arrow .list div').forEach(div => {
+            div.onclick = () => {
+              document.getElementById('deployed-to').textContent = div.textContent;
+              document.querySelector('#deploy--runtimeProfile-arrow .list').hidden = true;
+            };
+          });
+
+          document.getElementById('deploy-btn').onclick = () => {
+            document.getElementById('deployed-to').textContent += '|deployed';
+          };
+        </script>
+      `;
+      route.fulfill({ contentType: 'text/html', body: fixtureHtml });
+    });
+
+    // Start on a real origin
+    await page.goto('https://tenant.test/shell/home');
 
     await isPages.deployArtifact(page, { pkg: 'APIMUsecases', artifact: 'ipfilterAPI', deployment: 'pr-1-eic-2' });
+
+    // Assert the package URL was requested
+    assert.ok(requestedUrls.some(url => url.includes('/shell/design/contentpackage/APIMUsecases?section=ARTIFACTS')),
+      'Expected package URL to be requested');
 
     const deployed = await page.locator('#deployed-to').innerText();
     assert.match(deployed, /Edge Integration Cell - pr-1-eic-2/);
@@ -211,21 +224,34 @@ test('artifact_deployed_to_runtime_profile', async () => {
 test('artifact_states_parsed', async () => {
   const page = await browser.newPage();
   page.setDefaultTimeout(3000);
+  const requestedUrls = [];
   try {
-    const encodedPath = encodeURIComponent('{"edge":{"runtimeLocationId":"pr1eic2"}}');
-    await page.goto(`about:blank#/shell/monitoring/Overview/${encodedPath}`);
-    await page.setContent(`
-      <div id="tile">All4Started</div>
-      <div role="grid">
-        <div>ipfilterAPI Started API Last Modified: 2026-11-03</div>
-        <div>testAPI Started API Last Modified: 2026-11-03</div>
-        <div>Arp_https Started Integration Flow Last Modified: 2026-11-03</div>
-        <div>SLV_FLOW_ELSTER Started Integration Flow Last Modified: 2026-11-03</div>
-      </div>
-      <button>Reload content</button>
-    `);
+    // Serve fixture HTML for the monitoring page
+    await page.route('https://tenant.test/**', (route) => {
+      const url = route.request().url();
+      requestedUrls.push(url);
+      const fixtureHtml = `
+        <div id="tile">All4Started</div>
+        <div role="grid">
+          <div>ipfilterAPI Started API Last Modified: 2026-11-03</div>
+          <div>testAPI Started API Last Modified: 2026-11-03</div>
+          <div>Arp_https Started Integration Flow Last Modified: 2026-11-03</div>
+          <div>SLV_FLOW_ELSTER Started Integration Flow Last Modified: 2026-11-03</div>
+        </div>
+        <button>Reload content</button>
+      `;
+      route.fulfill({ contentType: 'text/html', body: fixtureHtml });
+    });
+
+    // Start on a real origin
+    await page.goto('https://tenant.test/shell/home');
 
     const states = await isPages.artifactStates(page, { deployment: 'pr-1-eic-2' });
+
+    // Assert the monitoring URL was requested with the runtime location id
+    const expectedPath = '/shell/monitoring/Overview/' + encodeURIComponent('{"edge":{"runtimeLocationId":"pr1eic2"}}');
+    assert.ok(requestedUrls.some(url => url.includes(expectedPath)),
+      `Expected monitoring URL with runtime location id to be requested: ${expectedPath}`);
 
     assert.deepEqual(states, {
       ipfilterAPI: 'Started',
