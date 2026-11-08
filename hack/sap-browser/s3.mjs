@@ -54,8 +54,8 @@ export async function uploadBundle(s3, { file, s3Prefix, component }) {
   if (!/^restricted-resources-[A-Za-z0-9_.-]+\.zip$/.test(name)) {
     throw new SetupError('Bundle filename must match restricted-resources-*.zip pattern.');
   }
-  if (!['elm', 'edge-icell'].includes(component)) {
-    throw new SetupError('Component must be either "elm" or "edge-icell".');
+  if (!/^(elm|edge-icell(-[1-9][0-9]?)?)$/.test(component)) {
+    throw new SetupError('Component must match /^(elm|edge-icell(-[1-9][0-9]?)?)$/.');
   }
   const key = `${s3Prefix}${component}/${name}`;
   await s3.put(file, key);

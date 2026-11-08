@@ -168,3 +168,25 @@ test('upload_bundle_rejects_other_names', async () => {
     }
   );
 });
+
+test('upload_bundle_accepts_cell_components', async () => {
+  const mockS3 = { put: async () => {} };
+  // Valid cell components with numbers 1-99
+  for (const component of ['edge-icell-1', 'edge-icell-2', 'edge-icell-10', 'edge-icell-99']) {
+    await uploadBundle(mockS3, { file: '/tmp/restricted-resources-valid.zip', s3Prefix: 'prefix/', component });
+  }
+});
+
+test('upload_bundle_rejects_bad_component', async () => {
+  const mockS3 = { put: async () => {} };
+  // Invalid cell components
+  for (const component of ['edge-icell-x', 'edge-icell-0', 'edge-icell-100', 'edge-icell-01', 'elm-1']) {
+    await assert.rejects(
+      uploadBundle(mockS3, { file: '/tmp/restricted-resources-valid.zip', s3Prefix: 'prefix/', component }),
+      (err) => {
+        assert.equal(err.name, 'SetupError');
+        return true;
+      }
+    );
+  }
+});

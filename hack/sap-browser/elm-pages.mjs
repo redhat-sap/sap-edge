@@ -56,6 +56,10 @@ export const elmPages = {
     return match[1];
   },
 
+  edgeNodeId(page, clusterName) {
+    notMapped('edgeNodeId');
+  },
+
   async openEdgeNode(page, clusterName) {
     const table = page.getByRole('grid', { name: 'All Edge Nodes', exact: true });
     await table.getByText(clusterName, { exact: true }).click();
