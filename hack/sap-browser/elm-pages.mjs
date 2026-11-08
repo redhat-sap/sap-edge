@@ -276,8 +276,9 @@ export const elmPages = {
     const allRows = await table.locator('div').allInnerTexts();
 
     for (const rowText of allRows) {
-      // Match deployment name exactly - use word boundary or space to prevent pr-1-eic-1 matching pr-1-eic-10
-      const deploymentPattern = new RegExp(`\\b${deployment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+      // Match deployment name exactly - use hyphen-aware boundaries to prevent pr-1-eic-1 matching pr-1-eic-1-services or pr-1-eic-10
+      const escapedDeployment = deployment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const deploymentPattern = new RegExp(`(?<![\\w-])${escapedDeployment}(?![\\w-])`);
       if (deploymentPattern.test(rowText)) {
         // Parse the row text to extract status, operation, and version
         // Format: "Running Object Status Entry successfully validated pr-1-eic-1 8.48.16 ... Last Operation Status : Successful"

@@ -1188,13 +1188,14 @@ test('status_matches_deployment_exactly', async () => {
     await page.setContent(`
       <div role="grid" aria-label="All Deployments">
         <div>Edge Lifecycle Management 1.65.0</div>
-        <div>Running Object Status Entry successfully validated pr-1-eic-1 8.48.16 Object Status Operations Navigation Last Operation Status : Successful</div>
         <div>Prepared Object Status Entry successfully validated pr-1-eic-1-services 8.48.17 Object Status Operations Navigation Last Operation Status : Prepared</div>
         <div>Initial Object Status pr-1-eic-10 8.48.18 Object Status Operations Navigation</div>
+        <div>Running Object Status Entry successfully validated pr-1-eic-1 8.48.16 Object Status Operations Navigation Last Operation Status : Successful</div>
       </div>
     `);
 
-    // Should match pr-1-eic-1 exactly, not pr-1-eic-10 or pr-1-eic-1-services
+    // Rows ordered: pr-1-eic-1-services, pr-1-eic-10, pr-1-eic-1 (exact row last)
+    // Should match pr-1-eic-1 exactly (from last row), not pr-1-eic-10 or pr-1-eic-1-services
     const status1 = await elmPages.eicDeploymentStatus(page, { clusterName: 'hcp-x', deployment: 'pr-1-eic-1' });
     assert.deepEqual(status1, { operation: 'Successful', status: 'Running', version: '8.48.16' });
 
