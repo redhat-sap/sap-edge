@@ -1331,7 +1331,8 @@ spec:
 
     # Optional teardown session after approval (second login): delete the EIC
     # deployment and the Edge Node this run created in ELM.
-    # teardown-hosted-cluster runs after it whatever its outcome.
+    # teardown-hosted-cluster runs after it whatever its outcome. With
+    # skipTeardown the cluster stays, and so do its ELM entries.
     - name: sap-browser-teardown
       runAfter: [approval-teardown]
       when:
@@ -1341,6 +1342,9 @@ spec:
         - input: $(tasks.sap-browser-image.results.image)
           operator: notin
           values: [""]
+        - input: "$(params.skipTeardown)"
+          operator: in
+          values: ["false"]
       taskRef: { name: hcp-sap-browser }
       params:
         - name: mode

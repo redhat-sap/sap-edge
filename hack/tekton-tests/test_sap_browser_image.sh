@@ -40,6 +40,7 @@ make_workspace() {
 # Fresh state, fakes and workspace for one task run
 setup() {
   make_workspace
+  ALL_OUT=""
   FAKE_OC_LOG=$(tmp_file)
   FAKE_OC_RULES=$(tmp_file)
   FAKE_OC_STDIN_DIR=$(tmp_dir)
@@ -54,12 +55,14 @@ setup() {
   FAKE_SKOPEO_RC=0
   FAKE_SKOPEO_STDERR=""
   FAKE_BUILDAH_RC=0
-  export FAKE_SKOPEO_RC FAKE_SKOPEO_STDERR FAKE_BUILDAH_RC
+  FAKE_BUILDAH_PUSH_RC=0
+  export FAKE_SKOPEO_RC FAKE_SKOPEO_STDERR FAKE_BUILDAH_RC FAKE_BUILDAH_PUSH_RC
   REGISTRY_USERNAME="${ROBOT_USER}"
   REGISTRY_PASSWORD="${ROBOT_PASSWORD}"
 }
 
-# Fake skopeo and buildah: log the call; exit codes from FAKE_SKOPEO_RC / FAKE_BUILDAH_RC
+# Fake skopeo and buildah: log the call; exit codes from FAKE_SKOPEO_RC,
+# FAKE_BUILDAH_RC (build) and FAKE_BUILDAH_PUSH_RC (push)
 FAKE_TOOLS_DIR=$(tmp_dir)
 for TOOL in skopeo buildah; do
   cat > "${FAKE_TOOLS_DIR}/${TOOL}" <<'EOF'
@@ -69,6 +72,9 @@ echo "${TOOL} $*" >> "${FAKE_TOOL_LOG}"
 if [[ "${TOOL}" == "skopeo" ]]; then
   [[ -z "${FAKE_SKOPEO_STDERR}" ]] || echo "${FAKE_SKOPEO_STDERR}" >&2
   exit "${FAKE_SKOPEO_RC}"
+fi
+if [[ " $* " == *" push "* ]]; then
+  exit "${FAKE_BUILDAH_PUSH_RC}"
 fi
 exit "${FAKE_BUILDAH_RC}"
 EOF
@@ -109,6 +115,7 @@ run_step() {
 }
 
 # Run every step in order like the TaskRun: stop at the first failing step
+# (none may fail: a failure only empties the result)
 run_all() {
   local STEP
   ALL_OUT=""
@@ -128,6 +135,21 @@ expect_success() {
 
 result() {
   cat "${RESULTS_DIR}/$1" 2>/dev/null || true
+}
+
+# A failure never fails the run: every step exits 0, the result is written and
+# empty (the browser tasks are skipped), and the log says so
+expect_no_image() {
+  local WHAT="$1"
+  if [[ "${TASK_RC}" -ne 0 ]]; then
+    echo "${ALL_OUT:-${TASK_OUT}}"
+    fail "${WHAT}: the task must exit 0, got ${TASK_RC}"
+  fi
+  [[ -f "${RESULTS_DIR}/image" ]] || fail "${WHAT}: image result not written"
+  [[ -z "$(result image)" ]] || fail "${WHAT}: image should be empty, got '$(result image)'"
+  [[ -f "${STATE_DIR}/failed" ]] || fail "${WHAT}: later steps are not told to skip"
+  grep -qF "No SAP browser runner image: the browser tasks are skipped and the run continues on the manual path" <<< "${ALL_OUT:-${TASK_OUT}}" \
+    || { echo "${ALL_OUT:-${TASK_OUT}}"; fail "${WHAT}: manual path not announced"; }
 }
 
 # Expected tag: first 12 hex of sha256 over the sorted "sha256  path" lines
@@ -273,12 +295,17 @@ echo "✅ PASS: given_image_passes_through"
 echo ""
 echo "Test: tag_from_content_hash"
 echo "--------------------------------------------"
+candidate() {
+  cat "${STATE_DIR}/candidate" 2>/dev/null || true
+}
 setup
 run_step compute-tag
 expect_success
 WANT=$(expected_image)
-[[ "$(result image)" =~ ^${REPOSITORY}:sap-browser-[0-9a-f]{12}$ ]] || fail "unexpected image '$(result image)'"
-[[ "$(result image)" == "${WANT}" ]] || { echo "${TASK_OUT}"; fail "image should be '${WANT}', got '$(result image)'"; }
+[[ "$(candidate)" =~ ^${REPOSITORY}:sap-browser-[0-9a-f]{12}$ ]] || fail "unexpected image '$(candidate)'"
+[[ "$(candidate)" == "${WANT}" ]] || { echo "${TASK_OUT}"; fail "image should be '${WANT}', got '$(candidate)'"; }
+# Not the result yet: only an image in the registry (checked or pushed and pulled) is
+[[ -f "${RESULTS_DIR}/image" && -z "$(result image)" ]] || fail "compute-tag must leave the result empty, got '$(result image)'"
 FIRST="${WANT}"
 # Untracked files and files outside the covered paths do not change the tag
 printf 'scratch\n' > "${WS}/hack/sap-browser/untracked.txt"
@@ -286,25 +313,25 @@ printf 'echo changed\n' > "${WS}/hack/other/script.sh"
 printf '{"name": "changed"}\n' > "${WS}/package.json"
 run_step compute-tag
 expect_success
-[[ "$(result image)" == "${FIRST}" ]] || fail "untracked or uncovered files changed the tag: '$(result image)'"
+[[ "$(candidate)" == "${FIRST}" ]] || fail "untracked or uncovered files changed the tag: '$(candidate)'"
 # A covered file changes the tag
 printf 'console.log("flow v2")\n' > "${WS}/hack/sap-browser/elm-flow.mjs"
 run_step compute-tag
 expect_success
-[[ "$(result image)" != "${FIRST}" ]] || fail "a change in hack/sap-browser must change the tag"
-[[ "$(result image)" == "$(expected_image)" ]] || fail "image should be '$(expected_image)', got '$(result image)'"
+[[ "$(candidate)" != "${FIRST}" ]] || fail "a change in hack/sap-browser must change the tag"
+[[ "$(candidate)" == "$(expected_image)" ]] || fail "image should be '$(expected_image)', got '$(candidate)'"
 printf '{"lockfileVersion": 3, "x": 1}\n' > "${WS}/package-lock.json"
-SECOND="$(result image)"
+SECOND="$(candidate)"
 run_step compute-tag
 expect_success
-[[ "$(result image)" != "${SECOND}" ]] || fail "a change in package-lock.json must change the tag"
+[[ "$(candidate)" != "${SECOND}" ]] || fail "a change in package-lock.json must change the tag"
 # The repository is validated (it ends up in a Pod manifest)
 setup
 REPOSITORY_SAVED="${REPOSITORY}"
 REPOSITORY='quay.example.com/x y'
 run_step compute-tag
 REPOSITORY="${REPOSITORY_SAVED}"
-[[ "${TASK_RC}" -ne 0 ]] || fail "an invalid repository must fail the task"
+expect_no_image "invalid repository"
 grep -qF "Invalid repository" <<< "${TASK_OUT}" || { echo "${TASK_OUT}"; fail "repository error not named"; }
 echo "✅ PASS: tag_from_content_hash"
 
@@ -379,28 +406,44 @@ if errors:
 PY
 grep -qF "started on this cluster" <<< "${ALL_OUT}" || { echo "${ALL_OUT}"; fail "pull check success not printed"; }
 no_secrets_leaked
-# A failed build fails the task before the push and the pull check
+echo "✅ PASS: missing_tag_builds_pushes_and_pull_checks"
+
+# Test case: build_or_push_error_skips_browser
+# A failed build or push leaves no image (no push, no pull check after it)
+echo ""
+echo "Test: build_or_push_error_skips_browser"
+echo "--------------------------------------------"
 setup
 FAKE_SKOPEO_RC=1
 FAKE_SKOPEO_STDERR="manifest unknown"
 FAKE_BUILDAH_RC=1
 run_all
-[[ "${TASK_RC}" -ne 0 ]] || fail "a failed build must fail the task"
+expect_no_image "failed build"
+grep -qF "Could not build" <<< "${ALL_OUT}" || { echo "${ALL_OUT}"; fail "build error not reported"; }
 ! grep -q "^buildah .* push " "${FAKE_TOOL_LOG}" || fail "no push after a failed build"
 [[ ! -s "${FAKE_OC_LOG}" ]] || fail "no pull check after a failed build"
-echo "✅ PASS: missing_tag_builds_pushes_and_pull_checks"
+setup
+FAKE_SKOPEO_RC=1
+FAKE_SKOPEO_STDERR="manifest unknown"
+FAKE_BUILDAH_PUSH_RC=1
+run_all
+expect_no_image "failed push"
+grep -qF "Could not push" <<< "${ALL_OUT}" || { echo "${ALL_OUT}"; fail "push error not reported"; }
+[[ ! -s "${FAKE_OC_LOG}" ]] || fail "no pull check after a failed push"
+no_secrets_leaked
+echo "✅ PASS: build_or_push_error_skips_browser"
 
-# Test case: check_error_fails
-# A registry error other than a missing tag (certificate, credentials) fails
-# the task instead of starting a long build that cannot be pushed
+# Test case: check_error_skips_browser
+# A registry error other than a missing tag (certificate, credentials) leaves
+# no image instead of starting a long build that cannot be pushed
 echo ""
-echo "Test: check_error_fails"
+echo "Test: check_error_skips_browser"
 echo "--------------------------------------------"
 setup
 FAKE_SKOPEO_RC=1
 FAKE_SKOPEO_STDERR="pinging container registry ${REGISTRY_HOST}: Get \"https://${REGISTRY_HOST}/v2/\": tls: failed to verify certificate: x509: certificate signed by unknown authority"
 run_all
-[[ "${TASK_RC}" -ne 0 ]] || fail "a registry error must fail the task"
+expect_no_image "registry error"
 grep -qF "Could not check" <<< "${ALL_OUT}" || { echo "${ALL_OUT}"; fail "check error not reported"; }
 grep -qF "x509" <<< "${ALL_OUT}" || { echo "${ALL_OUT}"; fail "skopeo error not shown"; }
 ! grep -q "^buildah" "${FAKE_TOOL_LOG}" || fail "no build after a registry error"
@@ -408,14 +451,14 @@ grep -qF "x509" <<< "${ALL_OUT}" || { echo "${ALL_OUT}"; fail "skopeo error not 
 setup
 REGISTRY_PASSWORD=""
 run_all
-[[ "${TASK_RC}" -ne 0 ]] || fail "missing robot credentials must fail the task"
+expect_no_image "missing robot credentials"
 grep -qF "eic-quay-robot" <<< "${ALL_OUT}" || { echo "${ALL_OUT}"; fail "the push Secret is not named"; }
 [[ ! -s "${FAKE_TOOL_LOG}" ]] || fail "no registry call without credentials: $(cat "${FAKE_TOOL_LOG}")"
-echo "✅ PASS: check_error_fails"
+echo "✅ PASS: check_error_skips_browser"
 
-# Test case: pull_error_fails_with_hint
+# Test case: pull_error_skips_browser_with_hint
 echo ""
-echo "Test: pull_error_fails_with_hint"
+echo "Test: pull_error_skips_browser_with_hint"
 echo "--------------------------------------------"
 for REASON in ErrImagePull ImagePullBackOff; do
   setup
@@ -423,12 +466,12 @@ for REASON in ErrImagePull ImagePullBackOff; do
   FAKE_SKOPEO_STDERR="manifest unknown"
   write_pod_rules "Pending|${REASON}|Failed to pull image: tls: failed to verify certificate: x509: certificate signed by unknown authority"
   run_all
-  [[ "${TASK_RC}" -ne 0 ]] || fail "${REASON}: a pull error must fail the task"
+  expect_no_image "${REASON}"
   grep -qF "eic cannot pull from its Quay (certificate trust?)" <<< "${ALL_OUT}" || { echo "${ALL_OUT}"; fail "${REASON}: hint not printed"; }
   grep -qF "x509: certificate signed by unknown authority" <<< "${ALL_OUT}" || { echo "${ALL_OUT}"; fail "${REASON}: pull error not shown"; }
   assert_called "^delete ${POD} --ignore-not-found --wait=false$"
 done
-echo "✅ PASS: pull_error_fails_with_hint"
+echo "✅ PASS: pull_error_skips_browser_with_hint"
 
 echo ""
 echo "============================================"

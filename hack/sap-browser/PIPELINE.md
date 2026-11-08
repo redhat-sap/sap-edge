@@ -64,7 +64,8 @@ The task `hcp-sap-browser` runs one phase per session:
   The single-EIC pipeline does not run this phase yet.
 - `teardown` (`sap-browser-teardown`, after `approval-teardown`, second login):
   delete the EIC deployment and remove the Edge Node, but only an Edge Node
-  this run created; any other is handed over, never deleted.
+  this run created; any other is handed over, never deleted. Skipped with
+  `skipTeardown: "true"`: the cluster stays, and so do its ELM entries.
 
 Proxy runs (Secret `<hubClusterName>-proxy-config` exists) hand over at "Add
 Edge Node": add it by hand with the proxy settings.
@@ -81,8 +82,12 @@ In the pipeline namespace (`sap-elm-eic-validation` on `eic`):
    Before the first run, the repository `sap_elm_eic/sap-browser` must exist and
    be public on eic's Quay (pulls need no pull secret), and the robot account of
    the Secret `eic-quay-robot` needs Write on it (its Creator role does not cover
-   a repository someone else created). The nodes must trust the Quay CA. To use
-   another image, set `sapBrowserImage`; nothing is built then.
+   a repository someone else created). The nodes must trust the Quay CA. If
+   the image cannot be provided (tag check, build, push or pull check fails),
+   the task logs why, its result stays empty and the run goes on without the
+   browser (both sessions skipped, the ELM steps by hand); it never fails the
+   run. To use another image, set `sapBrowserImage`; nothing is built or
+   checked then.
 2. **The two Quay Secrets `<hub>-quay-robot`**, one per hub: `eli-quay-robot`
    and `eic-quay-robot`, with the keys `registry` (the "Local Container Registry
    URL" for "Add Edge Node", for example
@@ -123,9 +128,9 @@ image), npm, Debian packages and the Playwright browser download; the running
 task installs nothing. The helper code comes from the run's checkout
 (`hack/sap-browser`), only its dependencies from the image.
 
-Failures before the browser starts (an image that cannot be pulled, or no
-ServiceAccount because `hcp-runner-rbac.yaml` was not applied) fail the task's
-pod and stop the run, unlike failures inside the browser. A pod-level failure
+Failures before the browser starts (a `sapBrowserImage` that cannot be pulled,
+or no ServiceAccount because `hcp-runner-rbac.yaml` was not applied) fail the
+task's pod and stop the run, unlike failures inside the browser. A pod-level failure
 of `sap-browser-teardown` also skips `teardown-hosted-cluster`: delete the
 hosted cluster by hand then.
 

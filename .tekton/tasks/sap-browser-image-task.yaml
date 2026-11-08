@@ -19,8 +19,11 @@ spec:
     hack/sap-browser/Containerfile with the repository root as context and
     pushes it with the Quay robot account of the Secret pushSecretName (keys
     username, password, ca.crt), then a short-lived Pod in the pipeline
-    namespace must pull and start it: a pull error (certificate trust of the
-    cluster nodes) fails the task. Runs as the OpenShift Pipelines `pipeline`
+    namespace must pull and start it. The task never fails the run: when the
+    tag check, the build, the push or the pull check (e.g. certificate trust
+    of the cluster nodes) fails, it logs the reason, the result is empty and
+    every step exits 0, so the browser tasks are skipped and the run continues
+    on the manual path. Runs as the OpenShift Pipelines `pipeline`
     ServiceAccount (pipelines-scc allows buildah's SETFCAP); the pipeline runs
     it without a `when`.
   params:
@@ -44,7 +47,7 @@ spec:
       description: "Repository checked out by git-clone (build context)"
   results:
     - name: image
-      description: "Runner image for the browser tasks (empty when mode is disabled)"
+      description: "Runner image for the browser tasks: empty when mode is disabled or the image could not be provided"
   volumes:
     # Shared between the steps: the candidate image, the build marker, the registry authfile
     - name: build-state
@@ -79,6 +82,24 @@ spec:
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
+
+        # Any failure of this step: no image, the browser tasks are skipped and
+        # the run continues on the manual path (this task never fails the run)
+        no_image() {
+          local rc=$?
+          trap - EXIT
+          if ((rc != 0)); then
+            : > "${STATE_DIR}/failed"
+            printf '' > "$(results.image.path)"
+            echo "⚠️  No SAP browser runner image: the browser tasks are skipped and the run continues on the manual path" >&2
+          fi
+          exit 0
+        }
+        trap no_image EXIT
+
+        # The result stays empty unless an image is given, already in the
+        # registry (check-tag) or built and pull-checked (pull-check)
+        printf '' > "$(results.image.path)"
 
         # The pipeline runs this task without a `when` (later tasks gate on
         # the result): with the browser off it does nothing.
@@ -123,7 +144,6 @@ spec:
         IMAGE="${IMAGE_REPOSITORY}:sap-browser-${CONTENT_HASH}"
         echo "✅ Runner image for this revision: ${IMAGE}"
         printf '%s' "${IMAGE}" > "${STATE_DIR}/candidate"
-        printf '%s' "${IMAGE}" > "$(results.image.path)"
 
     - name: check-tag
       image: registry.redhat.io/rhel9/skopeo
@@ -153,10 +173,25 @@ spec:
         #!/usr/bin/env bash
         set -euo pipefail
 
-        if [[ ! -f "${STATE_DIR}/candidate" ]]; then
+        if [[ ! -f "${STATE_DIR}/candidate" || -f "${STATE_DIR}/failed" ]]; then
           echo "ℹ️  No image to build; nothing to check"
           exit 0
         fi
+
+        # Any failure of this step: no image, the browser tasks are skipped and
+        # the run continues on the manual path (this task never fails the run)
+        no_image() {
+          local rc=$?
+          trap - EXIT
+          if ((rc != 0)); then
+            : > "${STATE_DIR}/failed"
+            printf '' > "$(results.image.path)"
+            echo "⚠️  No SAP browser runner image: the browser tasks are skipped and the run continues on the manual path" >&2
+          fi
+          exit 0
+        }
+        trap no_image EXIT
+
         IMAGE=$(cat "${STATE_DIR}/candidate")
         REGISTRY_HOST="${IMAGE%%/*}"
         AUTH_FILE="${STATE_DIR}/auth.json"
@@ -182,6 +217,7 @@ spec:
         echo "🔍 Checking ${IMAGE}..."
         if skopeo inspect --raw --authfile "${AUTH_FILE}" --cert-dir "${REGISTRY_CERT_DIR}" "docker://${IMAGE}" > /dev/null 2> "${CHECK_ERROR}"; then
           echo "✅ ${IMAGE} is already in the registry; nothing to build"
+          printf '%s' "${IMAGE}" > "$(results.image.path)"
           exit 0
         fi
         if grep -qiE 'manifest unknown|name unknown|not found' "${CHECK_ERROR}"; then
@@ -222,16 +258,37 @@ spec:
         #!/usr/bin/env bash
         set -euo pipefail
 
-        if [[ ! -f "${STATE_DIR}/build" ]]; then
+        if [[ ! -f "${STATE_DIR}/build" || -f "${STATE_DIR}/failed" ]]; then
           echo "ℹ️  No build needed"
           exit 0
         fi
+
+        # Any failure of this step: no image, the browser tasks are skipped and
+        # the run continues on the manual path (this task never fails the run)
+        no_image() {
+          local rc=$?
+          trap - EXIT
+          if ((rc != 0)); then
+            : > "${STATE_DIR}/failed"
+            printf '' > "$(results.image.path)"
+            echo "⚠️  No SAP browser runner image: the browser tasks are skipped and the run continues on the manual path" >&2
+          fi
+          exit 0
+        }
+        trap no_image EXIT
+
         IMAGE=$(cat "${STATE_DIR}/candidate")
 
         echo "🔨 Building ${IMAGE} from hack/sap-browser/Containerfile..."
-        buildah --storage-driver=vfs build --file hack/sap-browser/Containerfile --tag "${IMAGE}" "$(workspaces.source.path)"
+        if ! buildah --storage-driver=vfs build --file hack/sap-browser/Containerfile --tag "${IMAGE}" "$(workspaces.source.path)"; then
+          echo "❌ Could not build ${IMAGE} (see the buildah output above)" >&2
+          exit 1
+        fi
         echo "📤 Pushing ${IMAGE}..."
-        buildah --storage-driver=vfs push --authfile "${STATE_DIR}/auth.json" --cert-dir "${REGISTRY_CERT_DIR}" "${IMAGE}" "docker://${IMAGE}"
+        if ! buildah --storage-driver=vfs push --authfile "${STATE_DIR}/auth.json" --cert-dir "${REGISTRY_CERT_DIR}" "${IMAGE}" "docker://${IMAGE}"; then
+          echo "❌ Could not push ${IMAGE}: the robot account of the push Secret needs Write on ${IMAGE%:*}" >&2
+          exit 1
+        fi
         echo "✅ Pushed ${IMAGE}"
 
     - name: pull-check
@@ -240,7 +297,7 @@ spec:
         #!/usr/bin/env bash
         set -euo pipefail
 
-        if [[ ! -f "${STATE_DIR}/build" ]]; then
+        if [[ ! -f "${STATE_DIR}/build" || -f "${STATE_DIR}/failed" ]]; then
           echo "ℹ️  No new image; no pull check"
           exit 0
         fi
@@ -251,11 +308,22 @@ spec:
         unset KUBECONFIG
         TMP_DIR=$(mktemp -d)
         POD=""
+        # Delete the Pod, then on any failure: no image, the browser tasks are
+        # skipped and the run continues on the manual path (this task never
+        # fails the run)
         cleanup() {
+          local rc=$?
+          trap - EXIT
           if [[ -n "${POD}" ]]; then
             oc delete "${POD}" --ignore-not-found --wait=false > /dev/null 2>&1 || true
           fi
           rm -rf "${TMP_DIR}"
+          if ((rc != 0)); then
+            : > "${STATE_DIR}/failed"
+            printf '' > "$(results.image.path)"
+            echo "⚠️  No SAP browser runner image: the browser tasks are skipped and the run continues on the manual path" >&2
+          fi
+          exit 0
         }
         trap cleanup EXIT
 
@@ -326,6 +394,7 @@ spec:
           case "${PHASE}" in
             Running | Succeeded)
               echo "✅ ${IMAGE} pulled and started on this cluster"
+              printf '%s' "${IMAGE}" > "$(results.image.path)"
               break
               ;;
             Failed)

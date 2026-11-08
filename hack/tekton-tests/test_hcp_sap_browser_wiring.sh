@@ -161,7 +161,8 @@ expected = {
     },
     "sap-browser-teardown": {
         "taskRef": "hcp-sap-browser",
-        "when": when_enabled,
+        # skipTeardown keeps the cluster, so its Edge Node and EIC stay too
+        "when": when_enabled + [{"input": "$(params.skipTeardown)", "operator": "in", "values": ["false"]}],
         "runAfter": {"approval-teardown"},
         "params": {**browser_params, "phase": "teardown"},
         "workspaces": helper_code_only,

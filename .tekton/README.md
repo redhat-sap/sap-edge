@@ -85,7 +85,7 @@ zips to upload.
 - `jira-add-comment-custom`: Update Jira tickets
 - `git-clone`: Clone repository
 - `manual-approval-gate`: Manual approval checkpoint
-- `sap-browser-image-task`: SAP browser runner image for the browser tasks: builds and pushes it to eic's Quay when its content-hash tag is missing (see [SAP browser runner image](#sap-browser-runner-image)); empty result when `sapBrowserMode` is disabled
+- `sap-browser-image-task`: SAP browser runner image for the browser tasks: builds and pushes it to eic's Quay when its content-hash tag is missing (see [SAP browser runner image](#sap-browser-runner-image)); empty result when `sapBrowserMode` is disabled or the image cannot be provided (the task never fails the run)
 
 ## Usage
 
@@ -413,11 +413,19 @@ When `skopeo inspect` does not find the tag, buildah builds
 the image. Then a short-lived Pod `sap-browser-pull-check-*` in the pipeline
 namespace runs the image with `/bin/true` and is deleted again. If the nodes
 cannot pull the image (`ErrImagePull`/`ImagePullBackOff`, typically x509), the
-task fails with "eic cannot pull from its Quay (certificate trust?)". The nodes
-must trust the CA of the Quay (`image.config.openshift.io/cluster`,
+log says "eic cannot pull from its Quay (certificate trust?)". The nodes must
+trust the CA of the Quay (`image.config.openshift.io/cluster`,
 `additionalTrustedCA`). For an existing tag there is no build and no pull
-check. Any other registry error at the check (x509, unauthorized) fails the
-task before the build.
+check. Any other registry error at the check (x509, unauthorized) stops before
+the build.
+
+**The task never fails the run.** On any failure (tag check, build, push,
+pull check, missing Secret keys) it logs the reason and "No SAP browser runner
+image: the browser tasks are skipped and the run continues on the manual
+path", leaves the result `image` empty and exits 0, so `sap-browser-deploy`
+and `sap-browser-teardown` are skipped by their `when` and you do the ELM
+steps by hand. The result is non-empty only for a given image, a tag already
+in the registry, or a pushed image that passed the pull check.
 
 **Build method:** a buildah step (`registry.redhat.io/rhel9/buildah`, chroot
 isolation, `--storage-driver=vfs`, an `emptyDir` on `/var/lib/containers`,
