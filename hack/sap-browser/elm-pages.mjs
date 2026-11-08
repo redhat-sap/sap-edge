@@ -111,7 +111,21 @@ export const elmPages = {
   async deployEic(page, { clusterName, cell }) {
     await page.getByRole('button', { name: 'Deploy Solution', exact: true }).click();
 
-    // Fill deployment name and version
+    // Handle solution: if provided and not empty, check if it's offered
+    if (cell.eic.solution) {
+      const solutionCombo = page.locator('[id$="--solutionsList-arrow"]');
+      await solutionCombo.click();
+      // Look for the solution in the dropdown list, not in the selected item
+      const solutionList = solutionCombo.locator('.list');
+      const solutionOption = solutionList.getByText(cell.eic.solution, { exact: true });
+      if (await solutionOption.count() === 0) {
+        throw new SetupError(`Solution ${cell.eic.solution} is not offered by ELM.`);
+      }
+      await solutionOption.click();
+    }
+    // If solution is empty, keep the preselected solution
+
+    // Fill deployment name
     await page.getByRole('textbox', { name: 'Deployment Name', exact: true }).fill(cell.deployment);
 
     // Handle version: if provided and not empty, check if it's offered
@@ -234,15 +248,17 @@ export const elmPages = {
 
     for (const rowText of allRows) {
       if (rowText.includes(deployment)) {
-        // Parse the row text to extract operation and version
+        // Parse the row text to extract status, operation, and version
         // Format: "Running Object Status Entry successfully validated pr-1-eic-1 8.48.16 ... Last Operation Status : Successful"
         // or: "Initial Object Status pr-1-eic-1 8.48.16 ..."
         const versionMatch = rowText.match(/(\d+\.\d+\.\d+)/);
-        const operationMatch = rowText.match(/Last Operation Status\s*:\s*(\w+)/i) || rowText.match(/^(\w+)\s+Object Status/);
+        const statusMatch = rowText.match(/^(\w+)\s+Object Status/);
+        const operationMatch = rowText.match(/Last Operation Status\s*:\s*(\w+)/i);
 
-        if (versionMatch) {
+        if (versionMatch && statusMatch) {
           return {
-            operation: operationMatch ? operationMatch[1] : 'Unknown',
+            operation: operationMatch ? operationMatch[1] : statusMatch[1],
+            status: statusMatch[1],
             version: versionMatch[1],
           };
         }
