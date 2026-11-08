@@ -15,8 +15,8 @@ spec:
     edgelm-kubeconfig-generated-<cluster>, the run's credentials Secrets
     (eic-credentials-hcp-<cluster> with an empty cellCount,
     eic-credentials-hcp-<cluster>-eic-1..N otherwise) and the registry Secret
-    <hubClusterName>-quay-robot. Returns whether the run uses a proxy (Secret
-    <hubClusterName>-proxy-config exists) and the Edge Node ID label
+    <hubClusterName>-quay-robot. Returns whether the run uses a proxy (only
+    when proxySecretName is set and that Secret exists) and the Edge Node ID label
     (edgelm.sap.com/edge-node-id) of the edgelm namespace on the hosted cluster,
     read through the hub (empty string if the namespace or label is absent,
     "unknown" if it cannot be read). Does nothing when mode is disabled, so the
@@ -35,13 +35,17 @@ spec:
       default: ""
     - name: hubClusterName
       type: string
-      description: "Hub cluster name: names the Secrets <hubClusterName>-quay-robot and <hubClusterName>-proxy-config"
+      description: "Hub cluster name: names the Secret <hubClusterName>-quay-robot"
     - name: mode
       type: string
       description: "sapBrowserMode of the run: with disabled the task does nothing"
     - name: cellCount
       type: string
       description: "Number of EIC cells of the dedicated pipeline (empty: the single-EIC pipeline)"
+      default: ""
+    - name: proxySecretName
+      type: string
+      description: "Proxy Secret of a proxy run (for example <hubClusterName>-proxy-config); empty (default): no proxy, nothing is checked. A hub's proxy Secret alone does not make a run a proxy run"
       default: ""
   workspaces:
     - name: source
@@ -50,7 +54,7 @@ spec:
     - name: clusterEdgeNodeId
       description: "Edge Node ID label from the edgelm namespace on the hosted cluster (empty if absent, unknown if unreadable)"
     - name: proxyConfigured
-      description: "true when the Secret <hubClusterName>-proxy-config exists (or cannot be checked), else false"
+      description: "true when proxySecretName is set and that Secret exists (or cannot be checked), else false"
   steps:
     - name: grant-access-and-read-edge-node-id
       image: registry.access.redhat.com/ubi9/ubi
@@ -68,6 +72,8 @@ spec:
           value: "$(params.mode)"
         - name: CELL_COUNT
           value: "$(params.cellCount)"
+        - name: PROXY_SECRET_NAME
+          value: "$(params.proxySecretName)"
       script: |
         #!/usr/bin/env bash
         set -euo pipefail
@@ -102,7 +108,8 @@ spec:
         NAME_PATTERN='^[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
         [[ "${HOSTED_CLUSTER_NAME}" =~ ${NAME_PATTERN} ]] || fail "Invalid hostedClusterName '${HOSTED_CLUSTER_NAME}': lowercase letters, digits and hyphens only"
         [[ "${HOSTED_CLUSTER_NAMESPACE}" =~ ${NAME_PATTERN} ]] || fail "Invalid hostedClusterNamespace '${HOSTED_CLUSTER_NAMESPACE}'"
-        [[ "${HUB_CLUSTER_NAME}" =~ ${NAME_PATTERN} ]] || fail "Invalid hubClusterName '${HUB_CLUSTER_NAME}': it names the Secrets <hubClusterName>-quay-robot and <hubClusterName>-proxy-config"
+        [[ "${HUB_CLUSTER_NAME}" =~ ${NAME_PATTERN} ]] || fail "Invalid hubClusterName '${HUB_CLUSTER_NAME}': it names the Secret <hubClusterName>-quay-robot"
+        [[ -z "${PROXY_SECRET_NAME}" || "${PROXY_SECRET_NAME}" =~ ${NAME_PATTERN} ]] || fail "Invalid proxySecretName '${PROXY_SECRET_NAME}'"
         [[ "${CELL_COUNT}" =~ ^[1-9]?$ ]] || fail "Invalid cellCount '${CELL_COUNT}': empty (single EIC) or 1-9"
 
         # Install tools (jq, oc)
@@ -183,21 +190,27 @@ spec:
           echo "✅ Role and RoleBinding created"
         fi
 
-        # --- Proxy run: does <hubClusterName>-proxy-config exist? ---
+        # --- Proxy run: only when the run names a proxy Secret ---
+        # The hub's proxy Secret exists for its proxy test runs; most runs on
+        # that hub use no proxy, so its existence alone says nothing.
         echo ""
-        PROXY_SECRET="${HUB_CLUSTER_NAME}-proxy-config"
-        PROXY_RC=0
-        PROXY_OUTPUT=$(oc get secret "${PROXY_SECRET}" --ignore-not-found -o name 2>/dev/null) || PROXY_RC=$?
-        if [[ "${PROXY_RC}" -ne 0 ]]; then
-          # The browser hands over at "Add Edge Node" on a proxy run: safer than guessing "no proxy"
-          PROXY_CONFIGURED="true"
-          echo "⚠️  Could not check Secret ${PROXY_SECRET}; treating the run as a proxy run"
-        elif [[ -n "${PROXY_OUTPUT//[[:space:]]/}" ]]; then
-          PROXY_CONFIGURED="true"
-          echo "ℹ️  Secret ${PROXY_SECRET} exists: proxy run"
+        PROXY_SECRET="${PROXY_SECRET_NAME}"
+        PROXY_CONFIGURED="false"
+        if [[ -z "${PROXY_SECRET}" ]]; then
+          echo "ℹ️  No proxySecretName: no proxy"
         else
-          PROXY_CONFIGURED="false"
-          echo "ℹ️  Secret ${PROXY_SECRET} not found: no proxy"
+          PROXY_RC=0
+          PROXY_OUTPUT=$(oc get secret "${PROXY_SECRET}" --ignore-not-found -o name 2>/dev/null) || PROXY_RC=$?
+          if [[ "${PROXY_RC}" -ne 0 ]]; then
+            # The browser hands over at "Add Edge Node" on a proxy run: safer than guessing "no proxy"
+            PROXY_CONFIGURED="true"
+            echo "⚠️  Could not check Secret ${PROXY_SECRET}; treating the run as a proxy run"
+          elif [[ -n "${PROXY_OUTPUT//[[:space:]]/}" ]]; then
+            PROXY_CONFIGURED="true"
+            echo "ℹ️  Secret ${PROXY_SECRET} exists: proxy run"
+          else
+            echo "ℹ️  Secret ${PROXY_SECRET} not found: no proxy"
+          fi
         fi
         printf '%s' "${PROXY_CONFIGURED}" > "$(results.proxyConfigured.path)"
 

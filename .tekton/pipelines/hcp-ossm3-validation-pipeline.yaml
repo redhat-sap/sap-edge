@@ -339,8 +339,8 @@ spec:
           workspace: source
 
     # Grant the runner ServiceAccount get on this run's Secrets (per-run Role
-    # hcp-sap-browser-<hostedClusterName>, deleted by teardown-hosted-cluster),
-    # tell whether the run uses a proxy, and read the cluster's Edge Node ID
+    # hcp-sap-browser-<hostedClusterName>, deleted by teardown-hosted-cluster)
+    # and read the cluster's Edge Node ID
     # label before any zip of this run is applied (apply-elm-resources runs
     # after it; nothing to do when the browser is off)
     - name: sap-browser-access

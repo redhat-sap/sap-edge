@@ -35,6 +35,7 @@ setup() {
   RESULTS_DIR=$(tmp_dir)
   MODE=auto
   CELL_COUNT=""
+  PROXY_SECRET_NAME=""
   HUB_SECRET="${HUB}-kubeconfig"
 }
 
@@ -57,7 +58,7 @@ write_rules() {
 run_access() {
   export HOSTED_CLUSTER_NAME="${CLUSTER}" HOSTED_CLUSTER_NAMESPACE=clusters \
     HUB_KUBECONFIG_SECRET_NAME="${HUB_SECRET}" HUB_CLUSTER_NAME="${HUB}" \
-    SAP_BROWSER_MODE="${MODE}" CELL_COUNT
+    SAP_BROWSER_MODE="${MODE}" CELL_COUNT PROXY_SECRET_NAME
   TASK_CWD="${WS}" run_task "${TASK}" \
     --param hostedClusterName="${CLUSTER}" \
     --param hostedClusterNamespace=clusters \
@@ -65,6 +66,7 @@ run_access() {
     --param hubClusterName="${HUB}" \
     --param mode="${MODE}" \
     --param cellCount="${CELL_COUNT}" \
+    --param proxySecretName="${PROXY_SECRET_NAME}" \
     --workspace-dir source="${WS}" \
     --results-dir "${RESULTS_DIR}" \
     "$@"
@@ -121,6 +123,7 @@ expected = {
     "hubClusterName": MISSING,
     "mode": MISSING,
     "cellCount": "",
+    "proxySecretName": "",
 }
 if params.keys() != expected.keys():
     errors.append(f"params differ: {sorted(params)} vs {sorted(expected)}")
@@ -143,6 +146,7 @@ want_env = {
     "HUB_CLUSTER_NAME": "$(params.hubClusterName)",
     "SAP_BROWSER_MODE": "$(params.mode)",
     "CELL_COUNT": "$(params.cellCount)",
+    "PROXY_SECRET_NAME": "$(params.proxySecretName)",
 }
 for name, value in want_env.items():
     if env.get(name) != {"name": name, "value": value}:
@@ -349,31 +353,44 @@ expect_success
 assert_not_called "admin-kubeconfig"
 echo "✅ PASS: edge_node_id_unknown_on_read_error"
 
-# Test case: proxy_configured_when_secret_exists
+# Test case: proxy_only_when_named
+# A hub's proxy Secret exists for its proxy test runs only: without
+# proxySecretName the run uses no proxy and nothing is checked.
 echo ""
-echo "Test: proxy_configured_when_secret_exists"
+echo "Test: proxy_only_when_named"
 echo "--------------------------------------------"
 setup
 write_rules ""
 printf '%s\t%s\t%s\n' "get secret ${HUB}-proxy-config --ignore-not-found -o name" 0 "secret/${HUB}-proxy-config" >> "${FAKE_OC_RULES}"
 run_access_no_tools
 expect_success
-[[ "$(result proxyConfigured)" == "true" ]] || { echo "${TASK_OUT}"; fail "proxyConfigured should be 'true', got '$(result proxyConfigured)'"; }
-assert_called "^get secret ${HUB}-proxy-config --ignore-not-found -o name$"
-# Absent: false
+[[ "$(result proxyConfigured)" == "false" ]] || { echo "${TASK_OUT}"; fail "proxyConfigured should be 'false' without proxySecretName even if ${HUB}-proxy-config exists, got '$(result proxyConfigured)'"; }
+assert_not_called "proxy-config"
+# Named and present: true
 setup
 write_rules ""
+printf '%s\t%s\t%s\n' "get secret ${HUB}-proxy-config --ignore-not-found -o name" 0 "secret/${HUB}-proxy-config" >> "${FAKE_OC_RULES}"
+PROXY_SECRET_NAME="${HUB}-proxy-config"
+run_access_no_tools
+expect_success
+[[ "$(result proxyConfigured)" == "true" ]] || { echo "${TASK_OUT}"; fail "proxyConfigured should be 'true', got '$(result proxyConfigured)'"; }
+assert_called "^get secret ${HUB}-proxy-config --ignore-not-found -o name$"
+# Named but absent: false
+setup
+write_rules ""
+PROXY_SECRET_NAME="${HUB}-proxy-config"
 run_access_no_tools
 expect_success
 [[ "$(result proxyConfigured)" == "false" ]] || { echo "${TASK_OUT}"; fail "proxyConfigured should be 'false' without the Secret, got '$(result proxyConfigured)'"; }
-# Cannot be checked: true (the browser hands over at Add Edge Node rather than guessing)
+# Named but cannot be checked: true (the browser hands over at Add Edge Node rather than guessing)
 setup
 write_rules ""
 printf '%s\t%s\t%s\n' "get secret ${HUB}-proxy-config --ignore-not-found -o name" 1 "" >> "${FAKE_OC_RULES}"
+PROXY_SECRET_NAME="${HUB}-proxy-config"
 run_access_no_tools
 expect_success
 [[ "$(result proxyConfigured)" == "true" ]] || { echo "${TASK_OUT}"; fail "proxyConfigured should be 'true' when the Secret cannot be checked, got '$(result proxyConfigured)'"; }
-echo "✅ PASS: proxy_configured_when_secret_exists"
+echo "✅ PASS: proxy_only_when_named"
 
 # Test case: runner_rbac
 echo ""
