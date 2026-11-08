@@ -742,20 +742,3 @@ test('teardown_deletes', async () => {
   assert.equal(calls.find(c => c.method === 'deleteEdgeNode').clusterName, 'test-cluster');
 });
 
-test('stubs_say_not_mapped', async () => {
-  const methods = [
-    'finishEicDeployment',
-    'deleteEdgeNode',
-  ];
-
-  for (const method of methods) {
-    await assert.rejects(
-      async () => await elmPages[method]({}, {}),
-      (err) => err instanceof SetupError &&
-        err.message.includes('ELM screen step not mapped yet') &&
-        err.message.includes(method) &&
-        err.message.includes('sapBrowserMode inspect'),
-      `Method ${method} should throw correct stub error`
-    );
-  }
-});

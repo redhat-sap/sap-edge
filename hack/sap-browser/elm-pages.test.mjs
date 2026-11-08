@@ -953,3 +953,177 @@ test('status_null_when_absent', async () => {
     assert.equal(status, null);
   } finally { await page.close(); }
 });
+
+test('upgrade_selects_exact_version', async () => {
+  const page = await browser.newPage();
+  page.setDefaultTimeout(3000);
+  try {
+    await page.setContent(`
+      <div role="grid" aria-label="All Deployments">
+        <div id="row"><span>pr-1-eic-1</span> <span>8.48.16</span></div>
+      </div>
+      <button id="operations-label" aria-label="Operations" style="display: none">Operations</button>
+      <dialog id="operations-menu" style="display: none">
+        <div id="upgrade-option">Upgrade</div>
+      </dialog>
+      <section id="upgrade-wizard" style="display: none">
+        <div id="upgrade--versionsListUpgrade-list">
+          <div>8.49.11</div>
+          <div>8.49.10</div>
+        </div>
+        <button id="step1">Next Step</button>
+        <button id="step2" style="display: none">Next Step</button>
+        <button id="step3" style="display: none">Next Step</button>
+        <button id="step4" style="display: none">Next Step</button>
+        <button id="upgrade-btn" style="display: none">Upgrade</button>
+      </section>
+      <output id="upgraded">false</output>
+      <output id="version-clicked"></output>
+      <script>
+        document.getElementById('row').onclick = () => {
+          document.getElementById('operations-label').style.display = 'block';
+        };
+        document.getElementById('operations-label').onclick = () => {
+          document.getElementById('operations-menu').style.display = 'block';
+        };
+        document.getElementById('upgrade-option').onclick = () => {
+          document.getElementById('operations-menu').style.display = 'none';
+          document.getElementById('upgrade-wizard').style.display = 'block';
+        };
+        document.querySelectorAll('#upgrade--versionsListUpgrade-list div').forEach(div => {
+          div.onclick = () => {
+            document.getElementById('version-clicked').textContent = div.textContent;
+          };
+        });
+        document.getElementById('step1').onclick = () => {
+          document.getElementById('step1').style.display = 'none';
+          document.getElementById('step2').style.display = 'block';
+        };
+        document.getElementById('step2').onclick = () => {
+          document.getElementById('step2').style.display = 'none';
+          document.getElementById('step3').style.display = 'block';
+        };
+        document.getElementById('step3').onclick = () => {
+          document.getElementById('step3').style.display = 'none';
+          document.getElementById('step4').style.display = 'block';
+        };
+        document.getElementById('step4').onclick = () => {
+          document.getElementById('step4').style.display = 'none';
+          document.getElementById('upgrade-btn').style.display = 'block';
+        };
+        document.getElementById('upgrade-btn').onclick = () => document.getElementById('upgraded').textContent = 'true';
+      </script>
+    `);
+
+    await elmPages.upgradeEic(page, { clusterName: 'hcp-x', deployment: 'pr-1-eic-1', version: '8.49.11' });
+    assert.equal(await page.locator('#version-clicked').innerText(), '8.49.11');
+    assert.equal(await page.locator('#upgraded').innerText(), 'true');
+  } finally { await page.close(); }
+});
+
+test('upgrade_version_not_offered_hands_over', async () => {
+  const page = await browser.newPage();
+  page.setDefaultTimeout(3000);
+  try {
+    await page.setContent(`
+      <div role="grid" aria-label="All Deployments">
+        <div id="row"><span>pr-1-eic-1</span> <span>8.48.16</span></div>
+      </div>
+      <button id="operations-label" aria-label="Operations" style="display: none">Operations</button>
+      <dialog id="operations-menu" style="display: none">
+        <div id="upgrade-option">Upgrade</div>
+      </dialog>
+      <section id="upgrade-wizard" style="display: none">
+        <div id="upgrade--versionsListUpgrade-list">
+          <div>8.49.11</div>
+          <div>8.49.10</div>
+        </div>
+      </section>
+      <output id="upgraded">false</output>
+      <script>
+        document.getElementById('row').onclick = () => {
+          document.getElementById('operations-label').style.display = 'block';
+        };
+        document.getElementById('operations-label').onclick = () => {
+          document.getElementById('operations-menu').style.display = 'block';
+        };
+        document.getElementById('upgrade-option').onclick = () => {
+          document.getElementById('operations-menu').style.display = 'none';
+          document.getElementById('upgrade-wizard').style.display = 'block';
+        };
+      </script>
+    `);
+
+    await assert.rejects(
+      async () => await elmPages.upgradeEic(page, { clusterName: 'hcp-x', deployment: 'pr-1-eic-1', version: '8.49.99' }),
+      /EIC version 8\.49\.99 is not offered by ELM/
+    );
+    assert.equal(await page.locator('#upgraded').innerText(), 'false');
+  } finally { await page.close(); }
+});
+
+test('delete_confirms_with_delete_not_cancel', async () => {
+  const page = await browser.newPage();
+  page.setDefaultTimeout(3000);
+  try {
+    await page.setContent(`
+      <div role="grid" aria-label="All Deployments">
+        <div id="row"><span>pr-1-eic-1</span> <span>8.49.11</span></div>
+      </div>
+      <button id="operations-label" aria-label="Operations" style="display: none">Operations</button>
+      <dialog id="operations-menu" style="display: none">
+        <div id="delete-option">Delete</div>
+      </dialog>
+      <dialog id="confirm-dialog" style="display: none">
+        <button id="delete-btn">Delete</button>
+        <button id="cancel-btn">Cancel</button>
+      </dialog>
+      <output id="deleted">false</output>
+      <output id="cancelled">false</output>
+      <script>
+        document.getElementById('row').onclick = () => {
+          document.getElementById('operations-label').style.display = 'block';
+        };
+        document.getElementById('operations-label').onclick = () => {
+          document.getElementById('operations-menu').style.display = 'block';
+        };
+        document.getElementById('delete-option').onclick = () => {
+          document.getElementById('operations-menu').style.display = 'none';
+          document.getElementById('confirm-dialog').style.display = 'block';
+        };
+        document.getElementById('delete-btn').onclick = () => document.getElementById('deleted').textContent = 'true';
+        document.getElementById('cancel-btn').onclick = () => document.getElementById('cancelled').textContent = 'true';
+      </script>
+    `);
+
+    await elmPages.deleteEicDeployment(page, { clusterName: 'hcp-x', deployment: 'pr-1-eic-1' });
+    assert.equal(await page.locator('#deleted').innerText(), 'true');
+    assert.equal(await page.locator('#cancelled').innerText(), 'false');
+  } finally { await page.close(); }
+});
+
+test('remove_types_node_name', async () => {
+  const page = await browser.newPage();
+  page.setDefaultTimeout(3000);
+  try {
+    await page.setContent(`
+      <button id="remove-header">Remove</button>
+      <dialog id="confirm-dialog" style="display: none">
+        <div>To confirm the removal of the Edge Node</div>
+        <label>Edge Node Name<input id="node-name"></label>
+        <button id="remove-btn" title="Default Action">Remove</button>
+      </dialog>
+      <output id="removed">false</output>
+      <script>
+        document.getElementById('remove-header').onclick = () => {
+          document.getElementById('confirm-dialog').style.display = 'block';
+        };
+        document.getElementById('remove-btn').onclick = () => document.getElementById('removed').textContent = 'true';
+      </script>
+    `);
+
+    await elmPages.removeEdgeNode(page, { clusterName: 'hcp-x' });
+    assert.equal(await page.locator('#node-name').inputValue(), 'hcp-x');
+    assert.equal(await page.locator('#removed').innerText(), 'true');
+  } finally { await page.close(); }
+});
