@@ -323,7 +323,6 @@ test('resume_initialized_skips_sap_changes', async () => {
       { method: 'downloadElmZip', clusterName: 'test-cluster', dir },
       { s3put: { file: join(dir, 'restricted-resources-elm.zip'), key: 'test-prefix/elm/restricted-resources-elm.zip' } },
       { waitForTask: 'generate-sa-based-kubeconfig' },
-      { reload: true },
       { method: 'eicDeploymentStatus', clusterName: 'test-cluster', deployment: 'pr-123-eic' },
       { method: 'deployEic', clusterName: 'test-cluster', cell },
       { method: 'eicDeploymentStatus', clusterName: 'test-cluster', deployment: 'pr-123-eic' },
@@ -455,13 +454,11 @@ test('resume_eic_deployed_skips_deploy', async () => {
       { method: 'downloadElmZip', clusterName: 'test-cluster', dir },
       { s3put: { file: join(dir, 'restricted-resources-elm.zip'), key: 'test-prefix/elm/restricted-resources-elm.zip' } },
       { waitForTask: 'generate-sa-based-kubeconfig' },
-      { reload: true },
       { method: 'eicDeploymentStatus', clusterName: 'test-cluster', deployment: 'pr-123-eic' },
       // No deployEic (status is Successful)
       { method: 'eicDeploymentStatus', clusterName: 'test-cluster', deployment: 'pr-123-eic' },
       // No downloadEicZip or upload (status is Successful)
       { waitForTask: 'configure-mesh-eic' },
-      { reload: true },
       { method: 'eicDeploymentStatus', clusterName: 'test-cluster', deployment: 'pr-123-eic' },
       // No resumeEicDeployment (status is Successful)
        { reload: true },
@@ -896,6 +893,7 @@ test('deploy_rejects_unexpected_state', async () => {
 });
 
 test('kubeconfig_file_private', async () => {
+  const calls = [];
   const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
   try {
     // Pre-create the kubeconfig file with wrong mode
@@ -992,6 +990,7 @@ test('kubeconfig_file_private', async () => {
 });
 
 test('unknown_leftover_policy_throws', async () => {
+  const calls = [];
   const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
   try {
     const fakeSteps = makeFakeSteps({
@@ -1389,9 +1388,9 @@ test('expired_session_relogin_and_retry', async () => {
     const waitForLoginCalls = calls.filter(c => c.waitForLogin);
     assert.equal(waitForLoginCalls.length, 1, 'waitForLogin should be called exactly once');
 
-    // Verify openEdgeNode was called exactly once (for retry reopen) plus once for status poll = 2
+    // Verify openEdgeNode was called once for initial node opening; retry reopen uses goto(captured URL), poll uses reload()
     const openEdgeNodeCalls = calls.filter(c => c.method === 'openEdgeNode');
-    assert.equal(openEdgeNodeCalls.length, 2, 'openEdgeNode should be called exactly twice (1 for retry reopen, 1 for status poll)');
+    assert.equal(openEdgeNodeCalls.length, 1, 'openEdgeNode should be called once for initial opening');
 
     // Verify isSessionExpired was called exactly once
     assert.equal(sessionExpiredCount, 1, 'isSessionExpired should be called exactly once');
@@ -1410,6 +1409,7 @@ test('expired_session_relogin_and_retry', async () => {
 
 
 test('cell_without_eic_hands_over', async () => {
+  const calls = [];
   const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
   try {
     const cell = {
@@ -1464,6 +1464,7 @@ test('cell_without_eic_hands_over', async () => {
 });
 
 test('proxy_run_hands_over_before_add', async () => {
+  const calls = [];
   const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
   try {
     const fakeSteps = makeFakeSteps({
@@ -1658,6 +1659,7 @@ test('hcp_policy_hands_over_unproven_node', async () => {
 });
 
 test('waits_until_all_successful', async () => {
+  const calls = [];
   const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
   try {
     const cell = {
@@ -1732,6 +1734,7 @@ test('waits_until_all_successful', async () => {
 });
 
 test('status_timeout_hands_over', async () => {
+  const calls = [];
   const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
   try {
     const cell = {
@@ -1991,6 +1994,7 @@ test('integration_deploys_keystore_then_artifacts_per_cell', async () => {
 });
 
 test('integration_waits_for_started', async () => {
+  const calls = [];
   const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
   try {
     const cell = {
@@ -2076,6 +2080,7 @@ test('integration_waits_for_started', async () => {
 });
 
 test('unknown_operation_hands_over', async () => {
+  const calls = [];
   const dir = await mkdtemp(join(tmpdir(), 'elm-flow-test-'));
   try {
     const cell = {
@@ -2478,15 +2483,16 @@ test('upgrade_with_resources_uploads_waits_marker_then_resumes', async () => {
 
     assert.equal(result, 'upgraded');
 
-    // Verify sequence: upgradeEic → status Prepared → download → upload → waitMarker → resume → status Successful
+    // Verify sequence: upgradeEic → reload → status Prepared → download → upload → waitMarker → resume → reload → status Successful
     const expected = [
       { method: 'upgradeEic', clusterName: 'test-cluster', deployment: 'pr-123-eic', version: '2.0.0' },
+      { reload: true },
       { method: 'eicDeploymentStatus', clusterName: 'test-cluster', deployment: 'pr-123-eic', callCount: 1 },
       { method: 'downloadEicZip', clusterName: 'test-cluster', deployment: 'pr-123-eic', dir },
       { s3put: { file: join(dir, 'restricted-resources-pr-123-eic.zip'), key: 'test-prefix/edge-icell/restricted-resources-pr-123-eic.zip' } },
       { waitForMarker: 'test-prefix/.applied/restricted-resources-pr-123-eic.zip' },
       { method: 'resumeEicDeployment', clusterName: 'test-cluster', deployment: 'pr-123-eic' },
-       { reload: true },
+      { reload: true },
       { method: 'eicDeploymentStatus', clusterName: 'test-cluster', deployment: 'pr-123-eic', callCount: 2 },
     ];
 

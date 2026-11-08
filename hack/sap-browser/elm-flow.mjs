@@ -26,7 +26,7 @@ export async function withLogin(page, steps, fn, { waitForLogin, reopen }) {
   }
 }
 
-async function pollCellStatuses({ page, steps, cells, clusterName, statusReader, isComplete, waitForLogin, reopenNode, pollMs, timeoutMs, flowName }) {
+async function pollCellStatuses({ page, steps, cells, clusterName, statusReader, isComplete, waitForLogin, reopenNode, pollMs, timeoutMs, flowName, onRound }) {
   const startTime = Date.now();
   let complete = false;
 
@@ -46,8 +46,13 @@ async function pollCellStatuses({ page, steps, cells, clusterName, statusReader,
       statuses.push(status);
     }
 
-    // Check if all cells are complete
-    complete = cells.every((cell, i) => isComplete(cells, statuses, i));
+    // Call per-round callback if provided (for custom logic like Prepared handling)
+    if (onRound) {
+      complete = await onRound(statuses);
+    } else {
+      // Check if all cells are complete
+      complete = cells.every((cell, i) => isComplete(cells, statuses, i));
+    }
 
     if (!complete) {
       await new Promise(resolve => setTimeout(resolve, pollMs));
@@ -315,63 +320,55 @@ export async function runUpgradeFlow({ page, steps, inputs, cells, version, s3, 
   const handledPrepared = new Set();
 
   // Poll until all cells are Successful at the new version, handling Prepared exactly once per cell
-  const startTime = Date.now();
-  let allSuccessful = false;
-  while (!allSuccessful) {
-    if (Date.now() - startTime > timeoutMs) {
-      const pending = cells.filter((cell, i) => !allSuccessful).map(cell => cell.deployment).join(', ');
-      throw new SetupError(`EIC upgrade did not complete for all cells (${pending}) within timeout.`);
-    }
+  await pollCellStatuses({
+    page,
+    steps,
+    cells,
+    clusterName,
+    statusReader: (cell) => steps.eicDeploymentStatus(page, { clusterName, deployment: cell.deployment }),
+    isComplete: null, // Using onRound callback instead
+    waitForLogin,
+    reopenNode,
+    pollMs,
+    timeoutMs,
+    flowName: 'EIC upgrade',
+    onRound: async (statuses) => {
+      // Handle Prepared status and check completion
+      for (let i = 0; i < cells.length; i++) {
+        const cell = cells[i];
+        const status = statuses[i];
 
-    // Reload the node page before polling
-    await withLogin(page, steps, () => page.reload(), { waitForLogin, reopen: reopenNode });
+        if (!status) {
+          throw new SetupError(`EIC deployment ${cell.deployment} has null status; continue manually`);
+        }
 
-    // Read status for each cell sequentially
-    const statuses = [];
-    for (const cell of cells) {
-      const status = await withLogin(page, steps, () => steps.eicDeploymentStatus(page, { clusterName, deployment: cell.deployment }), { waitForLogin, reopen: reopenNode });
-      statuses.push(status);
-    }
+        if (status.operation === 'Prepared' && !handledPrepared.has(cell.deployment)) {
+          // Download zip
+          const eicZipPath = await withLogin(page, steps, () => steps.downloadEicZip(page, { clusterName, deployment: cell.deployment, dir }), { waitForLogin, reopen: reopenNode });
 
-    // Handle Prepared status and check completion
-    for (let i = 0; i < cells.length; i++) {
-      const cell = cells[i];
-      const status = statuses[i];
+          // Upload bundle
+          const zipName = eicZipPath.split('/').pop();
+          await uploadBundle(s3, { file: eicZipPath, s3Prefix, component: cell.component });
 
-      if (!status) {
-        throw new SetupError(`EIC deployment ${cell.deployment} has null status; continue manually`);
+          // Wait for marker
+          const markerPath = `${s3Prefix}.applied/${zipName}`;
+          await waitForMarker(markerPath);
+
+          // Resume deployment
+          await withLogin(page, steps, () => steps.resumeEicDeployment(page, { clusterName, deployment: cell.deployment }), { waitForLogin, reopen: reopenNode });
+
+          // Mark as handled
+          handledPrepared.add(cell.deployment);
+        } else if (status.operation !== 'Successful' && status.operation !== 'Prepared' && status.operation !== 'Initial') {
+          // Unknown operation
+          throw new SetupError(`EIC deployment ${cell.deployment} has unknown operation ${status.operation}; continue manually`);
+        }
       }
 
-      if (status.operation === 'Prepared' && !handledPrepared.has(cell.deployment)) {
-        // Download zip
-        const eicZipPath = await withLogin(page, steps, () => steps.downloadEicZip(page, { clusterName, deployment: cell.deployment, dir }), { waitForLogin, reopen: reopenNode });
-
-        // Upload bundle
-        const zipName = eicZipPath.split('/').pop();
-        await uploadBundle(s3, { file: eicZipPath, s3Prefix, component: cell.component });
-
-        // Wait for marker
-        const markerPath = `${s3Prefix}.applied/${zipName}`;
-        await waitForMarker(markerPath);
-
-        // Resume deployment
-        await withLogin(page, steps, () => steps.resumeEicDeployment(page, { clusterName, deployment: cell.deployment }), { waitForLogin, reopen: reopenNode });
-
-        // Mark as handled
-        handledPrepared.add(cell.deployment);
-      } else if (status.operation !== 'Successful' && status.operation !== 'Prepared' && status.operation !== 'Initial') {
-        // Unknown operation
-        throw new SetupError(`EIC deployment ${cell.deployment} has unknown operation ${status.operation}; continue manually`);
-      }
-    }
-
-    // Check if all cells are Successful at the new version
-    allSuccessful = statuses.every(status => status && status.operation === 'Successful' && status.version === version);
-
-    if (!allSuccessful) {
-      await new Promise(resolve => setTimeout(resolve, pollMs));
-    }
-  }
+      // Check if all cells are Successful at the new version
+      return statuses.every(status => status && status.operation === 'Successful' && status.version === version);
+    },
+  });
 
   return 'upgraded';
 }
