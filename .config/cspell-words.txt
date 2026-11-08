@@ -6,6 +6,7 @@ Burstable
 CAPK
 CREDS
 Containerfile
+ELMB
 ELSTER
 EOSLICE
 EOTHER
@@ -187,6 +188,7 @@ redisenterprisedatabase
 redisenterprisedatabases
 redislabs
 rediss
+relogin
 requirepass
 resourcegroupstaggingapi
 retarget

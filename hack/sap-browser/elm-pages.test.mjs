@@ -1,5 +1,6 @@
 // SPDX-FileCopyrightText: 2026 SAP edge team
 // SPDX-License-Identifier: Apache-2.0
+// cspell:ignore DBBQAAAAIAA (part of the base64 zip fixture in elm_cli_download_saved)
 
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
