@@ -1127,3 +1127,56 @@ test('remove_types_node_name', async () => {
     assert.equal(await page.locator('#removed').innerText(), 'true');
   } finally { await page.close(); }
 });
+
+test('elm_cli_download_saved', async () => {
+  const page = await browser.newPage();
+  page.setDefaultTimeout(3000);
+  const dir = await mkdtemp(join(tmpdir(), 'elm-cli-test-'));
+  try {
+    await page.goto('about:blank');
+    await page.setContent(`
+      <div role="tab">Initialize Edge Node</div>
+      <button role="button">Linux</button>
+      <a id="download-link" download="ELMB00_1.0.62-70005758.ZIP" href="data:application/zip;base64,UEsDBBQAAAAIAA==">Download ELMB00_1.0.62-70005758.ZIP</a>
+    `);
+
+    const elmPath = await elmPages.downloadElmCli(page, { dir, timeoutMs: 5000 });
+    assert.ok(elmPath.startsWith(dir));
+    assert.ok(elmPath.includes('ELMB00'));
+  } finally {
+    await page.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('elm_cli_download_times_out', async () => {
+  const page = await browser.newPage();
+  page.setDefaultTimeout(3000);
+  const dir = await mkdtemp(join(tmpdir(), 'elm-cli-test-'));
+  try {
+    await page.goto('about:blank');
+    await page.setContent(`
+      <div role="tab">Initialize Edge Node</div>
+      <button id="linux-tab">Linux</button>
+      <a id="download-link" href="#" download="ELMB00_1.0.62-70005758.ZIP">Download ELMB00_1.0.62-70005758.ZIP</a>
+      <script>
+        // Never trigger the download
+        document.getElementById('download-link').onclick = (e) => {
+          e.preventDefault();
+        };
+      </script>
+    `);
+
+    await assert.rejects(
+      elmPages.downloadElmCli(page, { dir, timeoutMs: 500 }),
+      (err) => {
+        assert.equal(err.name, 'SetupError');
+        assert.ok(err.message.includes('tools/elm/'));
+        return true;
+      }
+    );
+  } finally {
+    await page.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
