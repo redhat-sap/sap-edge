@@ -67,8 +67,10 @@ The task `hcp-sap-browser` runs one phase per session:
   this run created; any other is handed over, never deleted. Skipped with
   `skipTeardown: "true"`: the cluster stays, and so do its ELM entries.
 
-Proxy runs (Secret `<hubClusterName>-proxy-config` exists) hand over at "Add
-Edge Node": add it by hand with the proxy settings.
+This pipeline uses no proxy: the hub's `<hubClusterName>-proxy-config` Secret
+(it exists on `eic` for the proxy test runs) is not consulted. A pipeline with
+a proxy variant passes `proxySecretName` to `hcp-sap-browser-access`; such a
+proxy run hands over at "Add Edge Node": add it by hand with the proxy settings.
 
 ## One-time setup
 
