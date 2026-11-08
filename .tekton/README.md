@@ -83,6 +83,7 @@ zips to upload.
 - `jira-add-comment-custom`: Update Jira tickets
 - `git-clone`: Clone repository
 - `manual-approval-gate`: Manual approval checkpoint
+- `sap-browser-image-task`: SAP browser runner image for the browser tasks: builds and pushes it to eic's Quay when its content-hash tag is missing (see [SAP browser runner image](#sap-browser-runner-image)); empty result when `sapBrowserMode` is disabled
 
 ## Usage
 
@@ -384,6 +385,54 @@ The secrets namespaces are in the mesh's discovery scope but get no sidecars
 - No credentials exposed in logs
 - Temporary files cleaned up automatically
 - Azure CLI login scoped to specific operations
+
+### SAP browser runner image
+
+`sap-browser-image` (no `when`) gives the browser tasks their image in the
+result `image`:
+
+- `mode` `disabled`: empty result, the steps exit at once (later tasks gate on
+  the empty result).
+- `image` set: that image as is, nothing is built or checked.
+- Otherwise `<repository>:sap-browser-<hash>`, where `<hash>` is the first 12 hex
+  digits of a sha256 over the files tracked in git under `package-lock.json` and
+  `hack/sap-browser/` (a `sha256  path` line per file, sorted by path). The same
+  revision of these files always gives the same tag; other changes in the
+  repository do not trigger a build. Default `repository`:
+  `quay.apps.eic.ocp.sap.local/sap_elm_eic/sap-browser` (public).
+
+When `skopeo inspect` does not find the tag, buildah builds
+`hack/sap-browser/Containerfile` with the repository root as context and pushes
+the image. Then a short-lived Pod `sap-browser-pull-check-*` in the pipeline
+namespace runs the image with `/bin/true` and is deleted again. If the nodes
+cannot pull the image (`ErrImagePull`/`ImagePullBackOff`, typically x509), the
+task fails with "eic cannot pull from its Quay (certificate trust?)". The nodes
+must trust the CA of the Quay (`image.config.openshift.io/cluster`,
+`additionalTrustedCA`). For an existing tag there is no build and no pull
+check. Any other registry error at the check (x509, unauthorized) fails the
+task before the build.
+
+**Build method:** a buildah step (`registry.redhat.io/rhel9/buildah`, chroot
+isolation, `--storage-driver=vfs`, an `emptyDir` on `/var/lib/containers`,
+capability `SETFCAP`), as in Red Hat's buildah task. It needs no privileged
+container and no extra SCC: the task must run as the OpenShift Pipelines
+`pipeline` ServiceAccount (the PipelineRun default), whose `pipelines-scc`
+allows `SETFCAP`. Do not put it under a `taskRunSpecs` ServiceAccount that only
+has `restricted-v2`. For the pull check the same ServiceAccount needs `create`,
+`get` and `delete` on Pods in the pipeline namespace (the `edit` role, which
+OpenShift Pipelines binds to it by default). The build pod needs Docker Hub
+(`node` base image), npm, Debian and Playwright downloads; the build step
+requests 2 GiB memory (limit 4 GiB) and vfs needs a few GB of node ephemeral
+storage. An OpenShift BuildConfig would
+need a build strategy role and an output Secret for the external Quay, so it is
+not used.
+
+**Secret `eic-quay-robot`** (`pushSecretName`) in the pipeline namespace: keys
+`username` and `password` (Quay robot account with write access to the
+repository) and `ca.crt` (the CA of the Quay certificate, used for `skopeo` and
+`buildah push`). Its `registry` key is not used. The password goes only into a
+mode-600 authfile in the task pod and is never printed. The Secret is needed
+only when the task builds (not with `mode` `disabled` or a given `image`).
 
 ## Configure worker open-file limits before installation
 

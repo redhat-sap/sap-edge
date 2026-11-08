@@ -31,6 +31,7 @@ OSSM
 ROKS
 Rishabh
 SAPCAR
+SETFCAP
 SQAs
 Satarin
 Schedulable
@@ -58,6 +59,7 @@ awscliv
 bootstrapper
 bpersistentvolumeclaims
 bruhl
+buildah
 cabundle
 cabundles
 capa
@@ -212,6 +214,7 @@ servicemesh
 servicemeshoperator
 servicemonitor
 shellcheck
+skopeo
 slvredis
 spawnid
 sslmode
