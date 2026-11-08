@@ -393,12 +393,7 @@ export async function runUpgradeFlow({ page, steps, inputs, cells, version, s3, 
   return 'upgraded';
 }
 
-export async function runTeardownFlow({ page, steps, inputs, cells, readNodeRecord, waitForLogin, log, pollMs, timeoutMs, clusterName: legacyClusterName }) {
-  // Handle old ROKS signature (Task 8 will update the caller)
-  if (!inputs && legacyClusterName) {
-    throw new SetupError('ROKS teardown requires Task 8 changes; continue manually');
-  }
-
+export async function runTeardownFlow({ page, steps, inputs, cells, readNodeRecord, waitForLogin, log, pollMs, timeoutMs }) {
   const { clusterName } = inputs;
 
   let nodeUrl = null;
