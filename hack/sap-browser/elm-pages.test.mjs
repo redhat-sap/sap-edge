@@ -203,15 +203,20 @@ test('add_with_registry_fills_replication', async () => {
       </section>
       <section id="summary" hidden>
         <h2>Configuration Review</h2>
+        <a href="#">Edit</a>
         <button id="submit">Add Edge Node</button>
       </section>
       <output id="submitted">false</output>
       <output id="cert-name"></output>
       <script>
-        document.getElementById('add').onclick = () => setTimeout(() => document.getElementById('details').hidden = false, 50);
-        document.getElementById('step2').onclick = () => setTimeout(() => document.getElementById('registry').hidden = false, 50);
-        document.getElementById('step3').onclick = () => setTimeout(() => document.getElementById('proxy').hidden = false, 50);
-        document.getElementById('review').onclick = () => setTimeout(() => document.getElementById('summary').hidden = false, 50);
+        // Like ELM: a used step button disappears, and Configuration Review replaces the wizard
+        // (Edit links only, no step buttons).
+        const show = (id) => document.getElementById(id).hidden = false;
+        const hide = (...ids) => ids.forEach((id) => document.getElementById(id).hidden = true);
+        document.getElementById('add').onclick = () => setTimeout(() => show('details'), 50);
+        document.getElementById('step2').onclick = () => setTimeout(() => { hide('step2'); show('registry'); }, 50);
+        document.getElementById('step3').onclick = () => setTimeout(() => { hide('step3'); show('proxy'); }, 50);
+        document.getElementById('review').onclick = () => setTimeout(() => { hide('details', 'registry', 'proxy'); show('summary'); }, 50);
         document.getElementById('submit').onclick = () => document.getElementById('submitted').textContent = 'true';
         document.getElementById('cert-upload').addEventListener('input', (e) => {
           if (e.target.files?.[0]) document.getElementById('cert-name').textContent = e.target.files[0].name;
