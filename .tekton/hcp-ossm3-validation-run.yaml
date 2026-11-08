@@ -35,11 +35,11 @@ spec:
     name: hcp-ossm3-validation-pipeline
   # When enabling sapBrowserMode, uncomment (the browser tasks run as the
   # ServiceAccount from hack/sap-browser/hcp-runner-rbac.yaml):
-  # taskRunSpecs:
-  #   - pipelineTaskName: sap-browser-deploy
-  #     serviceAccountName: hcp-sap-browser-runner
-  #   - pipelineTaskName: sap-browser-teardown
-  #     serviceAccountName: hcp-sap-browser-runner
+  taskRunSpecs:
+    - pipelineTaskName: sap-browser-deploy
+      serviceAccountName: hcp-sap-browser-runner
+    - pipelineTaskName: sap-browser-teardown
+      serviceAccountName: hcp-sap-browser-runner
   timeouts:
     pipeline: "336h"      # Total pipeline timeout (14 days)
     tasks: "335h"         # Individual task timeout (tasks + finally must be <= pipeline)
@@ -116,10 +116,11 @@ spec:
 
     # --- SAP browser automation (optional) ---
     # disabled, inspect or auto (hack/sap-browser/PIPELINE.md). With inspect or
-    # auto, also set sapElmUrl and uncomment taskRunSpecs above. The runner image
-    # is built into eic's Quay when missing (sapBrowserImage overrides it).
+    # auto, uncomment taskRunSpecs above. The ELM URL comes from the Secret
+    # sap-elm-url (key url) unless sapElmUrl is set. The runner image is built
+    # into eic's Quay when missing (sapBrowserImage overrides it).
     - name: sapBrowserMode
-      value: "disabled"
+      value: "auto"
     # - name: sapElmUrl
     #   value: "https://YOUR-TENANT/comsapclmedgelm.comsapclmedgelm/index.html"
     # - name: sapBrowserImage
