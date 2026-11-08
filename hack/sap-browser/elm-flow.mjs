@@ -26,16 +26,24 @@ export async function withLogin(page, steps, fn, { waitForLogin, reopen }) {
   }
 }
 
-export async function runIntegrationFlow({ page, isSteps, cells, log, pollMs, timeoutMs }) {
+export async function runIntegrationFlow({ page, steps, isSteps, cells, waitForLogin, pollMs, timeoutMs }) {
+  // Navigate to Integration Suite home page
+  const origin = new URL(page.url()).origin;
+  await page.goto(`${origin}/shell/home`);
+
+  const reopenIS = async () => {
+    await page.goto(`${origin}/shell/home`);
+  };
+
   // Deploy keystore to all runtimes
   const runtimes = cells.map(cell => cell.deployment);
-  await isSteps.deployKeystore(page, { runtimes });
+  await withLogin(page, steps, () => isSteps.deployKeystore(page, { runtimes }), { waitForLogin, reopen: reopenIS });
 
   // Per cell: wait for runtime ready, deploy artifacts, wait for all started
   for (const cell of cells) {
     // Wait for runtime to be ready
     const startTime = Date.now();
-    while (!(await isSteps.runtimeReady(page, { deployment: cell.deployment }))) {
+    while (!(await withLogin(page, steps, () => isSteps.runtimeReady(page, { deployment: cell.deployment }), { waitForLogin, reopen: reopenIS }))) {
       if (Date.now() - startTime > timeoutMs) {
         throw new SetupError(`Runtime ${cell.deployment} did not become ready within timeout.`);
       }
@@ -44,7 +52,7 @@ export async function runIntegrationFlow({ page, isSteps, cells, log, pollMs, ti
 
     // Deploy all artifacts for this cell
     for (const { pkg, artifact } of ARTIFACTS) {
-      await isSteps.deployArtifact(page, { pkg, artifact, deployment: cell.deployment });
+      await withLogin(page, steps, () => isSteps.deployArtifact(page, { pkg, artifact, deployment: cell.deployment }), { waitForLogin, reopen: reopenIS });
     }
   }
 
@@ -56,7 +64,7 @@ export async function runIntegrationFlow({ page, isSteps, cells, log, pollMs, ti
       if (Date.now() - startTime > timeoutMs) {
         throw new SetupError(`Artifacts for ${cell.deployment} did not all start within timeout.`);
       }
-      const states = await isSteps.artifactStates(page, { deployment: cell.deployment });
+      const states = await withLogin(page, steps, () => isSteps.artifactStates(page, { deployment: cell.deployment }), { waitForLogin, reopen: reopenIS });
       allStarted = ARTIFACTS.every(({ artifact }) => states[artifact] === 'Started');
       if (!allStarted) {
         await new Promise(resolve => setTimeout(resolve, pollMs));
@@ -80,7 +88,12 @@ export async function runDeployFlow(ctx) {
     throw new SetupError(`Edge Node has unrecognised state: ${state}. Cannot proceed safely.`);
   }
 
-  // Step 2: Handle leftover nodes based on policy
+  // Step 2: Validate leftover policy
+  if (!['delete', 'hand-over'].includes(leftoverPolicy)) {
+    throw new SetupError(`Unknown leftoverPolicy: ${leftoverPolicy}`);
+  }
+
+  // Step 3: Handle leftover nodes based on policy
   if (state !== 'absent') {
     if (leftoverPolicy === 'delete') {
       // ROKS behavior: delete if IDs don't match or unknown
@@ -106,12 +119,12 @@ export async function runDeployFlow(ctx) {
     }
   }
 
-  // Step 3: Proxy check - hand over if proxy is configured and node is absent
+  // Step 4: Proxy check - hand over if proxy is configured and node is absent
   if (inputs.proxy && state === 'absent') {
     throw new SetupError('HTTP proxy runs: add the Edge Node by hand');
   }
 
-  // Step 4: Add edge node if absent
+  // Step 5: Add edge node if absent
   if (state === 'absent') {
     await withLogin(page, steps, () => steps.addEdgeNode(page, { clusterName, registry: inputs.registry, highAvailability: inputs.highAvailability }), { waitForLogin, reopen });
     state = 'added';
@@ -121,14 +134,14 @@ export async function runDeployFlow(ctx) {
     await recordNode({ name: clusterName, elmId });
   }
 
-  // Step 5: Download ELM zip and upload to S3
+  // Step 6: Download ELM zip and upload to S3
   const elmZipPath = await withLogin(page, steps, () => steps.downloadElmZip(page, { clusterName, dir }), { waitForLogin, reopen });
   await uploadBundle(s3, { file: elmZipPath, s3Prefix, component: 'elm' });
 
-  // Step 6: Wait for pipeline task
+  // Step 7: Wait for pipeline task
   await waitForTask('generate-sa-based-kubeconfig');
 
-  // Step 7: Set up cloud connector if needed (state is absent or added)
+  // Step 8: Set up cloud connector if needed (state is absent or added)
   if (state === 'absent' || state === 'added') {
     const kubeconfigContent = await loadKubeconfig();
     const kubeconfigFile = join(dir, 'edgelm-kubeconfig.yaml');
@@ -145,34 +158,50 @@ export async function runDeployFlow(ctx) {
     state = 'initialized';
   }
 
-  // Step 8: Load cells
+  // Step 9: Load cells
   const cells = await loadCells();
 
-  // Step 9: Deploy EIC for each cell
+  // Step 10: Deploy EIC for each cell with idempotency (R5)
   for (const cell of cells) {
     // R2: Check if cell has eic property
     if (!cell.eic) {
       throw new SetupError(`EIC form values for ${cell.component} are not mapped yet; deploy EIC by hand`);
     }
 
-    await withLogin(page, steps, () => steps.deployEic(page, { clusterName, cell }), { waitForLogin, reopen });
+    // R5: Check deployment status for idempotency
+    const status = await withLogin(page, steps, () => steps.eicDeploymentStatus(page, { clusterName, deployment: cell.deployment }), { waitForLogin, reopen });
+
+    if (!status || (status.operation !== 'Initial' && status.operation !== 'Prepared' && status.operation !== 'Successful')) {
+      // null or unknown status: deploy from scratch
+      await withLogin(page, steps, () => steps.deployEic(page, { clusterName, cell }), { waitForLogin, reopen });
+    }
+    // Initial/Prepared: skip deployEic, will download zip and resume
+    // Successful: skip deployEic and zip/resume (handled below)
   }
 
-  // Step 10: Download EIC zip and upload to S3 for each cell
+  // Step 11: Download EIC zip and upload to S3 for each cell (skip if Successful)
   for (const cell of cells) {
-    const eicZipPath = await withLogin(page, steps, () => steps.downloadEicZip(page, { clusterName, deployment: cell.deployment, dir }), { waitForLogin, reopen });
-    await uploadBundle(s3, { file: eicZipPath, s3Prefix, component: cell.component });
+    const status = await withLogin(page, steps, () => steps.eicDeploymentStatus(page, { clusterName, deployment: cell.deployment }), { waitForLogin, reopen });
+
+    if (!status || status.operation !== 'Successful') {
+      const eicZipPath = await withLogin(page, steps, () => steps.downloadEicZip(page, { clusterName, deployment: cell.deployment, dir }), { waitForLogin, reopen });
+      await uploadBundle(s3, { file: eicZipPath, s3Prefix, component: cell.component });
+    }
   }
 
-  // Step 11: Wait for mesh task
+  // Step 12: Wait for mesh task
   await waitForTask(meshTask);
 
-  // Step 12: Resume EIC deployment for each cell
+  // Step 13: Resume EIC deployment for each cell (skip if Successful)
   for (const cell of cells) {
-    await withLogin(page, steps, () => steps.resumeEicDeployment(page, { clusterName, deployment: cell.deployment }), { waitForLogin, reopen });
+    const status = await withLogin(page, steps, () => steps.eicDeploymentStatus(page, { clusterName, deployment: cell.deployment }), { waitForLogin, reopen });
+
+    if (!status || status.operation !== 'Successful') {
+      await withLogin(page, steps, () => steps.resumeEicDeployment(page, { clusterName, deployment: cell.deployment }), { waitForLogin, reopen });
+    }
   }
 
-  // Step 13: Poll eicDeploymentStatus until all cells are Successful
+  // Step 14: Poll eicDeploymentStatus until all cells are Successful (sequential, reload page each round)
   const startTime = Date.now();
   let allSuccessful = false;
   while (!allSuccessful) {
@@ -181,9 +210,15 @@ export async function runDeployFlow(ctx) {
       throw new SetupError(`EIC deployment status did not reach Successful for all cells (${pending}) within timeout.`);
     }
 
-    const statuses = await Promise.all(
-      cells.map(cell => withLogin(page, steps, () => steps.eicDeploymentStatus(page, { clusterName, deployment: cell.deployment }), { waitForLogin, reopen }))
-    );
+    // Reload the node page before polling statuses
+    await withLogin(page, steps, reopen, { waitForLogin, reopen });
+
+    // Poll each cell sequentially
+    const statuses = [];
+    for (const cell of cells) {
+      const status = await withLogin(page, steps, () => steps.eicDeploymentStatus(page, { clusterName, deployment: cell.deployment }), { waitForLogin, reopen });
+      statuses.push(status);
+    }
 
     allSuccessful = statuses.every(status => status && status.operation === 'Successful');
 
@@ -192,8 +227,8 @@ export async function runDeployFlow(ctx) {
     }
   }
 
-  // Step 14: Run integration flow
-  await runIntegrationFlow({ page, isSteps, cells, log, pollMs, timeoutMs });
+  // Step 15: Run integration flow
+  await runIntegrationFlow({ page, steps, isSteps, cells, waitForLogin, pollMs, timeoutMs });
 
   return 'deployed';
 }
