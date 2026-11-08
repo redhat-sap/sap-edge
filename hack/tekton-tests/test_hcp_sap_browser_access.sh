@@ -470,7 +470,7 @@ expected_params = {
     "mode": MISSING,
     "phase": MISSING,
     "runnerImage": MISSING,
-    "oauthProxyImage": "image-registry.openshift-image-registry.svc:5000/openshift/oauth-proxy:v4.4",
+    "oauthProxyImage": "registry.redhat.io/openshift4/ose-oauth-proxy-rhel9:v4.20",
     "elmUrl": "",
     "elmUrlSecretName": "sap-elm-url",
     "pipelineRun": MISSING,
