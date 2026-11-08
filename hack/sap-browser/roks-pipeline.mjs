@@ -11,7 +11,7 @@ import { fetchElmCli, runElmInit } from './elm-cli.mjs';
 import { contextPassword, elmPages } from './elm-pages.mjs';
 import { SetupError } from './inputs.mjs';
 import { waitForPipelineTask } from './milestones.mjs';
-import { runDeployFlow, runTeardownFlow } from './roks-flow.mjs';
+import { runDeployFlow, runTeardownFlow } from './elm-flow.mjs';
 import { loadRestrictedKubeconfig, loadRoksInputs } from './roks-inputs.mjs';
 import { openRoute, routeName } from './route.mjs';
 import { s3Client } from './s3.mjs';
