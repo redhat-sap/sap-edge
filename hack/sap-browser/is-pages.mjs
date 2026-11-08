@@ -76,18 +76,10 @@ export const isPages = {
   },
 
   async deployArtifact(page, { pkg, artifact, deployment }) {
-    // Navigate to the package page if not already there
-    const currentUrl = page.url();
-    const expectedPath = `/shell/design/contentpackage/${pkg}?section=ARTIFACTS`;
-
-    if (!currentUrl.includes(expectedPath)) {
-      // Only navigate if we have a proper base URL (not about:blank)
-      if (currentUrl.startsWith('http://') || currentUrl.startsWith('https://')) {
-        const packageUrl = new URL(expectedPath, page.url());
-        await page.goto(packageUrl.toString());
-      }
-      // If we're on about:blank with a hash, we're in a fixture test - already on the right page
-    }
+    // Navigate to the package page
+    const packagePath = `/shell/design/contentpackage/${pkg}?section=ARTIFACTS`;
+    const packageUrl = new URL(packagePath, page.url());
+    await page.goto(packageUrl.toString());
 
     // Find the artifact row in the Artifacts region
     const artifactsRegion = page.locator('section').filter({ has: page.locator('[aria-label*="Artifacts"]') });
@@ -110,20 +102,12 @@ export const isPages = {
   },
 
   async artifactStates(page, { deployment }) {
-    // Navigate to the monitoring overview page if not already there
-    const currentUrl = page.url();
+    // Navigate to the monitoring overview page
     const runtimeLocId = runtimeLocationId(deployment);
     const pathSegment = encodeURIComponent(`{"edge":{"runtimeLocationId":"${runtimeLocId}"}}`);
-    const expectedPath = `/shell/monitoring/Overview/${pathSegment}`;
-
-    if (!currentUrl.includes(expectedPath)) {
-      // Only navigate if we have a proper base URL (not about:blank)
-      if (currentUrl.startsWith('http://') || currentUrl.startsWith('https://')) {
-        const monitoringUrl = new URL(expectedPath, page.url());
-        await page.goto(monitoringUrl.toString());
-      }
-      // If we're on about:blank with a hash, we're in a fixture test - already on the right page
-    }
+    const monitoringPath = `/shell/monitoring/Overview/${pathSegment}`;
+    const monitoringUrl = new URL(monitoringPath, page.url());
+    await page.goto(monitoringUrl.toString());
 
     // Parse the artifact states from the grid rows
     const grid = page.getByRole('grid');
