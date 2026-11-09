@@ -3,6 +3,26 @@
 
 import { SetupError } from './inputs.mjs';
 
+// Playwright's check() fails at once when a click does not toggle the box, and in ELM a click
+// can get lost while UI5 redraws the form (a field losing focus updates the model). The box is
+// clicked again until it shows the state; a late toggle has 3 seconds before the next click.
+export async function setBoxState(page, box, label, state, { attempts = 3, waitMs = 3000 } = {}) {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    if (await box.isChecked() === state) return;
+    await box.click();
+    const deadline = Date.now() + waitMs;
+    while (Date.now() < deadline) {
+      if (await box.isChecked() === state) return;
+      await page.waitForTimeout(100);
+    }
+  }
+  throw new SetupError(`The ELM checkbox "${label}" did not change.`);
+}
+
+export function setCheckbox(page, name, state, options) {
+  return setBoxState(page, page.getByRole('checkbox', { name, exact: true }), name, state, options);
+}
+
 // A wizard button shows only when its step is valid, and a click can get lost while UI5 redraws
 // the form (checking Restricted Access adds two info boxes), so the button is clicked again
 // until the next step is visible.
@@ -26,26 +46,24 @@ export async function fillRegistration(page, { clusterName, highAvailability = f
   await page.getByRole('button', { name: 'Add', exact: true }).click();
   await page.getByRole('textbox', { name: 'Edge Node Name', exact: true }).fill(clusterName);
   await page.getByRole('textbox', { name: 'Main Namespace', exact: true }).fill('edgelm');
-  await page.getByRole('checkbox', { name: 'Restricted Access to Kubernetes Cluster', exact: true }).check();
-  await page.getByRole('checkbox', { name: 'High Availability Mode', exact: true }).setChecked(highAvailability);
-  await page.getByRole('checkbox', { name: 'External Cloud Connector', exact: true }).uncheck();
+  await setCheckbox(page, 'Restricted Access to Kubernetes Cluster', true);
+  await setCheckbox(page, 'High Availability Mode', highAvailability);
+  await setCheckbox(page, 'External Cloud Connector', false);
 
   const replicate = page.getByRole('checkbox', { name: 'Replicate Container Images', exact: true });
   await advance(page, 'Step 2', replicate);
+  await setCheckbox(page, 'Replicate Container Images', Boolean(registry));
   if (registry) {
-    await replicate.check();
     await page.getByRole('textbox', { name: 'Local Container Registry URL', exact: true }).fill(registry.url);
     await page.getByRole('textbox', { name: 'Username', exact: true }).fill(registry.username);
     await page.getByRole('textbox', { name: 'Password', exact: true }).fill(registry.password);
-    await page.getByRole('checkbox', { name: 'Non-Trusted Certificate', exact: true }).check();
+    await setCheckbox(page, 'Non-Trusted Certificate', true);
     await page.getByRole('button', { name: 'Certificate with Public Key', exact: true }).setInputFiles(registry.caCertificateFile);
-  } else {
-    await replicate.uncheck();
   }
 
   const proxy = page.getByRole('checkbox', { name: 'Enable HTTP Proxy', exact: true });
   await advance(page, 'Step 3', proxy);
-  await proxy.uncheck();
+  await setCheckbox(page, 'Enable HTTP Proxy', false);
   await advance(page, 'Review', page.getByRole('heading', { name: 'Configuration Review', exact: true }));
   await page.getByRole('button', { name: 'Add Edge Node', exact: true }).waitFor({ state: 'visible' });
 }

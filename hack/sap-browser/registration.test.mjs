@@ -13,8 +13,8 @@ before(async () => {
 after(async () => { await browser?.close(); });
 
 // Exercise the real browser against an isolated wizard. No SAP or cluster access.
-// lostStep2Clicks: "Step 2" clicks ignored first, like a click during a UI5 redraw.
-async function fixture(existing = '', { lostStep2Clicks = 0 } = {}) {
+// lostStep2Clicks / lostRestrictedClicks: clicks ignored first, like a click during a UI5 redraw.
+async function fixture(existing = '', { lostStep2Clicks = 0, lostRestrictedClicks = 0 } = {}) {
   const page = await browser.newPage();
   page.setDefaultTimeout(3000);
   await page.setContent(`
@@ -40,6 +40,10 @@ async function fixture(existing = '', { lostStep2Clicks = 0 } = {}) {
     <section id="summary" hidden><h2>Configuration Review</h2><button id="submit">Add Edge Node</button></section>
     <output id="submitted">false</output>
     <script>
+      let lostRestrictedClicks = ${lostRestrictedClicks};
+      document.getElementById('restricted').addEventListener('click', (event) => {
+        if (lostRestrictedClicks > 0) { lostRestrictedClicks--; event.preventDefault(); }
+      }, true);
       let lostStep2Clicks = ${lostStep2Clicks};
       document.getElementById('step2').addEventListener('click', (event) => {
         if (lostStep2Clicks > 0) { lostStep2Clicks--; event.stopImmediatePropagation(); }
@@ -91,5 +95,22 @@ test('stops with a named step when the wizard never continues', async () => {
   try {
     await assert.rejects(reviewRegistration(page, { clusterName: 'hcp-demo' }), /did not continue after "Step 2"/);
     assert.equal(await page.locator('#submitted').innerText(), 'false');
+  } finally { await page.close(); }
+});
+
+test('clicks a checkbox again when the first click did not toggle it', async () => {
+  const page = await fixture('', { lostRestrictedClicks: 1 });
+  try {
+    await reviewRegistration(page, { clusterName: 'hcp-demo' });
+    assert.equal(await page.locator('#restricted').isChecked(), true);
+    assert.equal(await page.locator('#summary').isVisible(), true);
+  } finally { await page.close(); }
+});
+
+test('stops with the checkbox name when it never toggles', async () => {
+  const page = await fixture('', { lostRestrictedClicks: 99 });
+  try {
+    await assert.rejects(reviewRegistration(page, { clusterName: 'hcp-demo' }), /checkbox "Restricted Access to Kubernetes Cluster" did not change/);
+    assert.equal(await page.locator('#registry').isVisible(), false);
   } finally { await page.close(); }
 });

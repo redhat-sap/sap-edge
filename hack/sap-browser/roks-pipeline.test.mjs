@@ -552,11 +552,12 @@ test('playwright_error_in_step_hands_over', async () => folderTest(async (direct
 }));
 
 test('playwright_timeout_logs_action_and_locator_only', async () => folderTest(async (directory) => {
+  // Playwright 1.64 format: the call log lines are dimmed with ANSI escapes
   const timeout = new Error([
     'locator.fill: Timeout 30000ms exceeded.',
     'Call log:',
-    "  - waiting for getByRole('textbox', { name: 'Password', exact: true })",
-    '  - fill("secret-value")',
+    "\u001b[2m  - waiting for getByRole('textbox', { name: 'Password', exact: true })\u001b[22m",
+    '\u001b[2m  - fill("secret-value")\u001b[22m',
   ].join('\n'));
   timeout.name = 'TimeoutError';
   const h = harness({
@@ -569,7 +570,7 @@ test('playwright_timeout_logs_action_and_locator_only', async () => folderTest(a
   assert.equal(await running, 'handed-over');
   assert.ok(!h.logs.join('\n').includes('secret-value'), h.logs.join('\n'));
   assert.ok(h.logs.includes('Unexpected error; details are hidden because they can contain credentials.'));
-  assert.ok(h.logs.includes("Error type TimeoutError in locator.fill, waiting for getByRole('textbox', { name: 'Password', exact: true })."), h.logs.join('\n'));
+  assert.ok(h.logs.includes("Error type TimeoutError in locator.fill (Timeout 30000ms exceeded), waiting for getByRole('textbox', { name: 'Password', exact: true })."), h.logs.join('\n'));
 }));
 
 test('diagnose_prints_nothing_without_playwright_details', () => {
@@ -577,6 +578,22 @@ test('diagnose_prints_nothing_without_playwright_details', () => {
   assert.equal(diagnose(new Error('secret-value')), null);
   assert.equal(diagnose('secret-value'), null);
   assert.equal(diagnose(new Error('Call log:\n  - waiting for secret-value')), null);
+  const lost = new Error([
+    'locator.check: Clicking the checkbox did not change its state',
+    'Call log:',
+    "\u001b[2m  - waiting for getByRole('checkbox', { name: 'Non-Trusted Certificate', exact: true })\u001b[22m",
+    '\u001b[2m    - locator resolved to <div role="checkbox" aria-checked="false">secret-value</div>\u001b[22m',
+  ].join('\n'));
+  assert.equal(diagnose(lost), "Error type Error in locator.check (Clicking the checkbox did not change its state), waiting for getByRole('checkbox', { name: 'Non-Trusted Certificate', exact: true }).");
+  const strict = new Error([
+    "locator.check: Error: strict mode violation: getByRole('checkbox', { name: 'X', exact: true }) resolved to 2 elements:",
+    '    1) <div role="checkbox">secret-value</div> aka getByRole(\'checkbox\').first()',
+    'Call log:',
+    "\u001b[2m  - waiting for getByRole('checkbox', { name: 'X', exact: true })\u001b[22m",
+  ].join('\n'));
+  assert.equal(diagnose(strict), "Error type Error in locator.check (strict mode violation), waiting for getByRole('checkbox', { name: 'X', exact: true }).");
+  const unknown = new Error('locator.fill: secret-value\nCall log:\n  - waiting for getByLabel(\'Password\')');
+  assert.equal(diagnose(unknown), "Error type Error in locator.fill, waiting for getByLabel('Password').");
   const odd = new Error('page.goto: net::ERR_NAME_NOT_RESOLVED');
   odd.name = 'secret value!';
   assert.equal(diagnose(odd), 'Error type Error in page.goto.');

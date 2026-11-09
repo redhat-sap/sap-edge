@@ -107,6 +107,12 @@ spec:
         - |
           set -euo pipefail
           umask 077
+          # After the steps Tekton stops the sidecar by swapping in its nop
+          # image, which runs this script again without oauth-proxy
+          if ! command -v oauth-proxy > /dev/null 2>&1; then
+            echo "No oauth-proxy in this image: the sidecar was stopped after the steps (or oauthProxyImage is wrong)" >&2
+            exit 0
+          fi
           if ! head -c 24 /dev/urandom | base64 | tr -d '\n' > /run/oauth-proxy/cookie-secret; then
             echo "oauth-proxy not started: cannot write the cookie secret" >&2
             exit 0
