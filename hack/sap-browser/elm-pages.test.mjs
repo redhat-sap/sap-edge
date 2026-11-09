@@ -157,16 +157,71 @@ test('add_submits_registration', async () => {
         document.getElementById('step2').onclick = () => setTimeout(() => document.getElementById('registry').hidden = false, 50);
         document.getElementById('step3').onclick = () => setTimeout(() => document.getElementById('proxy').hidden = false, 50);
         document.getElementById('review').onclick = () => setTimeout(() => document.getElementById('summary').hidden = false, 50);
-        document.getElementById('submit').onclick = () => document.getElementById('submitted').textContent = 'true';
+        // Like ELM: the node page opens only after the save
+        document.getElementById('submit').onclick = () => {
+          document.getElementById('submitted').textContent = 'true';
+          setTimeout(() => { location.hash = '#/clusters/1121'; }, 300);
+        };
       </script>
     `);
     await elmPages.addEdgeNode(page, { clusterName: 'hcp-x', highAvailability: false });
+    assert.equal(await elmPages.edgeNodeElmId(page, { timeoutMs: 0 }), '1121');
     assert.equal(await page.locator('#node').inputValue(), 'hcp-x');
     assert.equal(await page.locator('#namespace').inputValue(), 'edgelm');
     assert.equal(await page.locator('#restricted').isChecked(), true);
     assert.equal(await page.locator('#ha').isChecked(), false);
     assert.equal(await page.locator('#replicate').isChecked(), false);
     assert.equal(await page.locator('#submitted').innerText(), 'true');
+  } finally { await page.close(); }
+});
+
+test('add_stops_when_the_node_page_does_not_open', async () => {
+  const page = await browser.newPage();
+  page.setDefaultTimeout(3000);
+  try {
+    await page.setContent(`
+      <button id="add">Add</button>
+      <section id="details" hidden>
+        <label>Edge Node Name<input id="node"></label>
+        <label>Main Namespace<input id="namespace"></label>
+        <label><input type="checkbox" id="restricted">Restricted Access to Kubernetes Cluster</label>
+        <label><input type="checkbox" id="ha">High Availability Mode</label>
+        <label><input type="checkbox" id="connector">External Cloud Connector</label>
+        <button id="step2">Step 2</button>
+      </section>
+      <section id="registry" hidden>
+        <label><input type="checkbox" id="replicate">Replicate Container Images</label>
+        <button id="step3">Step 3</button>
+      </section>
+      <section id="proxy" hidden>
+        <label><input type="checkbox" id="proxy-cb">Enable HTTP Proxy</label>
+        <button id="review">Review</button>
+      </section>
+      <section id="summary" hidden>
+        <h2>Configuration Review</h2>
+        <button id="submit">Add Edge Node</button>
+      </section>
+      <script>
+        for (const [button, section] of [['add','details'],['step2','registry'],['step3','proxy'],['review','summary']]) {
+          document.getElementById(button).onclick = () => setTimeout(() => document.getElementById(section).hidden = false, 50);
+        }
+      </script>
+    `);
+    await assert.rejects(
+      elmPages.addEdgeNode(page, { clusterName: 'hcp-x', nodePageTimeoutMs: 500 }),
+      /did not open the new Edge Node page/,
+    );
+  } finally { await page.close(); }
+});
+
+test('elm_id_waits_for_the_node_page', async () => {
+  const page = await browser.newPage();
+  try {
+    await page.setContent('<div>saving</div><script>setTimeout(() => { location.hash = "#/clusters/77"; }, 300);</script>');
+    assert.equal(await elmPages.edgeNodeElmId(page, { timeoutMs: 3000 }), '77');
+    await page.setContent('<div>list</div>');
+    await page.goto('about:blank#/list');
+    await assert.rejects(elmPages.edgeNodeElmId(page, { timeoutMs: 200 }), /Cannot extract ELM node ID/);
   } finally { await page.close(); }
 });
 
@@ -217,7 +272,11 @@ test('add_with_registry_fills_replication', async () => {
         document.getElementById('step2').onclick = () => setTimeout(() => { hide('step2'); show('registry'); }, 50);
         document.getElementById('step3').onclick = () => setTimeout(() => { hide('step3'); show('proxy'); }, 50);
         document.getElementById('review').onclick = () => setTimeout(() => { hide('details', 'registry', 'proxy'); show('summary'); }, 50);
-        document.getElementById('submit').onclick = () => document.getElementById('submitted').textContent = 'true';
+        // Like ELM: the node page opens only after the save
+        document.getElementById('submit').onclick = () => {
+          document.getElementById('submitted').textContent = 'true';
+          setTimeout(() => { location.hash = '#/clusters/1121'; }, 300);
+        };
         document.getElementById('cert-upload').addEventListener('input', (e) => {
           if (e.target.files?.[0]) document.getElementById('cert-name').textContent = e.target.files[0].name;
         });
