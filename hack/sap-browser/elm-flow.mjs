@@ -198,7 +198,7 @@ export async function runDeployFlow(ctx) {
   // Step 5: Add edge node if absent
   if (state === 'absent') {
     await withLogin(page, steps, () => steps.addEdgeNode(page, { clusterName, registry: inputs.registry, highAvailability: inputs.highAvailability }), { waitForLogin, reopen: stayOnList });
-    // "Add Edge Node" lands on the new node's page (#/clusters/<id>)
+    // addEdgeNode returns on the new node's page (#/clusters/<id>)
     captureNodeUrl();
     state = 'added';
 

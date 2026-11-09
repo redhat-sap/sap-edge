@@ -6,6 +6,9 @@ import { basename, join } from 'node:path';
 import { SetupError } from './inputs.mjs';
 import { fillRegistration, setBoxState, setCheckbox } from './registration.mjs';
 
+// The page of one Edge Node; the number is its ELM id
+const NODE_PAGE_URL = /#\/clusters\/(\d+)/;
+
 function notMapped(method) {
   throw new SetupError(`ELM screen step not mapped yet: ${method}. Record it with sapBrowserMode inspect.`);
 }
@@ -47,9 +50,10 @@ export const elmPages = {
     return 'added';
   },
 
-  async edgeNodeElmId(page) {
-    const url = page.url();
-    const match = url.match(/#\/clusters\/(\d+)/);
+  async edgeNodeElmId(page, { timeoutMs = 30000 } = {}) {
+    // The node page can still be opening (hash navigation after a save)
+    await page.waitForURL(NODE_PAGE_URL, { timeout: timeoutMs }).catch(() => {});
+    const match = page.url().match(NODE_PAGE_URL);
     if (!match) {
       throw new SetupError('Cannot extract ELM node ID from URL.');
     }
@@ -65,9 +69,16 @@ export const elmPages = {
     await table.getByText(clusterName, { exact: true }).click();
   },
 
-  async addEdgeNode(page, { clusterName, registry, highAvailability = false }) {
+  async addEdgeNode(page, { clusterName, registry, highAvailability = false, nodePageTimeoutMs = 120000 }) {
     await fillRegistration(page, { clusterName, highAvailability, registry });
     await page.getByRole('button', { name: 'Add Edge Node', exact: true }).click();
+    // ELM saves the node first and only then opens its page (#/clusters/<id>); the flow reads
+    // the id from that URL
+    try {
+      await page.waitForURL(NODE_PAGE_URL, { timeout: nodePageTimeoutMs });
+    } catch {
+      throw new SetupError('ELM did not open the new Edge Node page after "Add Edge Node"; check in ELM whether the node was added.');
+    }
   },
 
   async downloadElmZip(page, { clusterName, dir }) {
