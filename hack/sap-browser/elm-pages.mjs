@@ -4,7 +4,7 @@
 import { randomBytes } from 'node:crypto';
 import { basename, join } from 'node:path';
 import { SetupError } from './inputs.mjs';
-import { fillRegistration } from './registration.mjs';
+import { fillRegistration, setBoxState, setCheckbox } from './registration.mjs';
 
 function notMapped(method) {
   throw new SetupError(`ELM screen step not mapped yet: ${method}. Record it with sapBrowserMode inspect.`);
@@ -79,7 +79,7 @@ export const elmPages = {
     const filename = download.suggestedFilename();
     const path = join(dir, basename(filename));
     await download.saveAs(path);
-    await page.getByRole('checkbox', { name: 'I confirm that I have downloaded and applied resources.', exact: true }).check();
+    await setCheckbox(page, 'I confirm that I have downloaded and applied resources.', true);
     await page.getByRole('button', { name: 'Next Step', exact: true }).click();
     return path;
   },
@@ -169,7 +169,7 @@ export const elmPages = {
 
     // Enable shared file system
     const sharedFsCheckbox = namespacesForm.locator('input[type="checkbox"]').first();
-    await sharedFsCheckbox.check();
+    await setBoxState(page, sharedFsCheckbox, 'Shared File System', true);
     await namespacesForm.getByRole('textbox', { name: 'Shared File System Storage', exact: true }).fill(cell.eic.sharedFsStorageClass);
 
     // Step 2: Services (click Next Step twice to skip step 2)

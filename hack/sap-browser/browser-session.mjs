@@ -130,17 +130,32 @@ function describe(error) {
   return error instanceof SetupError ? error.message : 'Unexpected error; details are hidden because they can contain credentials.';
 }
 
-// From a Playwright error only the error type, the action and the locator it waited for are
-// printed: locators come from this code (labels, node, solution and version names), never from
-// entered values. Null when the error carries neither.
+// Playwright reasons that never contain page content or entered values.
+const PLAYWRIGHT_REASONS = [
+  /^Timeout \d+ms exceeded\./,
+  /^Clicking the checkbox did not change its state/,
+  /^Error: strict mode violation: .* resolved to \d+ elements/,
+  /^Element is not attached to the DOM/,
+  /^Error: Not a checkbox or radio button/,
+  /^Error: Element is not an <input>/,
+];
+
+// From a Playwright error only the error type, the action, a known reason and the locator it
+// waited for are printed: locators come from this code (labels, node, solution and version
+// names), never from entered values. Null when the error carries none of them.
 export function diagnose(error) {
   if (!(error instanceof Error) || error instanceof SetupError) return null;
-  const message = typeof error.message === 'string' ? error.message : '';
-  const action = message.match(/^((?:locator|page|frame)\.[A-Za-z]+):/)?.[1];
+  // Playwright colours its call log with ANSI escapes
+  const message = (typeof error.message === 'string' ? error.message : '').replace(/\u001b\[[0-9;]*m/g, '');
+  const head = message.match(/^((?:locator|page|frame)\.[A-Za-z]+): ([^\n]*)/);
+  const action = head?.[1];
+  const firstLine = head?.[2] ?? '';
+  const reasonMatch = PLAYWRIGHT_REASONS.map((pattern) => firstLine.match(pattern)?.[0]).find(Boolean);
+  const reason = reasonMatch?.startsWith('Error: strict mode violation') ? 'strict mode violation' : reasonMatch?.replace(/^Error: /, '');
   const target = message.match(/^\s*- waiting for ((?:getBy[A-Za-z]+|locator)\(.{1,200})$/m)?.[1];
   if (!action && !target) return null;
   const name = /^[A-Za-z]{1,40}$/.test(error.name) ? error.name : 'Error';
-  return `Error type ${name}${action ? ` in ${action}` : ''}${target ? `, waiting for ${target}` : ''}.`;
+  return `Error type ${name}${action ? ` in ${action}` : ''}${reason ? ` (${reason.replace(/\.$/, '')})` : ''}${target ? `, waiting for ${target}` : ''}.`;
 }
 
 function logDetails(error, logError) {
