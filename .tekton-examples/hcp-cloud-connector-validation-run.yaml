@@ -28,12 +28,9 @@ spec:
       value: "{{ revision }}"
     - name: pullRequestNumber
       value: "{{ pull_request_number }}"
-    # hostedClusterName: include hubClusterName to avoid collisions across hubs
-    # Pattern: {prefix}-{hubClusterName}-pr{number}
+    # hostedClusterName: <pipeline name without -validation>-pr<N>
     - name: hostedClusterName
-      value: "hcp-scc-eic-pr{{ pull_request_number }}"
-    # hostedClusterName: include hubClusterName to avoid collisions across hubs
-    # Pattern: {prefix}-{hubClusterName}-pr{number}
+      value: "hcp-cloud-connector-pr{{ pull_request_number }}"
     - name: hostedClusterNamespace
       value: "clusters"
     - name: releaseImage

@@ -6,7 +6,8 @@
 # Prerequisites:
 # 1. Ensure the ObjectBucketClaim (OBC) 'sap-eic-restricted-cluster-config-resources'
 #    is created and bound in the pipeline namespace. The pipeline creates the
-#    folders elm/, edge-icell-1/, edge-icell-2/ under 'restricted-resources/pr<N>/' (one set per PR)
+#    folders elm/, edge-icell-1/, edge-icell-2/ under 'restricted-resources/<hostedClusterName>/'
+#    (one set per cluster)
 #    and waits for the bundles in two passes: wait-elm-zip (elm/), then, after the
 #    Edge Node is registered and the EIC cells are deployed in ELM, wait-eic-zip
 #    (edge-icell-N/).
@@ -46,12 +47,10 @@ spec:
       value: "{{ pull_request_number }}"
 
     # --- HCP cluster parameters ---
-    # hostedClusterName: include hubClusterName to avoid collisions across hubs
-    # Pattern: {prefix}-{hubClusterName}-pr{number}
+    # hostedClusterName: <pipeline name without -validation>-pr<N>; s3Prefix below
+    # uses the same name, so every cluster gets its own S3 folders
     - name: hostedClusterName
-      value: "hcp-dedicated-eli-pr{{ pull_request_number }}"
-    # hostedClusterName: include hubClusterName to avoid collisions across hubs
-    # Pattern: {prefix}-{hubClusterName}-pr{number}
+      value: "hcp-ossm3-multi-eic-pr{{ pull_request_number }}"
     - name: hostedClusterNamespace
       value: "clusters"
     - name: releaseImage
@@ -80,7 +79,7 @@ spec:
     - name: obcName
       value: "sap-eic-restricted-cluster-config-resources"
     - name: s3Prefix
-      value: "restricted-resources/pr{{ pull_request_number }}/"
+      value: "restricted-resources/hcp-ossm3-multi-eic-pr{{ pull_request_number }}/"
     # S3 folders under s3Prefix, one SAP bundle zip each (upload as downloaded):
     #   elm/           ELM bundle of the (single, shared) Edge Node (creates edgelm)
     #   edge-icell-1/  EIC bundle of cell 1 (edge-icell-1, istio-gateways-1, ...)
