@@ -11,7 +11,7 @@ The Tekton approval gates remain in place.
 
 **In the pipelines** (`sapBrowserMode` `inspect` or `auto`), Chromium runs in a
 task pod and you reach it through a per-run Route behind the OpenShift OAuth
-proxy. In `hcp-ossm3-validation-pipeline` a deploy session (after
+proxy. In `hcp-ossm3-single-eic-validation-pipeline` a deploy session (after
 `wait-cluster-ready`) adds the Edge Node, uploads the restricted-resources zips,
 deploys EIC and the test iFlows, and a teardown session (after
 `approval-teardown`) deletes what the run created; the task also has an upgrade

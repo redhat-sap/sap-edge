@@ -6,7 +6,7 @@
 apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
-  name: hcp-ossm3-dedicated-validation-pipeline
+  name: hcp-ossm3-multi-eic-validation-pipeline
   annotations:
     description: "Complete SAP Edge validation pipeline for HCP KubeVirt with a dedicated OSSM3 service mesh: creates hosted cluster, deploys an independent SAP mesh control plane (istio-system-sap-edge) with revision-based injection, applies the restricted-resources in two passes (ELM bundle first, EIC bundles after the Edge Node is registered), generates restricted kubeconfig, deploys a shared PostgreSQL and one Redis/Valkey per EIC cell (cellCount 1 or 2), runs per-cell endpoint tests, and tears down infrastructure"
 spec:

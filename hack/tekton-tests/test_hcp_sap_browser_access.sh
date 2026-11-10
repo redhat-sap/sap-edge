@@ -617,7 +617,7 @@ run_browser_step() {
     --param mode=auto --param phase=deploy \
     --param runnerImage=example.com/sap-browser:test \
     --param elmUrl=https://elm.example.com/ \
-    --param pipelineRun=hcp-ossm3-validation-pr42-abcde \
+    --param pipelineRun=hcp-ossm3-single-eic-validation-pr42-abcde \
     --param pipelineRunUID=0f6c1e4a-1111-2222-3333-444455556666 \
     --param hostedClusterName="${CLUSTER}" \
     --param s3Prefix="restricted-resources/${CLUSTER}/" \

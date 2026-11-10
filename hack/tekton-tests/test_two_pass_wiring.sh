@@ -35,7 +35,7 @@ KUBECONFIG_SECRET = "edgelm-kubeconfig-generated-$(params.hostedClusterName)"
 # the runAfter of every task of the two passes, and the run files with the
 # component values they must pass.
 SPECS = {
-    "hcp-ossm3-multi-stack-validation-pipeline": {
+    "hcp-ossm3-multi-edge-node-validation-pipeline": {
         "elm_default": "elm-1 elm-2",
         "eic_default": "edge-icell-1 edge-icell-2",
         "waits": {
@@ -59,13 +59,13 @@ SPECS = {
         },
         "task_refs": {"prepare-namespaces-multi-stack-eic": "ossm3-prepare-namespaces-multi-stack"},
         "run_files": {
-            "hcp-ossm3-multi-stack-validation-run.yaml": {
+            "hcp-ossm3-multi-edge-node-validation-run.yaml": {
                 "elmZipFolders": "elm-1 elm-2",
                 "eicZipFolders": "edge-icell-1 edge-icell-2",
             },
         },
     },
-    "hcp-ossm3-dedicated-validation-pipeline": {
+    "hcp-ossm3-multi-eic-validation-pipeline": {
         "elm_default": "elm",
         "eic_default": "edge-icell-1 edge-icell-2",
         "waits": {
@@ -91,17 +91,17 @@ SPECS = {
             "configure-mesh-eic": "ossm3-configure-dedicated-mesh",
         },
         "run_files": {
-            "hcp-ossm3-dedicated-validation-run.yaml": {
+            "hcp-ossm3-multi-eic-validation-run.yaml": {
                 "elmZipFolders": "elm",
                 "eicZipFolders": "edge-icell-1 edge-icell-2",
             },
-            "hcp-ossm3-dedicated-validation-proxy-run.yaml": {
+            "hcp-ossm3-multi-eic-validation-proxy-run.yaml": {
                 "elmZipFolders": "elm",
                 "eicZipFolders": "edge-icell-1",
             },
         },
     },
-    "hcp-ossm3-validation-pipeline": {
+    "hcp-ossm3-single-eic-validation-pipeline": {
         "elm_default": "elm",
         "eic_default": "edge-icell",
         "waits": {
@@ -130,12 +130,12 @@ SPECS = {
         },
         "run_files": {
             # One folder per cluster, never the shared flat restricted-resources/
-            "hcp-ossm3-validation-run.yaml": {
+            "hcp-ossm3-single-eic-validation-run.yaml": {
                 "s3Prefix": "restricted-resources/hcp-ossm-eic-pr{{ pull_request_number }}/",
             },
         },
     },
-    "aro-eic-ossm3-pipeline": {
+    "aro-ossm3-single-eic-validation-pipeline": {
         "elm_default": "elm",
         "eic_default": "edge-icell",
         "waits": {
@@ -163,10 +163,10 @@ SPECS = {
         # must be gated itself (a skipped parent does not block its dependents)
         "eic_pass_gate": ("skipEicValidation", "false"),
         "run_files": {
-            "aro-eic-ossm3-run.yaml": {"s3Prefix": "restricted-resources/eic-on-ocp-demo/"},
+            "aro-ossm3-single-eic-validation-run.yaml": {"s3Prefix": "restricted-resources/eic-on-ocp-demo/"},
         },
     },
-    "rosa-eic-ossm3-pipeline": {
+    "rosa-ossm3-single-eic-validation-pipeline": {
         "elm_default": "elm",
         "eic_default": "edge-icell",
         "waits": {
@@ -194,7 +194,7 @@ SPECS = {
         # must be gated itself (a skipped parent does not block its dependents)
         "eic_pass_gate": ("skipEicValidation", "false"),
         "run_files": {
-            "rosa-eic-ossm3-run.yaml": {"s3Prefix": "restricted-resources/rosa-ossm-pr{{ pull_request_number }}/"},
+            "rosa-ossm3-single-eic-validation-run.yaml": {"s3Prefix": "restricted-resources/rosa-ossm-pr{{ pull_request_number }}/"},
         },
     },
 }

@@ -14,8 +14,8 @@ import { SetupError } from './inputs.mjs';
 
 const ELM = 'https://elm.example.com/';
 const ROUTE_URL = 'https://sapb-hcp-c1-sap-edge-ci.apps.example.com/vnc.html?autoconnect=1&resize=remote&path=websockify';
-const SINGLE = 'hcp-ossm3-validation-pipeline';
-const DEDICATED = 'hcp-ossm3-dedicated-validation-pipeline';
+const SINGLE = 'hcp-ossm3-single-eic-validation-pipeline';
+const DEDICATED = 'hcp-ossm3-multi-eic-validation-pipeline';
 const SECRETS = ['pg-secret-value', 'redis-secret-value', 'robot-secret-value', 'aws-secret-value', 'admin-kubeconfig-value'];
 
 async function folderTest(work) {
@@ -393,11 +393,11 @@ test('rejects_other_pipeline', async () => folderTest(async (directory) => {
     await assert.rejects(hcpProfile.loadCells(fakeCluster.read, opts, { waitForTask: async () => {}, dir: directory }),
       (error) => error instanceof SetupError && pattern.test(error.message));
   };
-  await rejected(cluster({ pipeline: 'hcp-ossm3-multi-stack-validation-pipeline' }), /hcp-ossm3-dedicated-validation-pipeline/);
-  await rejected(cluster({ pipeline: 'roks-eic-ossm3-pipeline' }), /pipeline/);
-  // cellCount '' belongs to the single-EIC pipeline, a cell count to the dedicated one.
-  await rejected(cluster({ pipeline: DEDICATED }), /hcp-ossm3-validation-pipeline/, hcpPipelineOptions(environment(directory, { CELL_COUNT: '' })));
-  await rejected(cluster({ pipeline: SINGLE }), /hcp-ossm3-dedicated-validation-pipeline/);
+  await rejected(cluster({ pipeline: 'hcp-ossm3-multi-edge-node-validation-pipeline' }), /hcp-ossm3-multi-eic-validation-pipeline/);
+  await rejected(cluster({ pipeline: 'roks-ossm3-single-eic-validation-pipeline' }), /pipeline/);
+  // cellCount '' belongs to the single-EIC pipeline, a cell count to the multi-EIC one.
+  await rejected(cluster({ pipeline: DEDICATED }), /hcp-ossm3-single-eic-validation-pipeline/, hcpPipelineOptions(environment(directory, { CELL_COUNT: '' })));
+  await rejected(cluster({ pipeline: SINGLE }), /hcp-ossm3-multi-eic-validation-pipeline/);
   // Another run or another cluster.
   await rejected(cluster({ overrides: { 'pipelinerun/hcp-run-1': { metadata: { uid: 'other' }, spec: { pipelineRef: { name: DEDICATED } } } } }), /UID/);
   await rejected(cluster({
@@ -415,12 +415,12 @@ test('rejects_other_pipeline', async () => folderTest(async (directory) => {
   });
   const dedicatedTasks = ['generate-sa-based-kubeconfig', 'cell1-get-all-accesses', 'cell2-get-all-accesses', 'configure-mesh-eic'];
   assert.equal((await loadCells(directory, {}, inline(dedicatedTasks))).cells.length, 2);
-  // The multi-stack pipeline has no generate-sa-based-kubeconfig or configure-mesh-eic.
+  // The multi-Edge-Node pipeline has no generate-sa-based-kubeconfig or configure-mesh-eic.
   await rejected(inline(['stack1-generate-sa-based-kubeconfig', 'cell1-get-all-accesses', 'cell2-get-all-accesses']), /pipeline/);
   await rejected(inline(['generate-sa-based-kubeconfig', 'get-all-accesses', 'configure-mesh-eic']), /pipeline/);
 
   // Through the session: failed, no browser.
-  const h = harness({ cluster: cluster({ pipeline: 'hcp-ossm3-multi-stack-validation-pipeline' }) });
+  const h = harness({ cluster: cluster({ pipeline: 'hcp-ossm3-multi-edge-node-validation-pipeline' }) });
   assert.equal(await main(environment(directory), h.deps), 'failed');
   assert.ok(!h.calls.includes('launch'));
   assertNoSecrets(h.logs);

@@ -6,7 +6,7 @@
 apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
-  name: hcp-ossm3-multi-stack-validation-pipeline
+  name: hcp-ossm3-multi-edge-node-validation-pipeline
   annotations:
     description: "Complete SAP Edge validation pipeline for HCP KubeVirt, multi-stack (2 Edge Nodes, dedicated mesh each; multi-EIC topology B): creates hosted cluster, applies the restricted-resources in two passes (ELM bundles first, EIC bundles after the Edge Nodes are registered), deploys one OSSM3 control plane per Edge Node (istio-system-sap-edge-N / sap-mesh-istio-N) and assigns each stack's namespaces to it with revision-based injection, generates one restricted kubeconfig per Edge Node (edgelm-N), deploys a shared PostgreSQL and one Redis/Valkey per EIC cell, runs per-cell endpoint tests, and tears down infrastructure"
 spec:
@@ -332,7 +332,7 @@ spec:
     #         IstioCNI once and, per stack N, istio-system-sap-edge-N with Istio
     #         sap-mesh-istio-N (discoverySelectors istio-discovery=sap-edge-mesh-N)
     #         and the proxy ServiceEntry in edgelm-N, then waits until each is Ready.
-    #         Mesh before namespace labels (reverse of the dedicated pipeline):
+    #         Mesh before namespace labels (reverse of the multi-EIC pipeline):
     #         the injection revision is read from the running control plane.
     - name: configure-multi-stack-mesh
       runAfter: [apply-elm-resources]

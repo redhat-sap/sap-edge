@@ -16,9 +16,9 @@ echo "============================================"
 
 TASK=../../.tekton/tasks/roks-sap-browser-task.yaml
 HCP_TASK=../../.tekton/tasks/hcp-sap-browser-task.yaml
-PIPELINE=../../.tekton/pipelines/roks-eic-ossm3-pipeline.yaml
-RUN_FILE=../../.tekton/roks-eic-ossm3-run.yaml
-EXAMPLE_RUN_FILE=../../.tekton-examples/roks-eic-ossm3-run.yaml
+PIPELINE=../../.tekton/pipelines/roks-ossm3-single-eic-validation-pipeline.yaml
+RUN_FILE=../../.tekton/roks-ossm3-single-eic-validation-run.yaml
+EXAMPLE_RUN_FILE=../../.tekton-examples/roks-ossm3-single-eic-validation-run.yaml
 ROKS_ENTRY=../../hack/sap-browser/roks-pipeline.mjs
 SESSION_CODE=../../hack/sap-browser/browser-session.mjs
 
@@ -618,7 +618,7 @@ run_browser_step() {
     --param phase=deploy \
     --param runnerImage=example.com/sap-browser:test \
     --param elmUrl=https://elm.example.com/ \
-    --param pipelineRun=roks-eic-ossm3-pr7-abcde \
+    --param pipelineRun=roks-ossm3-single-eic-validation-pr7-abcde \
     --param pipelineRunUID=0f6c1e4a-1111-2222-3333-444455556666 \
     --param clusterName=redhat-roks-eic-pr7 \
     --param obcName=sap-eic-restricted-cluster-config-resources \

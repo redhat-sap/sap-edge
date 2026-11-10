@@ -6,7 +6,7 @@
 apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
-  name: rosa-validation-pipeline
+  name: rosa-cluster-only-validation-pipeline
   annotations:
     description: "ROSA validation pipeline without Quay: deploys ROSA HCP cluster (m5.xlarge) for generic testing"
 spec:

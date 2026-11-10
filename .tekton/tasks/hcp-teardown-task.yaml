@@ -256,7 +256,7 @@ spec:
         oc delete secret "${CREDS_SECRET_NAME}" --ignore-not-found=true && echo "   Deleted secret: ${CREDS_SECRET_NAME}" || true
 
         # Per-cell / per-stack artifacts of the multi-EIC pipelines (cells of
-        # hcp-ossm3-dedicated-validation, stacks of hcp-ossm3-multi-stack-validation;
+        # hcp-ossm3-multi-eic-validation, stacks of hcp-ossm3-multi-edge-node-validation;
         # N = 1, 2). Their tasks create them with the in-cluster service account in
         # the pipeline namespace, so delete them there. Only exact names derived
         # from this cluster are used and missing ones are a no-op (other pipelines

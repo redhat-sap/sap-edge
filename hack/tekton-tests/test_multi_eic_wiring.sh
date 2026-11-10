@@ -13,8 +13,8 @@ echo "============================================"
 
 # Topology A (per-cell) and B (multi-stack) pipeline invariants that the
 # generic checker does not cover.
-python3 -I - ../../.tekton/pipelines/hcp-ossm3-dedicated-validation-pipeline.yaml \
-  ../../.tekton/pipelines/hcp-ossm3-multi-stack-validation-pipeline.yaml <<'PY'
+python3 -I - ../../.tekton/pipelines/hcp-ossm3-multi-eic-validation-pipeline.yaml \
+  ../../.tekton/pipelines/hcp-ossm3-multi-edge-node-validation-pipeline.yaml <<'PY'
 import sys
 import yaml
 

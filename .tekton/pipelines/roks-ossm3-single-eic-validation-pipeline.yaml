@@ -6,7 +6,7 @@
 apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
-  name: roks-eic-ossm3-pipeline
+  name: roks-ossm3-single-eic-validation-pipeline
   annotations:
     description: "Complete SAP Edge Integration Cell validation pipeline for ROKS (Red Hat OpenShift on IBM Cloud, VPC): deploys a ROKS cluster with Terraform in the resource group redhat-sap-edge-roks-ci (IBM Cloud Container Registry namespace for ELM, IBM Cloud Databases for PostgreSQL and Redis), waits for the restricted-resources uploads to the run's own S3 folders, sets up OSSM3 restricted access, optionally drives the ELM steps with a Playwright browser behind a Route (sapBrowserMode), pauses for ELM registration and EIC deployment, runs two rounds of endpoint tests, and tears down the infrastructure"
 spec:

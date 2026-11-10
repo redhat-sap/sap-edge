@@ -24,7 +24,7 @@ echo "Running pipeline wiring checker"
 echo "=========================================="
 
 # Check all pipelines and run files
-# Controller ruling R1: use hcp-ossm3-dedicated-validation-pipeline (not hcp-ossm3-dedicated-validation)
+# Controller ruling R1: use hcp-ossm3-multi-eic-validation-pipeline (not hcp-ossm3-multi-eic-validation)
 #
 # Build file list with nullglob to drop unmatched globs (bash 3.2-safe under set -u)
 shopt -s nullglob
@@ -40,7 +40,7 @@ if [ "${#FILES[@]}" -eq 0 ]; then
 fi
 
 python3 -I check_pipeline.py \
-  --cell-gate hcp-ossm3-dedicated-validation-pipeline:cellCount:2 \
+  --cell-gate hcp-ossm3-multi-eic-validation-pipeline:cellCount:2 \
   "${FILES[@]}"
 
 echo ""

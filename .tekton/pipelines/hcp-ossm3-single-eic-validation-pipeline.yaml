@@ -6,7 +6,7 @@
 apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
-  name: hcp-ossm3-validation-pipeline
+  name: hcp-ossm3-single-eic-validation-pipeline
   annotations:
     description: "Complete SAP Edge validation pipeline for HCP KubeVirt with OSSM3 restricted-access setup: creates hosted cluster, configures Service Mesh 3.x, applies the restricted-resources in two passes (ELM bundle first, EIC bundle after the Edge Node is registered), generates restricted kubeconfig, deploys PostgreSQL and Redis, optionally drives the ELM and Integration Suite steps with a Playwright browser behind a Route (sapBrowserMode), runs endpoint tests, and tears down infrastructure"
 spec:

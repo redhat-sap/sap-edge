@@ -26,7 +26,7 @@ function resources(datastore = 'redis') {
   return {
     'pipelinerun/run-1': {
       metadata: { uid: 'run-uid' },
-      spec: { pipelineRef: { name: 'hcp-ossm3-validation-pipeline' }, params: [
+      spec: { pipelineRef: { name: 'hcp-ossm3-single-eic-validation-pipeline' }, params: [
         { name: 'hostedClusterName', value: 'hcp-demo' }, { name: 'datastoreType', value: datastore },
       ] },
       status: { childReferences: [{ name: 'accesses-1', kind: 'TaskRun', pipelineTaskName: 'get-all-accesses' }] },

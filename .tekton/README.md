@@ -23,16 +23,16 @@ zips to upload.
 
 | Pipeline | ELM access | What it does |
 |----------|------------|--------------|
-| `aro-eic-ossm3` | restricted | ARO with Azure PostgreSQL/Redis and Quay, EIC, endpoint tests, teardown |
-| `rosa-eic-ossm3` | restricted | ROSA HCP with RDS PostgreSQL, ElastiCache Redis and Quay, EIC, endpoint tests, teardown |
-| `roks-eic-ossm3` | restricted | ROKS with IBM Cloud Databases and Container Registry, optional ELM browser automation, EIC, endpoint tests, teardown |
-| `hcp-ossm3-validation` | restricted | HCP KubeVirt, one Edge Node with one EIC on the shared mesh, optional ELM browser automation |
-| `hcp-ossm3-dedicated-validation` | restricted | HCP KubeVirt, one Edge Node with one or two EICs on a dedicated mesh (topology A) |
-| `hcp-ossm3-multi-stack-validation` | restricted | HCP KubeVirt, two Edge Nodes with one EIC and a dedicated mesh each (topology B) |
-| `hcp-kubevirt-validation` | full | HCP KubeVirt with PostgreSQL/Redis, EIC, endpoint tests, teardown |
-| `hcp-cloud-connector-validation` | full | as `hcp-kubevirt-validation`, plus the SAP Cloud Connector configuration |
+| `aro-ossm3-single-eic-validation` | restricted | ARO with Azure PostgreSQL/Redis and Quay, EIC, endpoint tests, teardown |
+| `rosa-ossm3-single-eic-validation` | restricted | ROSA HCP with RDS PostgreSQL, ElastiCache Redis and Quay, EIC, endpoint tests, teardown |
+| `roks-ossm3-single-eic-validation` | restricted | ROKS with IBM Cloud Databases and Container Registry, optional ELM browser automation, EIC, endpoint tests, teardown |
+| `hcp-ossm3-single-eic-validation` | restricted | HCP KubeVirt, one Edge Node with one EIC on the shared mesh, optional ELM browser automation |
+| `hcp-ossm3-multi-eic-validation` | restricted | HCP KubeVirt, one Edge Node with one or two EICs on a dedicated mesh (topology A) |
+| `hcp-ossm3-multi-edge-node-validation` | restricted | HCP KubeVirt, two Edge Nodes with one EIC and a dedicated mesh each (topology B) |
+| `hcp-single-eic-validation` | full | HCP KubeVirt with PostgreSQL/Redis, EIC, endpoint tests, teardown |
+| `hcp-cloud-connector-validation` | full | as `hcp-single-eic-validation`, plus the SAP Cloud Connector configuration |
 | `aro-edgelm-validation`, `rosa-edgelm-validation` | full | cluster with Quay, ELM only (no databases), edgelm validation |
-| `aro-validation`, `rosa-validation` | - | cluster only, for generic testing |
+| `aro-cluster-only-validation`, `rosa-cluster-only-validation` | - | cluster only, for generic testing |
 | `endpoint-test-pipeline` | - | endpoint tests against an existing EIC |
 
 ## Tasks
@@ -204,7 +204,7 @@ tkn pipelinerun list
 ```
 
 **Example PipelineRuns** are in `.tekton-examples/`, named after their pipeline
-(see [Pipelines](#pipelines)), for example `hcp-ossm3-validation-run.yaml`.
+(see [Pipelines](#pipelines)), for example `hcp-ossm3-single-eic-validation-run.yaml`.
 
 ### 4. Manual Approvals
 ```bash
@@ -217,7 +217,7 @@ in SAP Integration Suite and check that every Edge Integration Cell runtime of
 the cluster shows a healthy status, with no errors. Then delete every EIC
 deployment of the cluster in ELM (Operations > Delete) and remove its Edge
 Node(s) (Remove, confirm with the node name): the teardown deletes only the
-cluster, not its ELM entries. ROKS and `hcp-ossm3-validation` with
+cluster, not its ELM entries. ROKS and `hcp-ossm3-single-eic-validation` with
 `sapBrowserMode` on do this in `sap-browser-teardown` after the approval.
 Approving starts the teardown.
 
@@ -225,10 +225,10 @@ Approving starts the teardown.
 
 Two pipelines deploy more than one Edge Integration Cell (EIC) on one cluster:
 
-- **Topology A, shared core:** `hcp-ossm3-dedicated-validation-pipeline`. One
+- **Topology A, shared core:** `hcp-ossm3-multi-eic-validation-pipeline`. One
   Edge Node (a shared `edgelm`), one dedicated mesh, N cells (`cellCount`,
   default `2`).
-- **Topology B, 1:1:1 stacks:** `hcp-ossm3-multi-stack-validation-pipeline`. An
+- **Topology B, 1:1:1 stacks:** `hcp-ossm3-multi-edge-node-validation-pipeline`. An
   Edge Node, ELM and mesh per cell, two stacks (KBA 7149262 "Scenario 2:
   Multiple Edge Nodes with Dedicated Meshes"; ELM 1.64 and EIC 8.48 or later).
 
@@ -320,11 +320,11 @@ wait-elm-zip -> apply-elm-resources -> ELM namespace labels, mesh -> restricted 
 
 | Pipeline | S3 folders | Notes |
 |---|---|---|
-| `roks-eic-ossm3` | `restricted-resources/<clusterName>/elm/`, `edge-icell/` | earlier zips are archived (new cluster each run) |
-| `hcp-ossm3-validation` | `restricted-resources/<hostedClusterName>/elm/`, `edge-icell/` | EIC wait after PostgreSQL/Redis; the optional `sap-browser-deploy` uploads both zips |
-| `hcp-ossm3-dedicated-validation` | `restricted-resources/pr<N>/elm/`, `edge-icell-N/` | see the topology A notes above |
-| `hcp-ossm3-multi-stack-validation` | `restricted-resources/pr<N>-multi-stack/elm-N/`, `edge-icell-N/` | see the topology B notes above |
-| `aro-eic-ossm3`, `rosa-eic-ossm3` | `restricted-resources/<cluster name>/elm/`, `edge-icell/` | EIC wait after the Quay registry; `skipEicValidation: "true"` skips the whole second pass |
+| `roks-ossm3-single-eic-validation` | `restricted-resources/<clusterName>/elm/`, `edge-icell/` | earlier zips are archived (new cluster each run) |
+| `hcp-ossm3-single-eic-validation` | `restricted-resources/<hostedClusterName>/elm/`, `edge-icell/` | EIC wait after PostgreSQL/Redis; the optional `sap-browser-deploy` uploads both zips |
+| `hcp-ossm3-multi-eic-validation` | `restricted-resources/pr<N>/elm/`, `edge-icell-N/` | see the topology A notes above |
+| `hcp-ossm3-multi-edge-node-validation` | `restricted-resources/pr<N>-multi-stack/elm-N/`, `edge-icell-N/` | see the topology B notes above |
+| `aro-ossm3-single-eic-validation`, `rosa-ossm3-single-eic-validation` | `restricted-resources/<cluster name>/elm/`, `edge-icell/` | EIC wait after the Quay registry; `skipEicValidation: "true"` skips the whole second pass |
 
 Every HCP, ARO and ROSA run keeps the zips already in its folders (a re-run
 reuses them; the latest version per folder wins), so a folder that already
@@ -787,7 +787,7 @@ The example PipelineRun lives in `.tekton-examples/` and is not triggered automa
 sed -e 's/{{ pull_request_number }}/123/g' \
     -e 's|{{ repo_url }}|https://github.com/redhat-sap/sap-edge|g' \
     -e 's/{{ revision }}/<branch or commit>/g' \
-    .tekton-examples/roks-eic-ossm3-run.yaml | oc create -f -
+    .tekton-examples/roks-ossm3-single-eic-validation-run.yaml | oc create -f -
 tkn pipelinerun logs -f <pipelinerun-name>
 ```
 

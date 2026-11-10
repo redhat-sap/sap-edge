@@ -80,8 +80,8 @@ export async function loadInputs(read, pipelineRun, { expectedRunUID, expectedCl
   if (expectedRunUID && run.metadata?.uid !== expectedRunUID) {
     throw new SetupError('PipelineRun UID does not match this browser task.');
   }
-  if (run.spec?.pipelineRef?.name !== 'hcp-ossm3-validation-pipeline') {
-    throw new SetupError('This helper currently supports hcp-ossm3-validation-pipeline only.');
+  if (run.spec?.pipelineRef?.name !== 'hcp-ossm3-single-eic-validation-pipeline') {
+    throw new SetupError('This helper currently supports hcp-ossm3-single-eic-validation-pipeline only.');
   }
   const clusterName = parameter(run, 'hostedClusterName');
   if (typeof clusterName !== 'string' || !/^[a-z](?:[a-z0-9-]*[a-z0-9])?$/.test(clusterName)) {
