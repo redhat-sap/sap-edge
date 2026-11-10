@@ -80,7 +80,7 @@ spec:
     # The pipeline derives the kubeconfig secret as: {hubClusterName}-kubeconfig
     # Ensure a Secret named "{hubClusterName}-kubeconfig" exists with the hub's kubeconfig
     - name: hubClusterName
-      value: "eic"
+      value: "eli"
 
     # --- OSSM3 parameters ---
     - name: ossm3Channel
