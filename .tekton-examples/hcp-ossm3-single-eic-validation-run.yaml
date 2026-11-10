@@ -51,12 +51,10 @@ spec:
       value: "{{ pull_request_number }}"
 
     # --- HCP cluster parameters ---
-    # hostedClusterName: include hubClusterName to avoid collisions across hubs
-    # Pattern: {prefix}-{hubClusterName}-pr{number}
+    # hostedClusterName: <pipeline name without -validation>-pr<N>; s3Prefix below
+    # uses the same name, so every cluster gets its own S3 folders
     - name: hostedClusterName
-      value: "hcp-ossm-eic-pr{{ pull_request_number }}"
-    # hostedClusterName: include hubClusterName to avoid collisions across hubs
-    # Pattern: {prefix}-{hubClusterName}-pr{number}
+      value: "hcp-ossm3-single-eic-pr{{ pull_request_number }}"
     - name: hostedClusterNamespace
       value: "clusters"
     - name: releaseImage
@@ -87,7 +85,7 @@ spec:
     # One folder per cluster (elm/ and edge-icell/ below it); earlier zips stay
     # (latest version per folder wins)
     - name: s3Prefix
-      value: "restricted-resources/hcp-ossm-eic-pr{{ pull_request_number }}/"
+      value: "restricted-resources/hcp-ossm3-single-eic-pr{{ pull_request_number }}/"
 
     # --- EIC services parameters ---
     - name: postgresVersion

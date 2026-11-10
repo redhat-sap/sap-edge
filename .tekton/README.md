@@ -259,18 +259,18 @@ The tasks find the role by stripping the trailing `-<digits>`, for example
 
 ### S3 layout
 
-One prefix per cluster deployment (pipeline parameter `s3Prefix`), one folder
-per component:
+One prefix per cluster deployment (pipeline parameter `s3Prefix`, in the example
+run files `restricted-resources/<hostedClusterName>/`), one folder per component:
 
 ```text
 # Topology A (shared ELM, one mesh, N cells)
-restricted-resources/pr<N>/
+restricted-resources/hcp-ossm3-multi-eic-pr<N>/
   elm/            restricted-resources-Edge_Lifecycle_Management-<ver>.zip
   edge-icell-1/   restricted-resources-Edge_Integration_Cell-<ver>.zip
   edge-icell-2/   restricted-resources-Edge_Integration_Cell-<ver>.zip
 
 # Topology B (an ELM and a mesh per stack)
-restricted-resources/pr<N>-multi-stack/
+restricted-resources/hcp-ossm3-multi-edge-node-pr<N>/
   elm-1/          restricted-resources-Edge_Lifecycle_Management-<ver>.zip
   edge-icell-1/   restricted-resources-Edge_Integration_Cell-<ver>.zip
   elm-2/          restricted-resources-Edge_Lifecycle_Management-<ver>.zip
@@ -322,8 +322,8 @@ wait-elm-zip -> apply-elm-resources -> ELM namespace labels, mesh -> restricted 
 |---|---|---|
 | `roks-ossm3-single-eic-validation` | `restricted-resources/<clusterName>/elm/`, `edge-icell/` | earlier zips are archived (new cluster each run) |
 | `hcp-ossm3-single-eic-validation` | `restricted-resources/<hostedClusterName>/elm/`, `edge-icell/` | EIC wait after PostgreSQL/Redis; the optional `sap-browser-deploy` uploads both zips |
-| `hcp-ossm3-multi-eic-validation` | `restricted-resources/pr<N>/elm/`, `edge-icell-N/` | see the topology A notes above |
-| `hcp-ossm3-multi-edge-node-validation` | `restricted-resources/pr<N>-multi-stack/elm-N/`, `edge-icell-N/` | see the topology B notes above |
+| `hcp-ossm3-multi-eic-validation` | `restricted-resources/<hostedClusterName>/elm/`, `edge-icell-N/` | see the topology A notes above |
+| `hcp-ossm3-multi-edge-node-validation` | `restricted-resources/<hostedClusterName>/elm-N/`, `edge-icell-N/` | see the topology B notes above |
 | `aro-ossm3-single-eic-validation`, `rosa-ossm3-single-eic-validation` | `restricted-resources/<cluster name>/elm/`, `edge-icell/` | EIC wait after the Quay registry; `skipEicValidation: "true"` skips the whole second pass |
 
 Every HCP, ARO and ROSA run keeps the zips already in its folders (a re-run

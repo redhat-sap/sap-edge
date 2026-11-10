@@ -79,7 +79,7 @@ spec:
       default: "sap-eic-restricted-cluster-config-resources"
     - name: s3Prefix
       type: string
-      description: "S3 key prefix of this deployment's restricted-resources bundles (e.g. restricted-resources/pr123-multi-stack/)"
+      description: "S3 key prefix of this deployment's restricted-resources bundles (e.g. restricted-resources/<hostedClusterName>/)"
       default: "restricted-resources/"
     - name: elmZipFolders
       type: string

@@ -131,7 +131,7 @@ SPECS = {
         "run_files": {
             # One folder per cluster, never the shared flat restricted-resources/
             "hcp-ossm3-single-eic-validation-run.yaml": {
-                "s3Prefix": "restricted-resources/hcp-ossm-eic-pr{{ pull_request_number }}/",
+                "s3Prefix": "restricted-resources/hcp-ossm3-single-eic-pr{{ pull_request_number }}/",
             },
         },
     },
