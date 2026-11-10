@@ -63,7 +63,7 @@ spec:
     - name: hostedClusterNamespace
       value: "clusters"
     - name: releaseImage
-      value: "quay.io/openshift-release-dev/ocp-release:4.22.5-x86_64"
+      value: "quay.io/openshift-release-dev/ocp-release:5.0.1-x86_64"
     - name: nodePoolReplicas
       value: "3"
     - name: nodePoolCpuCores
@@ -112,7 +112,7 @@ spec:
     - name: jiraSecretName
       value: "jira-secret-mj"
     - name: jiraIssueKey
-      value: ""
+      value: "sapocp-2285"
 
     # --- SAP browser automation (optional) ---
     # disabled, inspect or auto (hack/sap-browser/PIPELINE.md). With inspect or
@@ -120,7 +120,7 @@ spec:
     # sap-elm-url (key url) unless sapElmUrl is set. The runner image is built
     # into eic's Quay when missing (sapBrowserImage overrides it).
     - name: sapBrowserMode
-      value: "auto"
+      value: "disabled"
     # - name: sapElmUrl
     #   value: "https://YOUR-TENANT/comsapclmedgelm.comsapclmedgelm/index.html"
     # - name: sapBrowserImage
