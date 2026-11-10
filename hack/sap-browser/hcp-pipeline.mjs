@@ -11,8 +11,8 @@ import { loadRestrictedKubeconfig } from './roks-inputs.mjs';
 export { chromiumLaunchOptions } from './browser-session.mjs';
 
 const HCP_SESSION_LIMIT_MINUTES = 600;
-const SINGLE_PIPELINE = 'hcp-ossm3-validation-pipeline';
-const DEDICATED_PIPELINE = 'hcp-ossm3-dedicated-validation-pipeline';
+const SINGLE_PIPELINE = 'hcp-ossm3-single-eic-validation-pipeline';
+const DEDICATED_PIPELINE = 'hcp-ossm3-multi-eic-validation-pipeline';
 const DATASTORE_TYPES = ['redis', 'valkey-standalone', 'valkey-cluster'];
 const kubernetesName = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/;
 const versionPattern = /^(?:[0-9A-Za-z][0-9A-Za-z.+-]*)?$/;
@@ -38,7 +38,7 @@ export function hcpPipelineOptions(env) {
   if (!/^restricted-resources\/[a-z0-9][a-z0-9.-]*\/$/.test(env.S3_PREFIX ?? '')) {
     throw new SetupError('S3_PREFIX must be restricted-resources/<folder>/.');
   }
-  // '' is the single-EIC pipeline; 1-9 cells the dedicated one.
+  // '' is the single-EIC pipeline; 1-9 cells the multi-EIC one.
   if (!/^[1-9]?$/.test(env.CELL_COUNT ?? 'unset')) throw new SetupError('CELL_COUNT must be empty (single EIC) or 1-9.');
   if (!DATASTORE_TYPES.includes(env.DATASTORE_TYPE)) throw new SetupError(`DATASTORE_TYPE must be ${DATASTORE_TYPES.join(', ')}.`);
   if (!/^pr-[0-9]+$/.test(env.DEPLOYMENT_NAME_PREFIX ?? '')) throw new SetupError('DEPLOYMENT_NAME_PREFIX must be pr-<number>.');

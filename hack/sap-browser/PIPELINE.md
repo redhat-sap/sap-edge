@@ -6,14 +6,14 @@ cspell:words Containerfile ocpxu portforward
 
 # SAP browser automation in the pipelines
 
-`hcp-ossm3-validation-pipeline` (one Edge Node with one EIC on HCP KubeVirt) can
+`hcp-ossm3-single-eic-validation-pipeline` (one Edge Node with one EIC on HCP KubeVirt) can
 drive the SAP Edge Lifecycle Management (ELM) and Integration Suite steps with
 Playwright. Chromium runs on a virtual display in a task pod. You reach it
 through a per-run Route behind the OpenShift OAuth proxy, log in to OpenShift and
 then to SAP in the browser shown, and Playwright continues in that session. The
 approval gates stay: the automation never approves one.
 
-**ROKS:** `roks-eic-ossm3-pipeline` has its own browser tasks with the same
+**ROKS:** `roks-ossm3-single-eic-validation-pipeline` has its own browser tasks with the same
 image; see
 [Browser automation (optional)](../../.tekton/README.md#browser-automation-optional)
 in `.tekton/README.md`. The rest of this page describes the HCP pipeline.
@@ -204,7 +204,7 @@ hosted cluster by hand then.
 
 ## Enable it in the run file
 
-In `.tekton-examples/hcp-ossm3-validation-run.yaml` (copied to `.tekton/` on a
+In `.tekton-examples/hcp-ossm3-single-eic-validation-run.yaml` (copied to `.tekton/` on a
 pull request):
 
 - set `sapBrowserMode` to `inspect` or `auto`;

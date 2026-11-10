@@ -10,14 +10,11 @@
 #    the bundles in two passes: wait-elm-zip (elm/), then, after the Edge Node is
 #    registered and EIC is deployed in ELM, wait-eic-zip (edge-icell-1/).
 #
-# 2. Ensure the Service Mesh 3.x operator is installed on the target cluster
-#    (via OperatorHub or CLI before running this pipeline)
-#
-# 3. Ensure a Squid proxy is running on the jumphost and accessible from the
+# 2. Ensure a Squid proxy is running on the jumphost and accessible from the
 #    hosted cluster worker nodes. Create a Secret named '{hubClusterName}-proxy-config'
 #    with keys: PROXY_HOST, PROXY_PORT, PROXY_IP.
 #
-# 4. The httpbinipfilter iFlow has an IP filter (X-Forwarded-For based).
+# 3. The httpbinipfilter iFlow has an IP filter (X-Forwarded-For based).
 #    Whitelist both the hub cluster and managed/hosted cluster pod CIDRs
 #    in the iFlow's IP filter policy (e.g. 10.128.0.0/14, 10.132.0.0/14,
 #    100.64.0.0/24). Check each cluster's CIDR with:
@@ -37,7 +34,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: hcp-ossm3-dedicated-validation-proxy-pr{{ pull_request_number }}-
+  generateName: hcp-ossm3-multi-eic-validation-proxy-pr{{ pull_request_number }}-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
@@ -46,7 +43,7 @@ metadata:
     pipelinesascode.tekton.dev/cancel-in-progress: "true"
 spec:
   pipelineRef:
-    name: hcp-ossm3-dedicated-validation-pipeline
+    name: hcp-ossm3-multi-eic-validation-pipeline
   timeouts:
     pipeline: "336h"      # Total pipeline timeout (14 days)
     tasks: "335h"         # Individual task timeout (tasks + finally must be <= pipeline)

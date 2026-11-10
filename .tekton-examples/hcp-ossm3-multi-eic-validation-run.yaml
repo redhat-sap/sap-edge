@@ -11,9 +11,6 @@
 #    Edge Node is registered and the EIC cells are deployed in ELM, wait-eic-zip
 #    (edge-icell-N/).
 #
-# 2. Ensure the Service Mesh 3.x operator is installed on the target cluster
-#    (via OperatorHub or CLI before running this pipeline)
-#
 # Scenario: Dedicated SAP service mesh (istio-system-sap-edge) without proxy,
 #   two Edge Integration Cells sharing one edgelm (multi-EIC topology A, see
 #   .tekton/README.md, "Multi-EIC restricted resources")
@@ -25,7 +22,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: hcp-ossm3-dedicated-validation-pr{{ pull_request_number }}-
+  generateName: hcp-ossm3-multi-eic-validation-pr{{ pull_request_number }}-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
@@ -34,7 +31,7 @@ metadata:
     pipelinesascode.tekton.dev/cancel-in-progress: "true"
 spec:
   pipelineRef:
-    name: hcp-ossm3-dedicated-validation-pipeline
+    name: hcp-ossm3-multi-eic-validation-pipeline
   timeouts:
     pipeline: "336h"      # Total pipeline timeout (14 days)
     tasks: "335h"         # Individual task timeout (tasks + finally must be <= pipeline)

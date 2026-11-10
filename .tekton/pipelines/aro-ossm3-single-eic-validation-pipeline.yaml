@@ -6,7 +6,7 @@
 apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
-  name: aro-eic-ossm3-pipeline
+  name: aro-ossm3-single-eic-validation-pipeline
   annotations:
     description: "Complete SAP Edge Integration Cell validation pipeline: deploys ARO with Azure services (PostgreSQL, Redis, Quay Storage via Bicep), Quay registry operator, applies the OSSM3 restricted-resources in two passes (ELM bundle first, EIC bundle after the Edge Node is registered), runs comprehensive endpoint tests, and tears down infrastructure"
 spec:

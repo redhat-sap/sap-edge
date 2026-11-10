@@ -14,7 +14,7 @@ function roksResources(cluster = 'c1') {
     [`pipelinerun/run-1`]: {
       metadata: { uid: 'run-uid' },
       spec: {
-        pipelineRef: { name: 'roks-eic-ossm3-pipeline' },
+        pipelineRef: { name: 'roks-ossm3-single-eic-validation-pipeline' },
         params: [{ name: 'clusterName', value: cluster }],
       },
       status: {
@@ -127,7 +127,7 @@ test('rejects_other_pipeline', async () => {
 
   await assert.rejects(
     loadRoksInputs(reader(objects), 'run-1', { postgresPassword: 'test-pass' }),
-    /roks-eic-ossm3-pipeline/
+    /roks-ossm3-single-eic-validation-pipeline/
   );
 });
 

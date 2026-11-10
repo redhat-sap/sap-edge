@@ -14,9 +14,9 @@ echo "============================================"
 echo "Test: SAP browser wiring of the single-EIC HCP pipeline"
 echo "============================================"
 
-PIPELINE=../../.tekton/pipelines/hcp-ossm3-validation-pipeline.yaml
-RUN_FILE=../../.tekton/hcp-ossm3-validation-run.yaml
-EXAMPLE_RUN_FILE=../../.tekton-examples/hcp-ossm3-validation-run.yaml
+PIPELINE=../../.tekton/pipelines/hcp-ossm3-single-eic-validation-pipeline.yaml
+RUN_FILE=../../.tekton/hcp-ossm3-single-eic-validation-run.yaml
+EXAMPLE_RUN_FILE=../../.tekton-examples/hcp-ossm3-single-eic-validation-run.yaml
 ENTRYPOINT=../../hack/sap-browser/entrypoint.sh
 
 # Test case: pipeline_params

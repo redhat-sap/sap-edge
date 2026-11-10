@@ -10,10 +10,7 @@
 #    for the bundles in two passes: wait-elm-zip (elm/), then, after the Edge Node is
 #    registered and EIC is deployed in ELM, wait-eic-zip (edge-icell/).
 #
-# 2. Ensure the Service Mesh 3.x operator is installed on the target cluster
-#    (via OperatorHub or CLI before running this pipeline)
-#
-# 3. Only for the optional browser automation (sapBrowserMode below), once per
+# 2. Only for the optional browser automation (sapBrowserMode below), once per
 #    pipeline namespace: apply hack/sap-browser/hcp-runner-rbac.yaml, create the
 #    Secrets eic-quay-robot (pushes the runner image) and <hubClusterName>-quay-robot
 #    (registry for "Add Edge Node"), and make sure the public repository
@@ -23,7 +20,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: hcp-ossm3-validation-pr{{ pull_request_number }}-
+  generateName: hcp-ossm3-single-eic-validation-pr{{ pull_request_number }}-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
@@ -32,7 +29,7 @@ metadata:
     pipelinesascode.tekton.dev/cancel-in-progress: "true"
 spec:
   pipelineRef:
-    name: hcp-ossm3-validation-pipeline
+    name: hcp-ossm3-single-eic-validation-pipeline
   # When enabling sapBrowserMode, uncomment (the browser tasks run as the
   # ServiceAccount from hack/sap-browser/hcp-runner-rbac.yaml):
   # taskRunSpecs:
