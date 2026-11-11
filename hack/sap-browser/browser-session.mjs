@@ -145,7 +145,7 @@ const PLAYWRIGHT_REASONS = [
 // names), never from entered values. Null when the error carries none of them.
 export function diagnose(error) {
   if (!(error instanceof Error) || error instanceof SetupError) return null;
-  // Playwright colours its call log with ANSI escapes
+  // Playwright colors its call log with ANSI escapes
   const message = (typeof error.message === 'string' ? error.message : '').replace(/\u001b\[[0-9;]*m/g, '');
   const head = message.match(/^((?:locator|page|frame)\.[A-Za-z]+): ([^\n]*)/);
   const action = head?.[1];
