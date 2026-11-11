@@ -1,0 +1,408 @@
+# SPDX-FileCopyrightText: 2026 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+# cspell:words authfile unmatch varlibcontainers
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: sap-browser-image
+spec:
+  description: >-
+    Provides the SAP browser runner image as the result image. With mode
+    disabled the result is empty and nothing runs; with a given image the
+    result is that image. Otherwise the image is
+    <repository>:sap-browser-<first 12 hex of a sha256 over the tracked files
+    package-lock.json and hack/sap-browser/**> (sorted paths and contents). If
+    that tag is not in the registry yet, buildah builds it from
+    hack/sap-browser/Containerfile with the repository root as context and
+    pushes it with the Quay robot account of the Secret pushSecretName (keys
+    username, password, ca.crt), then a short-lived Pod in the pipeline
+    namespace must pull and start it. The task never fails the run: when the
+    tag check, the build, the push or the pull check (e.g. certificate trust
+    of the cluster nodes) fails, it logs the reason, the result is empty and
+    every step exits 0, so the browser tasks are skipped and the run continues
+    on the manual path. Runs as the OpenShift Pipelines `pipeline`
+    ServiceAccount (pipelines-scc allows buildah's SETFCAP); the pipeline runs
+    it without a `when`.
+  params:
+    - name: mode
+      type: string
+      description: "sapBrowserMode of the run: with disabled the task does nothing and the result is empty"
+    - name: image
+      type: string
+      description: "Runner image to use as is (empty: build or reuse the content-hash tag in repository)"
+      default: ""
+    - name: repository
+      type: string
+      description: "Repository of the built runner image (registry host and path, no tag)"
+      default: "quay.apps.eic.ocp.sap.local/sap_elm_eic/sap-browser"
+    - name: pushSecretName
+      type: string
+      description: "Secret with the Quay robot account allowed to push to repository (keys username, password, ca.crt)"
+      default: "eic-quay-robot"
+  workspaces:
+    - name: source
+      description: "Repository checked out by git-clone (build context)"
+  results:
+    - name: image
+      description: "Runner image for the browser tasks: empty when mode is disabled or the image could not be provided"
+  volumes:
+    # Shared between the steps: the candidate image, the build marker, the registry authfile
+    - name: build-state
+      emptyDir: {}
+    - name: registry-ca
+      secret:
+        secretName: $(params.pushSecretName)
+        optional: true
+        items:
+          - key: ca.crt
+            path: ca.crt
+    - name: varlibcontainers
+      emptyDir: {}
+  stepTemplate:
+    workingDir: $(workspaces.source.path)
+    env:
+      - name: SAP_BROWSER_MODE
+        value: "$(params.mode)"
+      - name: STATE_DIR
+        value: /sap-browser-image
+    volumeMounts:
+      - name: build-state
+        mountPath: /sap-browser-image
+  steps:
+    - name: compute-tag
+      image: registry.access.redhat.com/ubi9/ubi
+      env:
+        - name: RUNNER_IMAGE
+          value: "$(params.image)"
+        - name: IMAGE_REPOSITORY
+          value: "$(params.repository)"
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        # Any failure of this step: no image, the browser tasks are skipped and
+        # the run continues on the manual path (this task never fails the run)
+        no_image() {
+          local rc=$?
+          trap - EXIT
+          if ((rc != 0)); then
+            : > "${STATE_DIR}/failed"
+            printf '' > "$(results.image.path)"
+            echo "⚠️  No SAP browser runner image: the browser tasks are skipped and the run continues on the manual path" >&2
+          fi
+          exit 0
+        }
+        trap no_image EXIT
+
+        # The result stays empty unless an image is given, already in the
+        # registry (check-tag) or built and pull-checked (pull-check)
+        printf '' > "$(results.image.path)"
+
+        # The pipeline runs this task without a `when` (later tasks gate on
+        # the result): with the browser off it does nothing.
+        if [[ "${SAP_BROWSER_MODE}" == "disabled" ]]; then
+          echo "ℹ️  SAP browser automation disabled; no runner image needed"
+          printf '' > "$(results.image.path)"
+          exit 0
+        fi
+        if [[ -n "${RUNNER_IMAGE}" ]]; then
+          echo "ℹ️  Using the given runner image ${RUNNER_IMAGE}; nothing to build"
+          printf '%s' "${RUNNER_IMAGE}" > "$(results.image.path)"
+          exit 0
+        fi
+
+        fail() {
+          echo "❌ $*" >&2
+          exit 1
+        }
+
+        # The repository ends up in a Pod manifest: host[:port]/path, lowercase, no tag
+        REPOSITORY_PATTERN='^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]+)?(/[a-z0-9]([a-z0-9._-]*[a-z0-9])?)+$'
+        [[ "${IMAGE_REPOSITORY}" =~ ${REPOSITORY_PATTERN} ]] || fail "Invalid repository '${IMAGE_REPOSITORY}': <registry host>/<path> in lowercase, without a tag"
+
+        # Install tools (git)
+        echo "📦 Installing required packages..."
+        dnf install -y git-core
+        echo "✅ Tools installed"
+
+        # The workspace belongs to the git-clone user
+        GIT=(git -c "safe.directory=*")
+        "${GIT[@]}" rev-parse --is-inside-work-tree > /dev/null 2>&1 || fail "The source workspace is not a git checkout"
+        for FILE in package-lock.json hack/sap-browser/Containerfile; do
+          "${GIT[@]}" ls-files --error-unmatch -- "${FILE}" > /dev/null 2>&1 || fail "${FILE} is not tracked in the source workspace"
+        done
+
+        # Content hash: sha256 over the "sha256  path" lines of the tracked
+        # files, in byte order of their paths
+        CONTENT_HASH=$("${GIT[@]}" ls-files -z -- package-lock.json hack/sap-browser \
+          | LC_ALL=C sort -z | xargs -0 sha256sum -- | sha256sum | cut -c1-12)
+        [[ "${CONTENT_HASH}" =~ ^[0-9a-f]{12}$ ]] || fail "Could not compute the content hash"
+
+        IMAGE="${IMAGE_REPOSITORY}:sap-browser-${CONTENT_HASH}"
+        echo "✅ Runner image for this revision: ${IMAGE}"
+        printf '%s' "${IMAGE}" > "${STATE_DIR}/candidate"
+
+    - name: check-tag
+      image: registry.redhat.io/rhel9/skopeo
+      env:
+        - name: PUSH_SECRET_NAME
+          value: "$(params.pushSecretName)"
+        - name: REGISTRY_CERT_DIR
+          value: /etc/sap-browser-registry-ca
+        # optional: not needed with mode disabled or a given image
+        - name: REGISTRY_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: $(params.pushSecretName)
+              key: username
+              optional: true
+        - name: REGISTRY_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: $(params.pushSecretName)
+              key: password
+              optional: true
+      volumeMounts:
+        - name: registry-ca
+          mountPath: /etc/sap-browser-registry-ca
+          readOnly: true
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        if [[ ! -f "${STATE_DIR}/candidate" || -f "${STATE_DIR}/failed" ]]; then
+          echo "ℹ️  No image to build; nothing to check"
+          exit 0
+        fi
+
+        # Any failure of this step: no image, the browser tasks are skipped and
+        # the run continues on the manual path (this task never fails the run)
+        no_image() {
+          local rc=$?
+          trap - EXIT
+          if ((rc != 0)); then
+            : > "${STATE_DIR}/failed"
+            printf '' > "$(results.image.path)"
+            echo "⚠️  No SAP browser runner image: the browser tasks are skipped and the run continues on the manual path" >&2
+          fi
+          exit 0
+        }
+        trap no_image EXIT
+
+        IMAGE=$(cat "${STATE_DIR}/candidate")
+        REGISTRY_HOST="${IMAGE%%/*}"
+        AUTH_FILE="${STATE_DIR}/auth.json"
+        CHECK_ERROR="${STATE_DIR}/check-error.log"
+
+        fail() {
+          echo "❌ $*" >&2
+          exit 1
+        }
+
+        # Never print the robot password: it goes only into the authfile
+        if [[ -z "${REGISTRY_USERNAME:-}" || -z "${REGISTRY_PASSWORD:-}" ]]; then
+          fail "Secret ${PUSH_SECRET_NAME} with the keys username and password (Quay robot account with write access to ${IMAGE%:*}) is missing or incomplete"
+        fi
+        AUTH=$(printf '%s:%s' "${REGISTRY_USERNAME}" "${REGISTRY_PASSWORD}" | base64 | tr -d '\n')
+        (umask 077 && printf '{"auths":{"%s":{"auth":"%s"}}}\n' "${REGISTRY_HOST}" "${AUTH}" > "${AUTH_FILE}")
+        chmod 600 "${AUTH_FILE}"
+        unset AUTH
+        if [[ ! -s "${REGISTRY_CERT_DIR}/ca.crt" ]]; then
+          echo "⚠️  Secret ${PUSH_SECRET_NAME} has no ca.crt: trusting the system CAs only for ${REGISTRY_HOST}"
+        fi
+
+        echo "🔍 Checking ${IMAGE}..."
+        if skopeo inspect --raw --authfile "${AUTH_FILE}" --cert-dir "${REGISTRY_CERT_DIR}" "docker://${IMAGE}" > /dev/null 2> "${CHECK_ERROR}"; then
+          echo "✅ ${IMAGE} is already in the registry; nothing to build"
+          printf '%s' "${IMAGE}" > "$(results.image.path)"
+          exit 0
+        fi
+        if grep -qiE 'manifest unknown|name unknown|not found' "${CHECK_ERROR}"; then
+          echo "ℹ️  ${IMAGE} is not in the registry yet; building it"
+          : > "${STATE_DIR}/build"
+          exit 0
+        fi
+        echo "❌ Could not check ${IMAGE} in the registry:" >&2
+        sed 's/^/   /' "${CHECK_ERROR}" >&2
+        echo "   x509 errors: ca.crt of Secret ${PUSH_SECRET_NAME} must be the CA of ${REGISTRY_HOST};" >&2
+        echo "   unauthorized/denied: the robot account of ${PUSH_SECRET_NAME} needs write access to ${IMAGE%:*}" >&2
+        exit 1
+
+    - name: build-and-push
+      image: registry.redhat.io/rhel9/buildah
+      env:
+        - name: REGISTRY_CERT_DIR
+          value: /etc/sap-browser-registry-ca
+      # As the Red Hat buildah task: rootless-capable chroot build with vfs
+      # storage; pipelines-scc of the pipeline ServiceAccount allows SETFCAP
+      securityContext:
+        capabilities:
+          add:
+            - SETFCAP
+      computeResources:
+        requests:
+          cpu: 500m
+          memory: 2Gi
+        limits:
+          memory: 4Gi
+      volumeMounts:
+        - name: registry-ca
+          mountPath: /etc/sap-browser-registry-ca
+          readOnly: true
+        - name: varlibcontainers
+          mountPath: /var/lib/containers
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        if [[ ! -f "${STATE_DIR}/build" || -f "${STATE_DIR}/failed" ]]; then
+          echo "ℹ️  No build needed"
+          exit 0
+        fi
+
+        # Any failure of this step: no image, the browser tasks are skipped and
+        # the run continues on the manual path (this task never fails the run)
+        no_image() {
+          local rc=$?
+          trap - EXIT
+          if ((rc != 0)); then
+            : > "${STATE_DIR}/failed"
+            printf '' > "$(results.image.path)"
+            echo "⚠️  No SAP browser runner image: the browser tasks are skipped and the run continues on the manual path" >&2
+          fi
+          exit 0
+        }
+        trap no_image EXIT
+
+        IMAGE=$(cat "${STATE_DIR}/candidate")
+
+        echo "🔨 Building ${IMAGE} from hack/sap-browser/Containerfile..."
+        if ! buildah --storage-driver=vfs build --file hack/sap-browser/Containerfile --tag "${IMAGE}" "$(workspaces.source.path)"; then
+          echo "❌ Could not build ${IMAGE} (see the buildah output above)" >&2
+          exit 1
+        fi
+        echo "📤 Pushing ${IMAGE}..."
+        if ! buildah --storage-driver=vfs push --authfile "${STATE_DIR}/auth.json" --cert-dir "${REGISTRY_CERT_DIR}" "${IMAGE}" "docker://${IMAGE}"; then
+          echo "❌ Could not push ${IMAGE}: the robot account of the push Secret needs Write on ${IMAGE%:*}" >&2
+          exit 1
+        fi
+        echo "✅ Pushed ${IMAGE}"
+
+    - name: pull-check
+      image: registry.access.redhat.com/ubi9/ubi
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        if [[ ! -f "${STATE_DIR}/build" || -f "${STATE_DIR}/failed" ]]; then
+          echo "ℹ️  No new image; no pull check"
+          exit 0
+        fi
+        IMAGE=$(cat "${STATE_DIR}/candidate")
+        PULL_CHECK_TIMEOUT_SECONDS=300
+
+        # The Pod goes to the pipeline namespace (in-cluster ServiceAccount)
+        unset KUBECONFIG
+        TMP_DIR=$(mktemp -d)
+        POD=""
+        # Delete the Pod, then on any failure: no image, the browser tasks are
+        # skipped and the run continues on the manual path (this task never
+        # fails the run)
+        cleanup() {
+          local rc=$?
+          trap - EXIT
+          if [[ -n "${POD}" ]]; then
+            oc delete "${POD}" --ignore-not-found --wait=false > /dev/null 2>&1 || true
+          fi
+          rm -rf "${TMP_DIR}"
+          if ((rc != 0)); then
+            : > "${STATE_DIR}/failed"
+            printf '' > "$(results.image.path)"
+            echo "⚠️  No SAP browser runner image: the browser tasks are skipped and the run continues on the manual path" >&2
+          fi
+          exit 0
+        }
+        trap cleanup EXIT
+
+        fail() {
+          echo "❌ $*" >&2
+          exit 1
+        }
+
+        # Install tools (oc)
+        echo "📦 Installing required packages..."
+        dnf install -y tar gzip
+        echo "📦 Installing OpenShift CLI..."
+        curl -fsSL -o "${TMP_DIR}/oc.tar.gz" https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz
+        tar xzf "${TMP_DIR}/oc.tar.gz" -C "${TMP_DIR}" oc
+        mv "${TMP_DIR}/oc" /usr/local/bin/oc
+        rm -f "${TMP_DIR}/oc.tar.gz"
+        oc version --client
+        echo "✅ Tools installed"
+
+        # The repository is public: the nodes pull without a pull secret, so
+        # the check fails only on reachability or certificate trust
+        cat > "${TMP_DIR}/pod.yaml" <<EOF
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          generateName: sap-browser-pull-check-
+          labels:
+            app.kubernetes.io/name: sap-browser-pull-check
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          activeDeadlineSeconds: 900
+          containers:
+            - name: pull-check
+              image: ${IMAGE}
+              imagePullPolicy: Always
+              command: ["/bin/true"]
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 16Mi
+                limits:
+                  memory: 64Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: [ALL]
+                runAsNonRoot: true
+                seccompProfile:
+                  type: RuntimeDefault
+        EOF
+
+        echo "🔍 Starting a Pod with ${IMAGE} on this cluster..."
+        POD=$(oc create -f - -o name < "${TMP_DIR}/pod.yaml") || fail "Could not create the pull-check Pod"
+
+        DEADLINE=$((SECONDS + PULL_CHECK_TIMEOUT_SECONDS))
+        while true; do
+          STATUS=$(oc get "${POD}" -o jsonpath='{.status.phase}{"|"}{.status.containerStatuses[0].state.waiting.reason}{"|"}{.status.containerStatuses[0].state.waiting.message}' 2> /dev/null) || STATUS="||"
+          IFS='|' read -r PHASE REASON MESSAGE <<< "${STATUS}"
+          case "${REASON}" in
+            ErrImagePull | ImagePullBackOff)
+              echo "❌ eic cannot pull from its Quay (certificate trust?)" >&2
+              echo "   ${REASON}: ${MESSAGE}" >&2
+              echo "   The cluster nodes must trust the CA of ${IMAGE%%/*} (image.config.openshift.io/cluster additionalTrustedCA)" >&2
+              exit 1
+              ;;
+          esac
+          case "${PHASE}" in
+            Running | Succeeded)
+              echo "✅ ${IMAGE} pulled and started on this cluster"
+              printf '%s' "${IMAGE}" > "$(results.image.path)"
+              break
+              ;;
+            Failed)
+              fail "The pull-check Pod ${POD#pod/} failed after pulling ${IMAGE}"
+              ;;
+          esac
+          if ((SECONDS >= DEADLINE)); then
+            fail "The pull-check Pod ${POD#pod/} did not start within ${PULL_CHECK_TIMEOUT_SECONDS}s (phase ${PHASE:-unknown}${REASON:+, ${REASON}})"
+          fi
+          sleep 5
+        done

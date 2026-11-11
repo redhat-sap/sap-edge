@@ -6,7 +6,7 @@
 apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
-  name: aro-validation-pipeline
+  name: aro-cluster-only-validation-pipeline
   annotations:
     description: "ARO validation pipeline without Quay: deploys ARO cluster for generic testing"
 spec:

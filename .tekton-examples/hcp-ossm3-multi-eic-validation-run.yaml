@@ -6,13 +6,11 @@
 # Prerequisites:
 # 1. Ensure the ObjectBucketClaim (OBC) 'sap-eic-restricted-cluster-config-resources'
 #    is created and bound in the pipeline namespace. The pipeline creates the
-#    folders elm/, edge-icell-1/, edge-icell-2/ under 'restricted-resources/pr<N>/' (one set per PR)
+#    folders elm/, edge-icell-1/, edge-icell-2/ under 'restricted-resources/<hostedClusterName>/'
+#    (one set per cluster)
 #    and waits for the bundles in two passes: wait-elm-zip (elm/), then, after the
 #    Edge Node is registered and the EIC cells are deployed in ELM, wait-eic-zip
 #    (edge-icell-N/).
-#
-# 2. Ensure the Service Mesh 3.x operator is installed on the target cluster
-#    (via OperatorHub or CLI before running this pipeline)
 #
 # Scenario: Dedicated SAP service mesh (istio-system-sap-edge) without proxy,
 #   two Edge Integration Cells sharing one edgelm (multi-EIC topology A, see
@@ -25,7 +23,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: hcp-ossm3-dedicated-validation-pr{{ pull_request_number }}-
+  generateName: hcp-ossm3-multi-eic-validation-pr{{ pull_request_number }}-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
@@ -34,7 +32,7 @@ metadata:
     pipelinesascode.tekton.dev/cancel-in-progress: "true"
 spec:
   pipelineRef:
-    name: hcp-ossm3-dedicated-validation-pipeline
+    name: hcp-ossm3-multi-eic-validation-pipeline
   timeouts:
     pipeline: "336h"      # Total pipeline timeout (14 days)
     tasks: "335h"         # Individual task timeout (tasks + finally must be <= pipeline)
@@ -49,16 +47,14 @@ spec:
       value: "{{ pull_request_number }}"
 
     # --- HCP cluster parameters ---
-    # hostedClusterName: include hubClusterName to avoid collisions across hubs
-    # Pattern: {prefix}-{hubClusterName}-pr{number}
+    # hostedClusterName: <pipeline name without -validation>-pr<N>; s3Prefix below
+    # uses the same name, so every cluster gets its own S3 folders
     - name: hostedClusterName
-      value: "hcp-dedicated-eli-pr{{ pull_request_number }}"
-    # hostedClusterName: include hubClusterName to avoid collisions across hubs
-    # Pattern: {prefix}-{hubClusterName}-pr{number}
+      value: "hcp-ossm3-multi-eic-pr{{ pull_request_number }}"
     - name: hostedClusterNamespace
       value: "clusters"
     - name: releaseImage
-      value: "quay.io/openshift-release-dev/ocp-release:4.21.7-x86_64"
+      value: "quay.io/openshift-release-dev/ocp-release:4.22.22-x86_64"
     - name: nodePoolReplicas
       value: "3"
     - name: nodePoolCpuCores
@@ -83,7 +79,7 @@ spec:
     - name: obcName
       value: "sap-eic-restricted-cluster-config-resources"
     - name: s3Prefix
-      value: "restricted-resources/pr{{ pull_request_number }}/"
+      value: "restricted-resources/hcp-ossm3-multi-eic-pr{{ pull_request_number }}/"
     # S3 folders under s3Prefix, one SAP bundle zip each (upload as downloaded):
     #   elm/           ELM bundle of the (single, shared) Edge Node (creates edgelm)
     #   edge-icell-1/  EIC bundle of cell 1 (edge-icell-1, istio-gateways-1, ...)

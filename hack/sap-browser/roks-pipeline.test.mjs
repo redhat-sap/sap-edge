@@ -4,13 +4,15 @@
 
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { access, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
+import { diagnose, runBrowserTask } from './browser-session.mjs';
+import { runDeployFlow } from './elm-flow.mjs';
 import { SetupError } from './inputs.mjs';
-import { chromiumLaunchOptions, main, roksPipelineOptions } from './roks-pipeline.mjs';
+import { chromiumLaunchOptions, main, roksPipelineOptions, roksProfile } from './roks-pipeline.mjs';
 import { finishSession } from './session.mjs';
 
 const ELM = 'https://elm.example.com/';
@@ -260,7 +262,7 @@ test('inspect_outcome', async () => folderTest(async (directory) => {
   assert.equal(outcome, 'inspection-finished');
   assert.equal(count(h.calls, 'pause'), 1);
   assert.ok(!h.calls.some((call) => call[0] === 'deploy' || call[0] === 'teardown' || call[0] === 'loadRoksInputs'));
-  // Same login checks as pipeline.mjs: ELM origin, then the Edge Nodes heading.
+  // Login checks: ELM origin, then the Edge Nodes heading.
   assert.ok(h.calls.some((call) => call[0] === 'goto' && call[1] === ELM && call[2] === 'domcontentloaded'));
   assert.ok(h.calls.includes('login-url'));
   assert.ok(h.calls.some((call) => call[0] === 'login-heading' && call[2] === 'Edge Nodes'));
@@ -359,7 +361,7 @@ test('auto_teardown_outcome', async () => folderTest(async (directory) => {
     const [, ctx] = h.calls.find((call) => call[0] === 'teardown');
     assert.equal(ctx.page, h.page);
     assert.equal(ctx.steps, h.deps.steps);
-    assert.equal(ctx.clusterName, 'roks-c1');
+    assert.equal(ctx.inputs.clusterName, 'roks-c1');
     assert.equal(typeof ctx.log, 'function');
     assert.ok(!h.calls.some((call) => call[0] === 'loadRoksInputs' || call[0] === 's3Factory'));
     assert.equal(await readFile(join(directory, 'outcome'), 'utf8'), result);
@@ -495,4 +497,254 @@ test('result_file_written', async () => folderTest(async (directory) => {
   assert.equal(await main(environment(directory), ok.deps), 'deployed');
   assert.equal(await readFile(resultPath, 'utf8'), 'deployed');
   assert.equal((await stat(resultPath)).mode & 0o777, 0o600);
+}));
+
+// In-memory bucket: put/get go through real files like the aws CLI does.
+function memoryS3() {
+  const objects = new Map();
+  return {
+    objects,
+    async put(file, key) { objects.set(key, await readFile(file, 'utf8')); },
+    async get(key, file) {
+      if (!objects.has(key)) throw new SetupError('S3 operation failed. Check endpoint, bucket and permissions.');
+      await writeFile(file, objects.get(key));
+    },
+    async list(prefix) { return [...objects.keys()].filter((key) => key.startsWith(prefix)).map((key) => ({ key })); },
+  };
+}
+
+// ELM steps for the real deploy flow up to the EIC deployment.
+function deploySteps(calls, overrides = {}) {
+  return {
+    async isSessionExpired() { return false; },
+    async openEdgeNode() { calls.push('openEdgeNode'); },
+    async edgeNodeState() { calls.push('edgeNodeState'); return 'absent'; },
+    async addEdgeNode() { calls.push('addEdgeNode'); },
+    async edgeNodeElmId() { return '4711'; },
+    async downloadElmZip(page, { dir }) {
+      const file = join(dir, 'restricted-resources-roks-c1-elm.zip');
+      await writeFile(file, 'elm-zip');
+      return file;
+    },
+    async setUpCloudConnector(page, { dir }) {
+      const file = join(dir, 'context.cfg');
+      await writeFile(file, 'context');
+      return file;
+    },
+    async deployEic() { calls.push('deployEic'); },
+    ...overrides,
+  };
+}
+
+test('playwright_error_in_step_hands_over', async () => folderTest(async (directory) => {
+  const h = harness({
+    flows: { deploy: runDeployFlow },
+    deps: { steps: deploySteps([], { async edgeNodeState() { throw new Error('secret-value'); } }) },
+  });
+  const running = main(environment(directory), h.deps);
+  await waitForState(directory, 'failed');
+  assert.equal(count(h.calls, 'browser.close'), 0, 'the browser stays open for the user');
+  await finishSession(directory);
+  assert.equal(await running, 'handed-over');
+  assert.equal(await readFile(join(directory, 'outcome'), 'utf8'), 'handed-over');
+  assert.ok(!h.logs.join('\n').includes('secret-value'), h.logs.join('\n'));
+  assert.ok(h.logs.includes('Unexpected error; details are hidden because they can contain credentials.'));
+}));
+
+test('playwright_timeout_logs_action_and_locator_only', async () => folderTest(async (directory) => {
+  // Playwright 1.64 format: the call log lines are dimmed with ANSI escapes
+  const timeout = new Error([
+    'locator.fill: Timeout 30000ms exceeded.',
+    'Call log:',
+    "\u001b[2m  - waiting for getByRole('textbox', { name: 'Password', exact: true })\u001b[22m",
+    '\u001b[2m  - fill("secret-value")\u001b[22m',
+  ].join('\n'));
+  timeout.name = 'TimeoutError';
+  const h = harness({
+    flows: { deploy: runDeployFlow },
+    deps: { steps: deploySteps([], { async edgeNodeState() { throw timeout; } }) },
+  });
+  const running = main(environment(directory), h.deps);
+  await waitForState(directory, 'failed');
+  await finishSession(directory);
+  assert.equal(await running, 'handed-over');
+  assert.ok(!h.logs.join('\n').includes('secret-value'), h.logs.join('\n'));
+  assert.ok(h.logs.includes('Unexpected error; details are hidden because they can contain credentials.'));
+  assert.ok(h.logs.includes("Error type TimeoutError in locator.fill (Timeout 30000ms exceeded), waiting for getByRole('textbox', { name: 'Password', exact: true })."), h.logs.join('\n'));
+}));
+
+test('diagnose_prints_nothing_without_playwright_details', () => {
+  assert.equal(diagnose(new SetupError('known')), null);
+  assert.equal(diagnose(new Error('secret-value')), null);
+  assert.equal(diagnose('secret-value'), null);
+  assert.equal(diagnose(new Error('Call log:\n  - waiting for secret-value')), null);
+  const lost = new Error([
+    'locator.check: Clicking the checkbox did not change its state',
+    'Call log:',
+    "\u001b[2m  - waiting for getByRole('checkbox', { name: 'Non-Trusted Certificate', exact: true })\u001b[22m",
+    '\u001b[2m    - locator resolved to <div role="checkbox" aria-checked="false">secret-value</div>\u001b[22m',
+  ].join('\n'));
+  assert.equal(diagnose(lost), "Error type Error in locator.check (Clicking the checkbox did not change its state), waiting for getByRole('checkbox', { name: 'Non-Trusted Certificate', exact: true }).");
+  const strict = new Error([
+    "locator.check: Error: strict mode violation: getByRole('checkbox', { name: 'X', exact: true }) resolved to 2 elements:",
+    '    1) <div role="checkbox">secret-value</div> aka getByRole(\'checkbox\').first()',
+    'Call log:',
+    "\u001b[2m  - waiting for getByRole('checkbox', { name: 'X', exact: true })\u001b[22m",
+  ].join('\n'));
+  assert.equal(diagnose(strict), "Error type Error in locator.check (strict mode violation), waiting for getByRole('checkbox', { name: 'X', exact: true }).");
+  const unknown = new Error('locator.fill: secret-value\nCall log:\n  - waiting for getByLabel(\'Password\')');
+  assert.equal(diagnose(unknown), "Error type Error in locator.fill, waiting for getByLabel('Password').");
+  const odd = new Error('page.goto: net::ERR_NAME_NOT_RESOLVED');
+  odd.name = 'secret value!';
+  assert.equal(diagnose(odd), 'Error type Error in page.goto.');
+});
+
+test('session_limit_from_profile', async () => folderTest(async (directory) => {
+  assert.equal(roksProfile.sessionLimitMinutes, 240);
+  const h = harness();
+  assert.equal(await main(environment(directory, { SAP_BROWSER_SESSION_MINUTES: '241' }), h.deps), 'failed');
+  assert.equal(count(h.calls, 'launch'), 0);
+  assert.ok(!h.calls.some((call) => call[0] === 'openRoute' || call[0] === 'loadRoksInputs'));
+  assert.ok(h.logs.includes('Session must be 1-240 minutes; login time must fit inside the session.'), h.logs.join('\n'));
+
+  // The session enforces the profile's limit even when the options accept more.
+  const strict = harness();
+  const profile = { ...roksProfile, sessionLimitMinutes: 60 };
+  assert.equal(await runBrowserTask(environment(directory, { SAP_BROWSER_SESSION_MINUTES: '61' }), strict.deps, profile), 'failed');
+  assert.equal(count(strict.calls, 'launch'), 0);
+  assert.ok(strict.logs.includes('Session must be 1-60 minutes; login time must fit inside the session.'), strict.logs.join('\n'));
+  const fits = harness();
+  assert.equal(await runBrowserTask(environment(directory, { SAP_BROWSER_SESSION_MINUTES: '60' }), fits.deps,
+    { ...profile, loadInputs: async () => fits.inputs }), 'deployed');
+}));
+
+test('roks_deploy_hands_over_at_eic', async () => folderTest(async (directory) => {
+  const calls = [];
+  const s3 = memoryS3();
+  const h = harness({
+    flows: { deploy: runDeployFlow },
+    deps: { steps: deploySteps(calls), s3Factory: () => s3 },
+  });
+  const running = main(environment(directory), h.deps);
+  await waitForState(directory, 'failed');
+  await finishSession(directory);
+  assert.equal(await running, 'handed-over');
+  assert.ok(h.logs.includes('EIC form values for edge-icell are not mapped yet; deploy EIC by hand'), h.logs.join('\n'));
+  assert.ok(!calls.includes('deployEic'), 'nothing is deployed');
+  // The flow got through the Edge Node and the Cloud Connector first.
+  assert.deepEqual(JSON.parse(s3.objects.get('restricted-resources/roks-c1/.browser/edge-node.json')), { name: 'roks-c1', elmId: '4711' });
+  assert.equal(s3.objects.get('restricted-resources/roks-c1/elm/restricted-resources-roks-c1-elm.zip'), 'elm-zip');
+  assert.ok(h.calls.some((call) => call[0] === 'runElmInit'));
+  assert.ok(h.calls.some((call) => call[0] === 'waitForPipelineTask' && call[2].pipelineTaskName === 'generate-sa-based-kubeconfig'));
+  assert.ok(h.logs.some((line) => line.includes('restricted-resources/roks-c1/elm/ and restricted-resources/roks-c1/edge-icell/')), h.logs.join('\n'));
+  assertNoSecrets(h.logs);
+}));
+
+test('roks_profile_shape', async () => folderTest(async (directory) => {
+  assert.equal(roksProfile.name, 'roks');
+  assert.equal(roksProfile.hub, 'skip');
+  assert.equal(roksProfile.leftoverPolicy, 'delete');
+  assert.equal(roksProfile.meshTask, 'configure-mesh-eic');
+  const options = roksPipelineOptions(environment(directory));
+  assert.deepEqual(roksProfile.handOverFolders(options), ['elm/', 'edge-icell/']);
+  const cells = await roksProfile.loadCells(() => { throw new Error('no reads'); }, options, {});
+  assert.equal(cells.length, 1);
+  assert.equal(cells[0].component, 'edge-icell');
+  assert.equal(cells[0].eic, null);
+}));
+
+test('phase_from_env', async () => folderTest(async (directory) => {
+  assert.equal(roksPipelineOptions(environment(directory, { SAP_BROWSER_PHASE: '' })).phase, 'deploy');
+  assert.equal(roksPipelineOptions(environment(directory, { SAP_BROWSER_PHASE: 'teardown' })).phase, 'teardown');
+  // ROKS has no upgrade window.
+  assert.throws(() => roksPipelineOptions(environment(directory, { SAP_BROWSER_PHASE: 'upgrade' })),
+    (error) => error instanceof SetupError && error.message === 'SAP browser phase must be deploy or teardown.');
+}));
+
+test('session_records_node_in_bucket', async () => folderTest(async (directory) => {
+  const s3 = memoryS3();
+  const seen = {};
+  const h = harness({
+    deps: { s3Factory: () => s3, pollMs: 5 },
+    flows: {
+      async deploy(ctx) {
+        seen.before = await ctx.readNodeRecord();
+        await ctx.recordNode({ name: 'roks-c1', elmId: '4711' });
+        seen.after = await ctx.readNodeRecord();
+        seen.ctx = ctx;
+        // A record for another node is not this run's record.
+        s3.objects.set('restricted-resources/roks-c1/.browser/edge-node.json', JSON.stringify({ name: 'other', elmId: '4711' }));
+        seen.other = await ctx.readNodeRecord();
+        s3.objects.set('restricted-resources/roks-c1/.browser/edge-node.json', 'not json');
+        seen.invalid = await ctx.readNodeRecord().catch((error) => error);
+        return 'deployed';
+      },
+    },
+  });
+  assert.equal(await main(environment(directory), h.deps), 'deployed');
+  assert.equal(seen.before, null);
+  assert.deepEqual(seen.after, { name: 'roks-c1', elmId: '4711' });
+  assert.equal(seen.other, null);
+  assert.ok(seen.invalid instanceof SetupError, String(seen.invalid));
+  const { ctx } = seen;
+  assert.equal(ctx.leftoverPolicy, 'delete');
+  assert.equal(ctx.meshTask, 'configure-mesh-eic');
+  assert.equal(typeof ctx.waitForLogin, 'function');
+  assert.equal(ctx.pollMs, 5);
+  assert.ok(ctx.timeoutMs > 0 && ctx.timeoutMs <= 180 * 60000);
+  assert.deepEqual((await ctx.loadCells()).map((cell) => cell.component), ['edge-icell']);
+}));
+
+test('upgrade_and_teardown_ctx', async () => folderTest(async (directory) => {
+  // A profile with an upgrade window (ROKS has none): the session loads the cells and passes the version.
+  const s3 = memoryS3();
+  const upgradeProfile = {
+    ...roksProfile,
+    options: (env) => ({ ...roksPipelineOptions(env), phase: 'upgrade', upgradeVersion: '8.49.1' }),
+  };
+  const marker = 'restricted-resources/roks-c1/.applied/restricted-resources-roks-c1-eic-8.49.1.zip';
+  let markerWaited = false;
+  const up = harness({
+    deps: { s3Factory: () => s3, pollMs: 5 },
+    flows: {
+      async upgrade(ctx) {
+        up.calls.push(['upgrade', ctx]);
+        // The marker appears while the session polls the bucket for it.
+        const waiting = ctx.waitForMarker(marker).then(() => { markerWaited = true; });
+        await delay(20);
+        assert.equal(markerWaited, false, 'waits until the marker exists');
+        s3.objects.set(marker, '');
+        await waiting;
+        return 'upgraded';
+      },
+    },
+  });
+  assert.equal(await runBrowserTask(environment(directory), up.deps, upgradeProfile), 'upgraded');
+  assert.ok(markerWaited);
+  const [, upgradeCtx] = up.calls.find((call) => call[0] === 'upgrade');
+  assert.equal(upgradeCtx.version, '8.49.1');
+  assert.deepEqual(upgradeCtx.inputs, { clusterName: 'roks-c1' });
+  assert.deepEqual(upgradeCtx.cells.map((cell) => cell.component), ['edge-icell']);
+  assert.equal(upgradeCtx.s3, s3);
+  assert.equal(typeof upgradeCtx.waitForMarker, 'function');
+  assert.ok(!up.calls.some((call) => call[0] === 'loadRoksInputs'), 'upgrade needs only the cluster name');
+
+  // ROKS teardown has no bucket: no ownership record, so an existing node is handed over.
+  const down = harness({
+    flows: {
+      async teardown(ctx) {
+        down.calls.push(['teardown', ctx]);
+        await ctx.readNodeRecord();
+        return 'edge-node-deleted';
+      },
+    },
+  });
+  const running = main(environment(directory, { SAP_BROWSER_PHASE: 'teardown' }), down.deps);
+  await waitForState(directory, 'failed');
+  await finishSession(directory);
+  assert.equal(await running, 'handed-over');
+  const [, teardownCtx] = down.calls.find((call) => call[0] === 'teardown');
+  assert.deepEqual(teardownCtx.inputs, { clusterName: 'roks-c1' });
+  assert.deepEqual(teardownCtx.cells.map((cell) => cell.component), ['edge-icell']);
+  assert.ok(down.logs.includes('No bucket for the Edge Node ownership record in this phase; remove the Edge Node by hand.'), down.logs.join('\n'));
 }));

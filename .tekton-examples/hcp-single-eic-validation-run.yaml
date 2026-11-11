@@ -7,7 +7,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: hcp-kubevirt-validation-pr{{ pull_request_number }}-
+  generateName: hcp-single-eic-validation-pr{{ pull_request_number }}-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
@@ -16,7 +16,7 @@ metadata:
     pipelinesascode.tekton.dev/cancel-in-progress: "true"
 spec:
   pipelineRef:
-    name: hcp-kubevirt-validation-pipeline
+    name: hcp-single-eic-validation-pipeline
   timeouts:
     pipeline: "336h"      # Total pipeline timeout (14 days)
     tasks: "335h"         # Individual task timeout (tasks + finally must be <= pipeline)
@@ -28,12 +28,9 @@ spec:
       value: "{{ revision }}"
     - name: pullRequestNumber
       value: "{{ pull_request_number }}"
-    # hostedClusterName: include hubClusterName to avoid collisions across hubs
-    # Pattern: {prefix}-{hubClusterName}-pr{number}
+    # hostedClusterName: <pipeline name without -validation>-pr<N>
     - name: hostedClusterName
-      value: "hcp-kv-eli-pr{{ pull_request_number }}"
-    # hostedClusterName: include hubClusterName to avoid collisions across hubs
-    # Pattern: {prefix}-{hubClusterName}-pr{number}
+      value: "hcp-single-eic-pr{{ pull_request_number }}"
     - name: hostedClusterNamespace
       value: "clusters"
     - name: releaseImage

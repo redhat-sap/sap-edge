@@ -7,14 +7,10 @@
 # 1. Ensure the ObjectBucketClaim (OBC) 'sap-eic-restricted-cluster-config-resources'
 #    is created and bound in the pipeline namespace. The pipeline creates the
 #    folders elm-1/, edge-icell-1/, elm-2/, edge-icell-2/ under
-#    'restricted-resources/pr<N>-multi-stack/' (one set per PR; a sibling of the
-#    dedicated pipeline's 'restricted-resources/pr<N>/', not a subfolder) and
+#    'restricted-resources/<hostedClusterName>/' (one set per cluster) and
 #    waits for the bundles in two passes: wait-elm-zip (elm-N/), then, after
 #    both Edge Nodes are registered and EIC is deployed in ELM, wait-eic-zip
 #    (edge-icell-N/).
-#
-# 2. Ensure the Service Mesh 3.x operator is installed on the target cluster
-#    (via OperatorHub or CLI before running this pipeline)
 #
 # Scenario: multi-stack (2 Edge Nodes, dedicated mesh each), without proxy
 #   (multi-EIC topology B, KBA 7149262 "Scenario 2: Multiple Edge Nodes with
@@ -29,7 +25,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: hcp-ossm3-multi-stack-validation-pr{{ pull_request_number }}-
+  generateName: hcp-ossm3-multi-edge-node-validation-pr{{ pull_request_number }}-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
@@ -38,7 +34,7 @@ metadata:
     pipelinesascode.tekton.dev/cancel-in-progress: "true"
 spec:
   pipelineRef:
-    name: hcp-ossm3-multi-stack-validation-pipeline
+    name: hcp-ossm3-multi-edge-node-validation-pipeline
   timeouts:
     pipeline: "336h"      # Total pipeline timeout (14 days)
     tasks: "335h"         # Individual task timeout (tasks + finally must be <= pipeline)
@@ -57,7 +53,7 @@ spec:
     # Pattern: {prefix}-pr{number} (add the hubClusterName to the prefix when
     # the same PR runs against several hubs)
     - name: hostedClusterName
-      value: "hcp-multistack-pr{{ pull_request_number }}"
+      value: "hcp-ossm3-multi-edge-node-pr{{ pull_request_number }}"
     - name: hostedClusterNamespace
       value: "clusters"
     - name: releaseImage
@@ -86,7 +82,7 @@ spec:
     - name: obcName
       value: "sap-eic-restricted-cluster-config-resources"
     - name: s3Prefix
-      value: "restricted-resources/pr{{ pull_request_number }}-multi-stack/"
+      value: "restricted-resources/hcp-ossm3-multi-edge-node-pr{{ pull_request_number }}/"
     # S3 folders under s3Prefix, one SAP bundle zip each (upload as downloaded):
     #   elm-1/         ELM bundle of Edge Node 1 (creates edgelm-1)
     #   elm-2/         ELM bundle of Edge Node 2 (creates edgelm-2)

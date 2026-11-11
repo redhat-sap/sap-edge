@@ -1,0 +1,140 @@
+# SPDX-FileCopyrightText: 2025 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Prerequisites:
+# 1. Ensure the ObjectBucketClaim (OBC) 'sap-eic-restricted-cluster-config-resources'
+#    is created and bound in the pipeline namespace. The pipeline creates the folders
+#    elm/ and edge-icell/ under 'restricted-resources/<hostedClusterName>/' and waits
+#    for the bundles in two passes: wait-elm-zip (elm/), then, after the Edge Node is
+#    registered and EIC is deployed in ELM, wait-eic-zip (edge-icell/).
+#
+# 2. Only for the optional browser automation (sapBrowserMode below), once per
+#    pipeline namespace: apply hack/sap-browser/hcp-runner-rbac.yaml, create the
+#    Secrets eic-quay-robot (pushes the runner image) and <hubClusterName>-quay-robot
+#    (registry for "Add Edge Node"), and make sure the public repository
+#    sap_elm_eic/sap-browser exists on eic's Quay (hack/sap-browser/PIPELINE.md)
+
+---
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: hcp-ossm3-single-eic-validation-pr{{ pull_request_number }}-
+  annotations:
+    pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
+    pipelinesascode.tekton.dev/on-target-branch: "[main]"
+    pipelinesascode.tekton.dev/task: "[./.tekton/tasks/git-clone.yaml]"
+    pipelinesascode.tekton.dev/max-keep-runs: "1"
+    pipelinesascode.tekton.dev/cancel-in-progress: "true"
+spec:
+  pipelineRef:
+    name: hcp-ossm3-single-eic-validation-pipeline
+  # When enabling sapBrowserMode, uncomment (the browser tasks run as the
+  # ServiceAccount from hack/sap-browser/hcp-runner-rbac.yaml):
+  # taskRunSpecs:
+  #   - pipelineTaskName: sap-browser-deploy
+  #     serviceAccountName: hcp-sap-browser-runner
+  #   - pipelineTaskName: sap-browser-teardown
+  #     serviceAccountName: hcp-sap-browser-runner
+  timeouts:
+    pipeline: "336h"      # Total pipeline timeout (14 days)
+    tasks: "335h"         # Individual task timeout (tasks + finally must be <= pipeline)
+    finally: "60m"        # Finally tasks timeout
+  params:
+    # --- Git parameters ---
+    - name: repoUrl
+      value: "{{ repo_url }}"
+    - name: revision
+      value: "{{ revision }}"
+    - name: pullRequestNumber
+      value: "{{ pull_request_number }}"
+
+    # --- HCP cluster parameters ---
+    # hostedClusterName: <pipeline name without -validation>-pr<N>; s3Prefix below
+    # uses the same name, so every cluster gets its own S3 folders
+    - name: hostedClusterName
+      value: "hcp-ossm3-single-eic-pr{{ pull_request_number }}"
+    - name: hostedClusterNamespace
+      value: "clusters"
+    - name: releaseImage
+      value: "quay.io/openshift-release-dev/ocp-release:4.22.5-x86_64"
+    - name: nodePoolReplicas
+      value: "3"
+    - name: nodePoolCpuCores
+      value: "16"
+    - name: nodePoolMemoryGB
+      value: "32"
+    - name: rootDiskSizeGB
+      value: "120"
+    - name: pullSecretName
+      value: "mj-pull-secret"
+    - name: etcdStorageClass
+      value: ""
+    # hubClusterName: name of the target hub cluster
+    # The pipeline derives the kubeconfig secret as: {hubClusterName}-kubeconfig
+    # Ensure a Secret named "{hubClusterName}-kubeconfig" exists with the hub's kubeconfig
+    - name: hubClusterName
+      value: "eic"
+
+    # --- OSSM3 parameters ---
+    - name: ossm3Channel
+      value: "stable-3.2"
+    - name: obcName
+      value: "sap-eic-restricted-cluster-config-resources"
+    # One folder per cluster (elm/ and edge-icell/ below it); earlier zips stay
+    # (latest version per folder wins)
+    - name: s3Prefix
+      value: "restricted-resources/hcp-ossm3-single-eic-pr{{ pull_request_number }}/"
+
+    # --- EIC services parameters ---
+    - name: postgresVersion
+      value: "v15"
+    - name: postgresHA
+      value: "false"
+    - name: datastoreType
+      value: "valkey-cluster"
+    - name: redisClusterType
+      value: "standard"
+
+    # --- Endpoint test parameters ---
+    - name: eicAuthSecretName
+      value: "eic-auth-secret"
+    - name: publicDNS
+      value: "false"
+
+    # --- Jira parameters ---
+    - name: jiraSecretName
+      value: "jira-secret-mj"
+    - name: jiraIssueKey
+      value: ""
+
+    # --- SAP browser automation (optional) ---
+    # disabled, inspect or auto (hack/sap-browser/PIPELINE.md). With inspect or
+    # auto, uncomment taskRunSpecs above. The ELM URL comes from the Secret
+    # sap-elm-url (key url) unless sapElmUrl is set. The runner image is built
+    # into eic's Quay when missing (sapBrowserImage overrides it).
+    - name: sapBrowserMode
+      value: "disabled"
+    # - name: sapElmUrl
+    #   value: "https://YOUR-TENANT/comsapclmedgelm.comsapclmedgelm/index.html"
+    # - name: sapBrowserImage
+    #   value: "quay.apps.eic.ocp.sap.local/sap_elm_eic/sap-browser:YOUR_TAG"
+    # Empty: the version ELM preselects / no upgrade
+    # - name: sapEicInstallVersion
+    #   value: ""
+    # - name: sapEicUpgradeVersion
+    #   value: ""
+
+    # --- Pipeline control ---
+    - name: skipTeardown
+      value: "false"
+  workspaces:
+    - name: source
+      volumeClaimTemplate:
+        spec:
+          accessModes: [ReadWriteMany]
+          storageClassName: ocs-storagecluster-cephfs
+          resources:
+            requests:
+              storage: 2Gi

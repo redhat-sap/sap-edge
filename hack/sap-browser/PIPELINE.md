@@ -1,224 +1,279 @@
 <!--
 SPDX-FileCopyrightText: 2026 SAP edge team
 SPDX-License-Identifier: Apache-2.0
-cspell:words Containerfile portforward
+cspell:words Containerfile ocpxu portforward
 -->
 
-# Test SAP browser automation inside OpenShift
+# SAP browser automation in the pipelines
 
-The optional `sap-browser` task runs after `get-all-accesses` in
-`hcp-ossm3-validation-pipeline`. It starts a temporary Chromium desktop in the task
-pod. From your RHEL desktop inside Citrix, use `oc port-forward` and open noVNC in
-your browser. Enter SAP login/MFA in the displayed Chromium window; Playwright
-continues in that same session.
+`hcp-ossm3-single-eic-validation-pipeline` (one Edge Node with one EIC on HCP KubeVirt) can
+drive the SAP Edge Lifecycle Management (ELM) and Integration Suite steps with
+Playwright. Chromium runs on a virtual display in a task pod. You reach it
+through a per-run Route behind the OpenShift OAuth proxy, log in to OpenShift and
+then to SAP in the browser shown, and Playwright continues in that session. The
+approval gates stay: the automation never approves one.
 
-**ROKS:** `roks-eic-ossm3-pipeline` has its own optional browser tasks
-(`sap-browser-deploy`, `sap-browser-teardown`) using the same image, reached
-through a per-run Route with the OpenShift OAuth proxy instead of port-forward.
-Build and push the image as below, then follow
+**ROKS:** `roks-ossm3-single-eic-validation-pipeline` has its own browser tasks with the same
+image; see
 [Browser automation (optional)](../../.tekton/README.md#browser-automation-optional)
-in `.tekton/README.md`. The rest of this page describes the HCP task.
-
-The first implemented flow is **registration review only**. It fills the wizard
-and stops before Add Edge Node. EIC initialization, configuration, deployment,
-iFlows and readiness checks still require a tenant-specific flow. The existing
-`approval-elm-eic-iflow-deployed` gate is always retained, including for `run` mode.
+in `.tekton/README.md`. The rest of this page describes the HCP pipeline.
 
 ```text
-create cluster and dependencies -> get-all-accesses
-  -> sap-browser (optional): login -> browser flow -> inspect -> finish session
-  -> existing manual approval -> validation and endpoint tests
+fetch-repository -> sap-browser-image (runner image; empty when disabled)
+wait-cluster-ready -> sap-browser-access (per-run Secret access, proxy check, Edge Node ID)
+  -> sap-browser-deploy (session 1): Edge Node, elm/ zip, Embedded Cloud Connector,
+       EIC deployment, edge-icell/ zip, resume after configure-mesh-eic, keystore and iFlows
+  -> approval-elm-eic-iflow-deployed -> endpoint tests -> approval-teardown
+  -> sap-browser-teardown (session 2): EIC deployment and Edge Node deleted
+  -> teardown-hosted-cluster (also deletes the per-run Role)
 ```
 
-The default `sapBrowserMode: disabled` preserves the manual workflow. A disabled
-browser task is skipped and the approval gate still runs. An enabled browser task
-that fails blocks dependent tasks. It is not retried automatically.
+The pipeline's own tasks do not wait for the session: `wait-elm-zip` and
+`wait-eic-zip` wait for the zips whoever uploads them, and the session waits for
+the pipeline (restricted kubeconfig, credentials, mesh) before each step that
+needs it.
 
-## Build and install once
+## Modes
 
-Run these from the repository root in the SAP environment. The image build needs
-access to the Node base image, npm, Debian packages and Playwright browser downloads.
-The running task does not install packages. Use a trusted checkout containing these
-changes; they must also be present at the pipeline's Git `revision`.
+`sapBrowserMode` in the run file:
 
-Set these variables to your namespace and an image registry you can push to:
+- `disabled` (default): the browser tasks are skipped, `sap-browser-image` and
+  `sap-browser-access` do nothing, and everything is done by hand.
+- `inspect`: log in, then Playwright Inspector opens in the browser to record
+  screens. Nothing is uploaded or changed in SAP. Recordings can contain entered
+  credentials; keep them private.
+- `auto`: Playwright runs the steps of the phase. On any problem (a screen it
+  does not know, a version ELM does not offer, an Edge Node this run did not
+  create) it stops, says why in the log, and leaves the browser open for you.
+
+## Phases
+
+The task `hcp-sap-browser` runs one phase per session:
+
+- `deploy` (`sap-browser-deploy`, starts after `wait-cluster-ready`, so you log
+  in while the cluster is set up): add the Edge Node `<hostedClusterName>` with
+  restricted access and the registry of the Secret `<hubClusterName>-quay-robot`
+  and record it as created by this run, put the ELM zip into `elm/`, wait for
+  the restricted kubeconfig, set up the Embedded Cloud Connector, deploy EIC
+  (deployment `pr-<number>-eic`, version `sapEicInstallVersion` or the one ELM
+  preselects), put the EIC zip into `edge-icell/`, wait for
+  `configure-mesh-eic`, resume the deployment, wait until it is successful, then
+  deploy the keystore and the test iFlows in Integration Suite and wait until
+  they are started.
+- `upgrade`: upgrade EIC to `sapEicUpgradeVersion` (empty: nothing to upgrade).
+  The single-EIC pipeline does not run this phase yet.
+- `teardown` (`sap-browser-teardown`, after `approval-teardown`, second login):
+  delete the EIC deployment and remove the Edge Node, but only an Edge Node
+  this run created; any other is handed over, never deleted. Skipped with
+  `skipTeardown: "true"`: the cluster stays, and so do its ELM entries.
+
+This pipeline uses no proxy: the hub's `<hubClusterName>-proxy-config` Secret
+(it exists on `eic` for the proxy test runs) is not consulted. A pipeline with
+a proxy variant passes `proxySecretName` to `hcp-sap-browser-access`; such a
+proxy run hands over at "Add Edge Node": add it by hand with the proxy settings.
+
+## One-time setup
+
+In the pipeline namespace (`sap-elm-eic-validation` on `eic`):
+
+1. **Runner image.** `sap-browser-image` builds `hack/sap-browser/Containerfile`
+   and pushes it to `quay.apps.eic.ocp.sap.local/sap_elm_eic/sap-browser`
+   (tag `sap-browser-<content hash>`) when that tag is missing, then checks that
+   the cluster nodes can pull it (see
+   [SAP browser runner image](../../.tekton/README.md#sap-browser-runner-image)).
+   Before the first run, the repository `sap_elm_eic/sap-browser` must exist and
+   be public on eic's Quay (pulls need no pull secret), and the robot account of
+   the Secret `eic-quay-robot` needs Write on it (its Creator role does not cover
+   a repository someone else created). The nodes must trust the Quay CA. If
+   the image cannot be provided (tag check, build, push or pull check fails),
+   the task logs why, its result stays empty and the run goes on without the
+   browser (both sessions skipped, the ELM steps by hand); it never fails the
+   run. To use another image, set `sapBrowserImage`; nothing is built or
+   checked then.
+2. **The two Quay Secrets `<hub>-quay-robot`**, one per hub: `eli-quay-robot`
+   and `eic-quay-robot`, with the keys `registry` (the "Local Container Registry
+   URL" for "Add Edge Node", for example
+   `quay.apps.eli.ocpxu01.sap/sap_elm_eic/eic_validation`), `username`,
+   `password` (a robot account with write access to that repository) and
+   `ca.crt` (the CA of that Quay's certificate). The deploy session uses the
+   Secret of the run's `hubClusterName`, so the hosted cluster pulls the EIC
+   images from its own hub. `eic-quay-robot` also pushes the runner image
+   (`username`, `password`, `ca.crt`). How to create the robot accounts, the
+   runner repository and the Secrets: [Quay setup](#quay-setup).
+3. **RBAC:** `oc -n sap-elm-eic-validation apply -f hack/sap-browser/hcp-runner-rbac.yaml`.
+   It creates the ServiceAccount `hcp-sap-browser-runner` (gets PipelineRuns and
+   TaskRuns, creates and deletes its Route and Service, gets no Secrets
+   namespace-wide) and lets the `pipeline` ServiceAccount manage Roles and
+   RoleBindings. `sap-browser-access` creates the per-run Role and RoleBinding
+   `hcp-sap-browser-<hostedClusterName>`, which grant the runner `get` on this
+   run's Secrets only: `edgelm-kubeconfig-generated-<cluster>`,
+   `eic-credentials-hcp-<cluster>` and `<hubClusterName>-quay-robot`. Kubernetes
+   lets the `pipeline` ServiceAccount grant only what it holds, so it needs `get`
+   on these Secrets itself. `teardown-hosted-cluster` deletes the Role and
+   RoleBinding. If the OAuth proxy logs 403 on `subjectaccessreviews`, bind
+   `system:auth-delegator` to the runner (command in the file).
+4. **ELM URL:** the Secret `sap-elm-url` (key `url`, the direct ELM URL
+   `https://<tenant>/comsapclmedgelm.comsapclmedgelm/index.html`) keeps the
+   tenant out of the repository; `sapElmUrl` in the run file overrides it:
+
+   ```bash
+   oc -n sap-elm-eic-validation create secret generic sap-elm-url \
+     --from-literal=url="https://<tenant>/comsapclmedgelm.comsapclmedgelm/index.html"
+   ```
+
+5. **elm CLI** (optional): the deploy session takes the newest file under
+   `tools/elm/` in the OBC bucket (the Linux x86_64 binary, a `.zip` or a
+   `.tar.gz`). Without one it downloads the CLI from the SAP Software Download
+   Center in the browser and stores it there for later runs.
+
+### Quay setup
+
+Each hub (`eli`, `eic`) has its own Quay. Do steps 1, 3 and 4 for each hub; the
+Secrets always go into the pipeline namespace on `eic`, where the pipeline runs.
+
+1. **Robot account.** In the hub's Quay organization (`sap_elm_eic`): Robot
+   accounts → Create robot account, for example `elm_eic_validation`, and add it
+   to a team with the **Creator** role (or to `owners`). ELM's image replication
+   pushes into a new repository per Edge Node below the registry path
+   (`eic_validation/<edge node ID>/…`), so Write on existing repositories is not
+   enough: the robot must be able to create repositories. Copy its username
+   (`sap_elm_eic+elm_eic_validation`) and token (gear menu → View credentials).
+2. **Runner repository** (`eic` only). Create the repository
+   `sap_elm_eic/sap-browser`, set it to Public, and give the `eic` robot Write
+   on it (repository Settings → User and robot permissions): the Creator role
+   only covers repositories the robot created itself.
+3. **CA of the hub's Quay**, with `oc` logged in to that hub:
+
+   ```bash
+   HUB=eli   # or eic
+   oc get configmap -n openshift-config-managed default-ingress-cert \
+     -o jsonpath='{.data.ca-bundle\.crt}' > /tmp/$HUB-ca.crt
+   curl -fsS --cacert /tmp/$HUB-ca.crt https://<hub Quay host>/health/instance && echo "CA ok"
+   ```
+
+   If the check fails, the Quay route uses a certificate from another CA;
+   export that CA instead.
+4. **Secret `<hub>-quay-robot`**, with `oc` logged in to `eic`. The token is
+   read without echo and passed as a file, so it ends up neither in the shell
+   history nor in the process list (zsh syntax; in bash use
+   `read -r -p 'Robot username: ' QUAY_USER` and
+   `read -r -s -p 'Robot token: ' QUAY_TOKEN`):
+
+   ```zsh
+   HUB=eli
+   REGISTRY=quay.apps.eli.ocpxu01.sap/sap_elm_eic/eic_validation   # "Local Container Registry URL"
+   read "QUAY_USER?Robot username ($HUB): "
+   read -s "QUAY_TOKEN?Robot token ($HUB): "; echo
+   oc -n sap-elm-eic-validation create secret generic $HUB-quay-robot \
+     --from-literal=registry="$REGISTRY" \
+     --from-literal=username="$QUAY_USER" \
+     --from-file=password=<(printf %s "$QUAY_TOKEN") \
+     --from-file=ca.crt=/tmp/$HUB-ca.crt
+   unset QUAY_TOKEN
+   # check the keys without printing values
+   oc -n sap-elm-eic-validation get secret $HUB-quay-robot -o jsonpath='{.data}' | jq 'map_values(length)'
+   ```
+
+   Repeat with `HUB=eic` and `eic`'s registry path
+   (`quay.apps.eic.ocp.sap.local/sap_elm_eic/eic_validation`).
+5. **Node trust** (`eic`). The runner pods pull the image from `eic`'s Quay. If
+   `eic`'s nodes do not trust that CA yet, add it to the cluster's image
+   configuration once (`image.config.openshift.io/cluster`,
+   `additionalTrustedCA`); `sap-browser-image` reports a pull that fails on the
+   certificate.
+
+### Build the image by hand
+
+For `sapBrowserImage` (and for ROKS), from the repository root:
 
 ```bash
-export SAP_PIPELINE_NAMESPACE='YOUR_PIPELINE_NAMESPACE'
-export SAP_BROWSER_IMAGE='YOUR_REGISTRY/YOUR_PROJECT/sap-browser:dev-1'
-
-podman build --platform linux/amd64 \
-  -f hack/sap-browser/Containerfile -t "$SAP_BROWSER_IMAGE" .
+podman build --platform linux/amd64 -f hack/sap-browser/Containerfile -t "$SAP_BROWSER_IMAGE" .
 podman push "$SAP_BROWSER_IMAGE"
-
-oc -n "$SAP_PIPELINE_NAMESPACE" apply -f hack/sap-browser/runner-rbac.yaml
-oc -n "$SAP_PIPELINE_NAMESPACE" apply -f .tekton/tasks/hcp-sap-browser-task.yaml
-oc -n "$SAP_PIPELINE_NAMESPACE" apply -f .tekton/pipelines/hcp-ossm3-validation-pipeline.yaml
 ```
 
-`linux/amd64` assumes your test cluster uses that architecture. Adjust for your
-runner nodes when necessary. Use a new image tag or digest after each rebuild.
-Docker can also build this Containerfile. For a private registry, give the
-`sap-browser-runner` service account the appropriate image pull secret.
+Use a new tag after each rebuild. The build needs Docker Hub (the `node` base
+image), npm, Debian packages and the Playwright browser download; the running
+task installs nothing. The helper code comes from the run's checkout
+(`hack/sap-browser`), only its dependencies from the image.
 
-The container runs without root, additional capabilities, privileged mode or a
-custom SCC. It uses Playwright's default Chromium sandbox configuration and a
-temporary virtual display. Validate compatibility with your OpenShift version and
-SCC during this first test; do not grant a privileged SCC to work around a failure.
+Failures before the browser starts (a `sapBrowserImage` that cannot be pulled,
+or no ServiceAccount because `hcp-runner-rbac.yaml` was not applied) fail the
+task's pod and stop the run, unlike failures inside the browser. A pod-level failure
+of `sap-browser-teardown` also skips `teardown-hosted-cluster`: delete the
+hosted cluster by hand then.
 
-The runner role grants `get` on PipelineRuns, TaskRuns and Secrets in this namespace.
-It grants no list, watch, write or approval permissions. Secret names depend on the
-cluster name; for a fixed-cluster rehearsal you can restrict the Secret rule using
-`resourceNames` for `eic-credentials-hcp-CLUSTER` and
-`edgelm-kubeconfig-generated-CLUSTER`. Use the dedicated service account only for
-the browser task, not as the service account for the entire HCP pipeline.
+## Enable it in the run file
 
-## Enable it in a new PipelineRun
+In `.tekton-examples/hcp-ossm3-single-eic-validation-run.yaml` (copied to `.tekton/` on a
+pull request):
 
-Add these entries to your existing PipelineRun, preserving its other parameters:
+- set `sapBrowserMode` to `inspect` or `auto`;
+- set `sapElmUrl` to the direct ELM URL
+  (`https://<tenant>/comsapclmedgelm.comsapclmedgelm/index.html`);
+- uncomment `taskRunSpecs`: `sap-browser-deploy` and `sap-browser-teardown` run
+  as `hcp-sap-browser-runner` (without it the session stops at once with
+  outcome `failed`). `sap-browser-image` must keep the default `pipeline`
+  ServiceAccount (buildah needs its SCC).
 
-```yaml
-spec:
-  taskRunSpecs:
-    - pipelineTaskName: sap-browser
-      serviceAccountName: sap-browser-runner
-  params:
-    - name: sapBrowserMode
-      value: review-registration
-    - name: sapBrowserImage
-      value: YOUR_REGISTRY/YOUR_PROJECT/sap-browser:dev-1
-    - name: sapElmUrl
-      value: https://YOUR-TENANT/comsapclmedgelm.comsapclmedgelm/index.html
-    - name: sapBrowserHA
-      value: 'false'
-```
+Optional parameters: `sapBrowserHA` (register the Edge Node as highly
+available), `sapEicInstallVersion` and `sapEicUpgradeVersion` (a version ELM
+does not offer hands over, naming it), `sapEicSolution` (default
+`Edge Integration Cell (dev)`), `sapEicKeyAlias` (default `slv-ic`),
+`sapBrowserSessionMinutes` (default 360, 1-600; the deploy session spans the
+cluster setup and the EIC installation, its task timeout is 11 hours) and
+`sapBrowserLoginMinutes` (default 30). The deployment names need the pull
+request number (`pr-<number>-eic`), which Pipelines as Code fills in.
 
-The example `.tekton-examples/hcp-ossm3-validation-run.yaml` includes commented
-entries. Ensure your overall PipelineRun/task timeouts allow time for interactive
-login. The browser session defaults to 120 minutes total, with 30 minutes for
-login. `sapBrowserSessionMinutes` and `sapBrowserLoginMinutes` can shorten these;
-the total limit is 120 minutes. The PipelineTask timeout is three hours, allowing
-some scheduling/startup time before the session deadline.
+## Use it
 
-Input selection is automatic: the pipeline passes its name, UID and hosted-cluster
-name. The helper verifies them, checks that `get-all-accesses` succeeded for this
-run, and checks the generated Secret's timestamp before reading credentials. The
-pod needs API access to the pipeline cluster and access to the SAP tenant/identity
-provider. These must be tested from the pod; Citrix connectivity alone does not
-establish that SAP SSO works from the pod.
+1. Once `wait-cluster-ready` is done, open the `sap-browser-deploy` log
+   (`tkn pipelinerun logs -f <pipelinerun> -t sap-browser-deploy`) and open the
+   Route link it prints (Route `sapb-<hostedClusterName>`).
+2. Log in to OpenShift (only users allowed to create `pods/portforward` in the
+   pipeline namespace get in), then log in to SAP in the browser shown. When SAP
+   ends the session ("Sign in again"), the log asks you to log in again and the
+   step is retried.
+3. Approve `approval-elm-eic-iflow-deployed` once the session has finished
+   (the gate waits for it) and the runtime is healthy.
+4. After approving `approval-teardown`, open the `sap-browser-teardown` log the
+   same way and log in again. `teardown-hosted-cluster` runs after it.
 
-## Open and finish the browser session
+**Outcomes** (result `outcome`, e.g. `tkn taskrun describe <taskrun>`):
+`deployed`, `upgraded`, `nothing-to-upgrade`, `edge-node-deleted` or
+`nothing-to-delete` (done); `inspection-finished` (inspect mode); `handed-over`
+(the automation stopped and you finished by hand); `failed` (setup, login or
+session failure). The browser step always exits 0, so check the outcome rather
+than the task status.
 
-Find the browser TaskRun using your actual PipelineRun name:
+**Manual fallback:** whatever happens in the browser, the run continues. On a
+hand-over the browser stays open with the reason in the log: finish the steps
+there or in your own browser, then close Chromium or run the
+`oc exec ... -c step-browser -- node /opt/sap-browser/control.mjs finish`
+command from the log. Without the browser (`failed`), do the steps by hand:
+upload the zips to `elm/` and `edge-icell/` (`wait-elm-zip` and `wait-eic-zip`
+wait for them either way) and, before approving the teardown, delete the EIC
+deployment and the Edge Node in ELM.
 
-```bash
-oc -n "$SAP_PIPELINE_NAMESPACE" get taskruns \
-  -l tekton.dev/pipelineRun=YOUR_PIPELINERUN,tekton.dev/pipelineTask=sap-browser
+## Security
 
-oc -n "$SAP_PIPELINE_NAMESPACE" get taskrun YOUR_BROWSER_TASKRUN \
-  -o jsonpath='{.status.podName}'
-```
+The browser profile, downloads and the files it uploads live in memory-backed
+pod storage and are removed when the session ends. Logs show no Playwright
+messages (they can contain entered values), only the automation's own messages.
+The runner reads only this run's Secrets, and from `eic-credentials-hcp-<cluster>`
+never the `kubeconfig` key. Only the helper code (`hack/sap-browser`, workspace
+`subPath`) reaches the browser pod, not the rest of the workspace.
 
-Set `SAP_BROWSER_POD` to that pod name. Its browser-step logs contain the complete
-port-forward, status and finish commands with the actual namespace and pod name:
-
-```bash
-export SAP_BROWSER_POD='YOUR_BROWSER_POD'
-oc -n "$SAP_PIPELINE_NAMESPACE" logs "$SAP_BROWSER_POD" -c step-browser
-oc -n "$SAP_PIPELINE_NAMESPACE" port-forward "pod/$SAP_BROWSER_POD" 6080:6080
-```
-
-Keep the port-forward terminal open. In the browser **on the same RHEL desktop**,
-open `http://127.0.0.1:6080/vnc.html` and click Connect. This is a view of Chromium
-inside the task pod. Complete SAP login/MFA there and reach Edge Nodes in its
-original tab. Login in another local browser tab does not authenticate the runner.
-
-After Playwright reaches Configuration Review, inspect the form. From a second
-terminal on the Citrix desktop:
-
-```bash
-oc -n "$SAP_PIPELINE_NAMESPACE" exec "$SAP_BROWSER_POD" -c step-browser -- \
-  node /opt/sap-browser/control.mjs status
-
-oc -n "$SAP_PIPELINE_NAMESPACE" exec "$SAP_BROWSER_POD" -c step-browser -- \
-  node /opt/sap-browser/control.mjs finish
-```
-
-Finishing closes the session and lets the pipeline reach its manual approval gate.
-**Registration review is not deployment verification.** Only approve that gate
-after the actual EIC and iFlow deployment is ready. To complete remaining setup
-manually during a test, you can use the open browser before finishing the session.
-
-For a selector/flow failure, the browser stays open until you finish or the session
-expires. Status says `failed`, and finishing still fails the task. A timeout or
-cancellation also fails the task. Inspect the page and fix the flow before rerunning;
-do not blindly repeat actions that might already have changed SAP state.
-
-noVNC and VNC bind only to loopback inside the pod. This first version creates no
-Service or Route. Your Kubernetes login and `pods/portforward` permission control
-access; the finish command additionally requires `pods/exec`. No new permissions
-are granted to your user by these manifests. A later HTTPS Route needs explicit
-authentication and authorization before it can expose a logged-in browser.
-
-The browser profile and temporary upload files live in memory-backed pod storage.
-Normal exit removes the session directory. If the container is forcibly killed,
-delete the finished pod to discard any remaining memory-backed files. No login
-state, trace, screenshot or credential-bearing browser log is exported by default.
-
-## Iterate without recreating the cluster
-
-Use `.tekton-examples/hcp-sap-browser-taskrun.yaml` against an **existing** compatible
-PipelineRun whose `get-all-accesses` succeeded and whose credential Secrets still
-exist. Read its UID using:
-
-```bash
-oc -n "$SAP_PIPELINE_NAMESPACE" get pipelinerun YOUR_PIPELINERUN \
-  -o jsonpath='{.metadata.uid}'
-```
-
-Copy the TaskRun example, replace every `REPLACE` value, then create it:
-
-```bash
-oc -n "$SAP_PIPELINE_NAMESPACE" create -f YOUR_EDITED_TASKRUN.yaml
-```
-
-This standalone TaskRun does not create a cluster or resume the original pipeline.
-It reads and validates that original run's inputs. Its helper code comes from the
-runner image, so rebuild with a new tag after editing selectors/logic. The integrated
-PipelineTask uses helper code from its checked-out `source` workspace instead; its
-Playwright dependencies still come from the image. Rebuild the image if dependency
-versions change, and keep the checkout and image dependencies in sync.
-
-Keep only one active browser session per target cluster. The pipeline's credential
-Secrets are named by cluster, so concurrent runs reusing a cluster name are not
-supported. Existing registered edge nodes cause the review flow to stop; use
-`inspect` to examine them or implement an explicit resume rule in your custom flow.
-
-## Extend the automation
-
-- `review-registration`: fills the existing wizard and stops before submission.
-- `inspect`: logs in, opens Playwright Inspector, and allows recording after login.
-  Resume Inspector when finished, then use the finish command. Recordings may contain
-  entered values; parameterize them before committing. They are not saved automatically.
-- `run`: loads the reviewed `.mjs` module specified by `sapBrowserFlow`, relative to
-  `hack/sap-browser`. It must export `run(args)` and `verify(args)` as described in
-  [README.md](README.md). Verification must return exactly `true`.
-
-The Task result `outcome` distinguishes `registration-reviewed`,
-`inspection-finished`, and `deployment-verified`. These results never approve the
-pipeline gate automatically. No complete EIC/iFlow flow is included yet.
-
-Local checks:
+## Local checks
 
 ```bash
 npm ci
 npm run sap:browser:install
 npm run sap:browser:test
+hack/tekton-tests/run.sh
 ```
 
-The tests exercise input association, session failure/finish semantics, readiness
-verification and the registration wizard using a local fixture. The container's
-OpenShift startup, port-forward path and SAP SSO require the deployment test above.
+The tests use fakes for ELM, Integration Suite, Kubernetes and S3; the OpenShift
+startup, the Route and SAP SSO need a real run.
 
 References: [Playwright containers](https://playwright.dev/docs/docker),
 [noVNC](https://novnc.com/info.html),

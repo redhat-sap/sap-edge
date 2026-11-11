@@ -23,16 +23,16 @@ zips to upload.
 
 | Pipeline | ELM access | What it does |
 |----------|------------|--------------|
-| `aro-eic-ossm3` | restricted | ARO with Azure PostgreSQL/Redis and Quay, EIC, endpoint tests, teardown |
-| `rosa-eic-ossm3` | restricted | ROSA HCP with RDS PostgreSQL, ElastiCache Redis and Quay, EIC, endpoint tests, teardown |
-| `roks-eic-ossm3` | restricted | ROKS with IBM Cloud Databases and Container Registry, optional ELM browser automation, EIC, endpoint tests, teardown |
-| `hcp-ossm3-validation` | restricted | HCP KubeVirt, one Edge Node with one EIC on the shared mesh |
-| `hcp-ossm3-dedicated-validation` | restricted | HCP KubeVirt, one Edge Node with one or two EICs on a dedicated mesh (topology A) |
-| `hcp-ossm3-multi-stack-validation` | restricted | HCP KubeVirt, two Edge Nodes with one EIC and a dedicated mesh each (topology B) |
-| `hcp-kubevirt-validation` | full | HCP KubeVirt with PostgreSQL/Redis, EIC, endpoint tests, teardown |
-| `hcp-cloud-connector-validation` | full | as `hcp-kubevirt-validation`, plus the SAP Cloud Connector configuration |
+| `aro-ossm3-single-eic-validation` | restricted | ARO with Azure PostgreSQL/Redis and Quay, EIC, endpoint tests, teardown |
+| `rosa-ossm3-single-eic-validation` | restricted | ROSA HCP with RDS PostgreSQL, ElastiCache Redis and Quay, EIC, endpoint tests, teardown |
+| `roks-ossm3-single-eic-validation` | restricted | ROKS with IBM Cloud Databases and Container Registry, optional ELM browser automation, EIC, endpoint tests, teardown |
+| `hcp-ossm3-single-eic-validation` | restricted | HCP KubeVirt, one Edge Node with one EIC on the shared mesh, optional ELM browser automation |
+| `hcp-ossm3-multi-eic-validation` | restricted | HCP KubeVirt, one Edge Node with one or two EICs on a dedicated mesh (topology A) |
+| `hcp-ossm3-multi-edge-node-validation` | restricted | HCP KubeVirt, two Edge Nodes with one EIC and a dedicated mesh each (topology B) |
+| `hcp-single-eic-validation` | full | HCP KubeVirt with PostgreSQL/Redis, EIC, endpoint tests, teardown |
+| `hcp-cloud-connector-validation` | full | as `hcp-single-eic-validation`, plus the SAP Cloud Connector configuration |
 | `aro-edgelm-validation`, `rosa-edgelm-validation` | full | cluster with Quay, ELM only (no databases), edgelm validation |
-| `aro-validation`, `rosa-validation` | - | cluster only, for generic testing |
+| `aro-cluster-only-validation`, `rosa-cluster-only-validation` | - | cluster only, for generic testing |
 | `endpoint-test-pipeline` | - | endpoint tests against an existing EIC |
 
 ## Tasks
@@ -66,6 +66,8 @@ zips to upload.
 - `hcp-wait-cluster-ready-task`: Wait for cluster readiness
 - `hcp-deploy-postgres-task`, `hcp-deploy-redis-task`: Deploy external services
 - `hcp-get-all-accesses-task`: Retrieve service credentials
+- `hcp-sap-browser-access-task`: Optional browser automation: let the runner ServiceAccount read this run's Secrets (per-run Role `hcp-sap-browser-<cluster>`), check for a proxy run and read the cluster's Edge Node ID label; does nothing when `sapBrowserMode` is disabled
+- `hcp-sap-browser-task`: Optional browser automation: Playwright browser for the ELM and Integration Suite steps (deploy, upgrade or teardown phase) behind a per-run Route with the OpenShift OAuth proxy; the step always exits 0 and reports the result `outcome` (see [`hack/sap-browser/PIPELINE.md`](../hack/sap-browser/PIPELINE.md))
 - `hcp-validate-and-create-configmap-task`: Validate and configure
 - `hcp-teardown-task`: Clean up resources
 
@@ -83,6 +85,7 @@ zips to upload.
 - `jira-add-comment-custom`: Update Jira tickets
 - `git-clone`: Clone repository
 - `manual-approval-gate`: Manual approval checkpoint
+- `sap-browser-image-task`: SAP browser runner image for the browser tasks: builds and pushes it to eic's Quay when its content-hash tag is missing (see [SAP browser runner image](#sap-browser-runner-image)); empty result when `sapBrowserMode` is disabled or the image cannot be provided (the task never fails the run)
 
 ## Usage
 
@@ -153,6 +156,19 @@ oc create secret generic hub-admin-kubeconfig \
   --from-file=kubeconfig=/path/to/hub-kubeconfig
 ```
 
+**SAP browser automation secrets (HCP, optional):** one Secret per hub's Quay
+(`eli-quay-robot`, `eic-quay-robot`), always on the pipeline cluster. Robot
+accounts, the runner repository, the CA and the full commands:
+[Quay setup](../hack/sap-browser/PIPELINE.md#quay-setup).
+```bash
+# HUB: eli or eic; REGISTRY: that hub's Quay path for ELM image replication
+oc create secret generic ${HUB}-quay-robot \
+  --from-literal=registry="${REGISTRY}" \
+  --from-literal=username="<robot username>" \
+  --from-file=password=/path/to/robot-token \
+  --from-file=ca.crt=/tmp/${HUB}-ca.crt
+```
+
 **OSSM3 prerequisites:**
 
 The OSSM3 pipelines require:
@@ -188,8 +204,7 @@ tkn pipelinerun list
 ```
 
 **Example PipelineRuns** are in `.tekton-examples/`, named after their pipeline
-(see [Pipelines](#pipelines)), for example `hcp-ossm3-validation-run.yaml`;
-`hcp-sap-browser-taskrun.yaml` rehearses the SAP browser task on its own.
+(see [Pipelines](#pipelines)), for example `hcp-ossm3-single-eic-validation-run.yaml`.
 
 ### 4. Manual Approvals
 ```bash
@@ -202,17 +217,18 @@ in SAP Integration Suite and check that every Edge Integration Cell runtime of
 the cluster shows a healthy status, with no errors. Then delete every EIC
 deployment of the cluster in ELM (Operations > Delete) and remove its Edge
 Node(s) (Remove, confirm with the node name): the teardown deletes only the
-cluster, not its ELM entries. ROKS with `sapBrowserMode` on does this in
-`sap-browser-teardown` after the approval. Approving starts the teardown.
+cluster, not its ELM entries. ROKS and `hcp-ossm3-single-eic-validation` with
+`sapBrowserMode` on do this in `sap-browser-teardown` after the approval.
+Approving starts the teardown.
 
 ## Multi-EIC restricted resources
 
 Two pipelines deploy more than one Edge Integration Cell (EIC) on one cluster:
 
-- **Topology A, shared core:** `hcp-ossm3-dedicated-validation-pipeline`. One
+- **Topology A, shared core:** `hcp-ossm3-multi-eic-validation-pipeline`. One
   Edge Node (a shared `edgelm`), one dedicated mesh, N cells (`cellCount`,
   default `2`).
-- **Topology B, 1:1:1 stacks:** `hcp-ossm3-multi-stack-validation-pipeline`. An
+- **Topology B, 1:1:1 stacks:** `hcp-ossm3-multi-edge-node-validation-pipeline`. An
   Edge Node, ELM and mesh per cell, two stacks (KBA 7149262 "Scenario 2:
   Multiple Edge Nodes with Dedicated Meshes"; ELM 1.64 and EIC 8.48 or later).
 
@@ -243,18 +259,18 @@ The tasks find the role by stripping the trailing `-<digits>`, for example
 
 ### S3 layout
 
-One prefix per cluster deployment (pipeline parameter `s3Prefix`), one folder
-per component:
+One prefix per cluster deployment (pipeline parameter `s3Prefix`, in the example
+run files `restricted-resources/<hostedClusterName>/`), one folder per component:
 
 ```text
 # Topology A (shared ELM, one mesh, N cells)
-restricted-resources/pr<N>/
+restricted-resources/hcp-ossm3-multi-eic-pr<N>/
   elm/            restricted-resources-Edge_Lifecycle_Management-<ver>.zip
   edge-icell-1/   restricted-resources-Edge_Integration_Cell-<ver>.zip
   edge-icell-2/   restricted-resources-Edge_Integration_Cell-<ver>.zip
 
 # Topology B (an ELM and a mesh per stack)
-restricted-resources/pr<N>-multi-stack/
+restricted-resources/hcp-ossm3-multi-edge-node-pr<N>/
   elm-1/          restricted-resources-Edge_Lifecycle_Management-<ver>.zip
   edge-icell-1/   restricted-resources-Edge_Integration_Cell-<ver>.zip
   elm-2/          restricted-resources-Edge_Lifecycle_Management-<ver>.zip
@@ -304,11 +320,11 @@ wait-elm-zip -> apply-elm-resources -> ELM namespace labels, mesh -> restricted 
 
 | Pipeline | S3 folders | Notes |
 |---|---|---|
-| `roks-eic-ossm3` | `restricted-resources/<clusterName>/elm/`, `edge-icell/` | earlier zips are archived (new cluster each run) |
-| `hcp-ossm3-validation` | `restricted-resources/<hostedClusterName>/elm/`, `edge-icell/` | EIC wait after PostgreSQL/Redis and the optional `sap-browser` |
-| `hcp-ossm3-dedicated-validation` | `restricted-resources/pr<N>/elm/`, `edge-icell-N/` | see the topology A notes above |
-| `hcp-ossm3-multi-stack-validation` | `restricted-resources/pr<N>-multi-stack/elm-N/`, `edge-icell-N/` | see the topology B notes above |
-| `aro-eic-ossm3`, `rosa-eic-ossm3` | `restricted-resources/<cluster name>/elm/`, `edge-icell/` | EIC wait after the Quay registry; `skipEicValidation: "true"` skips the whole second pass |
+| `roks-ossm3-single-eic-validation` | `restricted-resources/<clusterName>/elm/`, `edge-icell/` | earlier zips are archived (new cluster each run) |
+| `hcp-ossm3-single-eic-validation` | `restricted-resources/<hostedClusterName>/elm/`, `edge-icell/` | EIC wait after PostgreSQL/Redis; the optional `sap-browser-deploy` uploads both zips |
+| `hcp-ossm3-multi-eic-validation` | `restricted-resources/<hostedClusterName>/elm/`, `edge-icell-N/` | see the topology A notes above |
+| `hcp-ossm3-multi-edge-node-validation` | `restricted-resources/<hostedClusterName>/elm-N/`, `edge-icell-N/` | see the topology B notes above |
+| `aro-ossm3-single-eic-validation`, `rosa-ossm3-single-eic-validation` | `restricted-resources/<cluster name>/elm/`, `edge-icell/` | EIC wait after the Quay registry; `skipEicValidation: "true"` skips the whole second pass |
 
 Every HCP, ARO and ROSA run keeps the zips already in its folders (a re-run
 reuses them; the latest version per folder wins), so a folder that already
@@ -384,6 +400,67 @@ The secrets namespaces are in the mesh's discovery scope but get no sidecars
 - No credentials exposed in logs
 - Temporary files cleaned up automatically
 - Azure CLI login scoped to specific operations
+
+### SAP browser runner image
+
+`sap-browser-image` (no `when`) gives the browser tasks their image in the
+result `image`:
+
+- `mode` `disabled`: empty result, the steps exit at once (later tasks gate on
+  the empty result).
+- `image` set: that image as is, nothing is built or checked.
+- Otherwise `<repository>:sap-browser-<hash>`, where `<hash>` is the first 12 hex
+  digits of a sha256 over the files tracked in git under `package-lock.json` and
+  `hack/sap-browser/` (a `sha256  path` line per file, sorted by path). The same
+  revision of these files always gives the same tag; other changes in the
+  repository do not trigger a build. Default `repository`:
+  `quay.apps.eic.ocp.sap.local/sap_elm_eic/sap-browser` (public).
+
+**Before the first run** the repository `sap_elm_eic/sap-browser` must exist
+and be public on eic's Quay (the runner pods pull without a pull secret), and
+the robot account of the Secret `eic-quay-robot` needs Write on it: its Creator
+role covers the repositories it creates itself, not one created by a user.
+
+When `skopeo inspect` does not find the tag, buildah builds
+`hack/sap-browser/Containerfile` with the repository root as context and pushes
+the image. Then a short-lived Pod `sap-browser-pull-check-*` in the pipeline
+namespace runs the image with `/bin/true` and is deleted again. If the nodes
+cannot pull the image (`ErrImagePull`/`ImagePullBackOff`, typically x509), the
+log says "eic cannot pull from its Quay (certificate trust?)". The nodes must
+trust the CA of the Quay (`image.config.openshift.io/cluster`,
+`additionalTrustedCA`). For an existing tag there is no build and no pull
+check. Any other registry error at the check (x509, unauthorized) stops before
+the build.
+
+**The task never fails the run.** On any failure (tag check, build, push,
+pull check, missing Secret keys) it logs the reason and "No SAP browser runner
+image: the browser tasks are skipped and the run continues on the manual
+path", leaves the result `image` empty and exits 0, so `sap-browser-deploy`
+and `sap-browser-teardown` are skipped by their `when` and you do the ELM
+steps by hand. The result is non-empty only for a given image, a tag already
+in the registry, or a pushed image that passed the pull check.
+
+**Build method:** a buildah step (`registry.redhat.io/rhel9/buildah`, chroot
+isolation, `--storage-driver=vfs`, an `emptyDir` on `/var/lib/containers`,
+capability `SETFCAP`), as in Red Hat's buildah task. It needs no privileged
+container and no extra SCC: the task must run as the OpenShift Pipelines
+`pipeline` ServiceAccount (the PipelineRun default), whose `pipelines-scc`
+allows `SETFCAP`. Do not put it under a `taskRunSpecs` ServiceAccount that only
+has `restricted-v2`. For the pull check the same ServiceAccount needs `create`,
+`get` and `delete` on Pods in the pipeline namespace (the `edit` role, which
+OpenShift Pipelines binds to it by default). The build pod needs Docker Hub
+(`node` base image), npm, Debian and Playwright downloads; the build step
+requests 2 GiB memory (limit 4 GiB) and vfs needs a few GB of node ephemeral
+storage. An OpenShift BuildConfig would
+need a build strategy role and an output Secret for the external Quay, so it is
+not used.
+
+**Secret `eic-quay-robot`** (`pushSecretName`) in the pipeline namespace: keys
+`username` and `password` (Quay robot account with write access to the
+repository) and `ca.crt` (the CA of the Quay certificate, used for `skopeo` and
+`buildah push`). Its `registry` key is not used. The password goes only into a
+mode-600 authfile in the task pod and is never printed. The Secret is needed
+only when the task builds (not with `mode` `disabled` or a given `image`).
 
 ## Configure worker open-file limits before installation
 
@@ -710,7 +787,7 @@ The example PipelineRun lives in `.tekton-examples/` and is not triggered automa
 sed -e 's/{{ pull_request_number }}/123/g' \
     -e 's|{{ repo_url }}|https://github.com/redhat-sap/sap-edge|g' \
     -e 's/{{ revision }}/<branch or commit>/g' \
-    .tekton-examples/roks-eic-ossm3-run.yaml | oc create -f -
+    .tekton-examples/roks-ossm3-single-eic-validation-run.yaml | oc create -f -
 tkn pipelinerun logs -f <pipelinerun-name>
 ```
 
@@ -724,7 +801,7 @@ With `sapBrowserMode` other than `disabled`, the run starts a Chromium browser i
 
 **One-time setup** (pipeline namespace):
 
-1. Build and push the runner image as described in [`hack/sap-browser/PIPELINE.md`](../hack/sap-browser/PIPELINE.md#build-and-install-once) (the HCP steps after the push are not needed for ROKS).
+1. Build and push the runner image as described in [`hack/sap-browser/PIPELINE.md`](../hack/sap-browser/PIPELINE.md#build-the-image-by-hand).
 2. `oc -n <pipeline namespace> apply -f hack/sap-browser/roks-runner-rbac.yaml`: the ServiceAccount `roks-sap-browser-runner` (reads PipelineRuns/TaskRuns, creates and deletes its Route and Service, gets no Secrets namespace-wide) and the right of the `pipeline` ServiceAccount to create the per-run Role `roks-sap-browser-<cluster>`. That Role grants `get` on this run's three Secrets only, so the `pipeline` ServiceAccount must hold `get` on them itself. If the OAuth proxy logs 403 on `subjectaccessreviews`, bind `system:auth-delegator` to the runner (command in the file).
 3. Download the Linux x86_64 `elm` CLI from the SAP Software Download Center and upload it (the binary, a `.zip` or a `.tar.gz`; not a `.SAR`) to `tools/elm/` in the OBC bucket. The browser takes the newest file there. Upload a new one when ELM needs a newer CLI.
 

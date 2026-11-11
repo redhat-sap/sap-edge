@@ -5,19 +5,36 @@
 
 # Prerequisites:
 # 1. Ensure the ObjectBucketClaim (OBC) 'sap-eic-restricted-cluster-config-resources'
-#    is created and bound in the pipeline namespace. The pipeline creates the folders
-#    elm/ and edge-icell/ under 'restricted-resources/<hostedClusterName>/' and waits
-#    for the bundles in two passes: wait-elm-zip (elm/), then, after the Edge Node is
-#    registered and EIC is deployed in ELM, wait-eic-zip (edge-icell/).
+#    is created and bound in the pipeline namespace. The pipeline creates the
+#    folders under 'restricted-resources/<hostedClusterName>/' (one set per cluster) and waits for
+#    the bundles in two passes: wait-elm-zip (elm/), then, after the Edge Node is
+#    registered and EIC is deployed in ELM, wait-eic-zip (edge-icell-1/).
 #
-# 2. Ensure the Service Mesh 3.x operator is installed on the target cluster
-#    (via OperatorHub or CLI before running this pipeline)
+# 2. Ensure a Squid proxy is running on the jumphost and accessible from the
+#    hosted cluster worker nodes. Create a Secret named '{hubClusterName}-proxy-config'
+#    with keys: PROXY_HOST, PROXY_PORT, PROXY_IP.
+#
+# 3. The httpbinipfilter iFlow has an IP filter (X-Forwarded-For based).
+#    Whitelist both the hub cluster and managed/hosted cluster pod CIDRs
+#    in the iFlow's IP filter policy (e.g. 10.128.0.0/14, 10.132.0.0/14,
+#    100.64.0.0/24). Check each cluster's CIDR with:
+#      oc get network.config cluster -o jsonpath='{.spec.clusterNetwork[*].cidr}'
+#
+# Scenario: Dedicated SAP service mesh with corporate proxy,
+#   single Edge Integration Cell (multi-EIC topology A with cellCount: "1")
+#   - Deploys an independent Istio control plane 'sap-mesh-istio'
+#   - Enables DNS capture (ISTIO_META_DNS_CAPTURE / ISTIO_META_DNS_AUTO_ALLOCATE)
+#   - Creates a ServiceEntry in edgelm namespace to permit proxy connections
+#   - ELM registration should have "Enable HTTP Proxy" checked
+#   - All SAP namespaces follow the -N naming scheme (edge-icell-1, istio-gateways-1, etc.)
+#   - eicZipFolders must exclude edge-icell-2 when cellCount: "1"
+#     (wait-eic-zip waits until every listed folder holds a zip)
 
 ---
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: hcp-ossm3-validation-pr{{ pull_request_number }}-
+  generateName: hcp-ossm3-multi-eic-validation-proxy-pr{{ pull_request_number }}-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
@@ -26,11 +43,7 @@ metadata:
     pipelinesascode.tekton.dev/cancel-in-progress: "true"
 spec:
   pipelineRef:
-    name: hcp-ossm3-validation-pipeline
-  # When enabling sapBrowserMode, install the runner's RBAC and uncomment:
-  # taskRunSpecs:
-  #   - pipelineTaskName: sap-browser
-  #     serviceAccountName: sap-browser-runner
+    name: hcp-ossm3-multi-eic-validation-pipeline
   timeouts:
     pipeline: "336h"      # Total pipeline timeout (14 days)
     tasks: "335h"         # Individual task timeout (tasks + finally must be <= pipeline)
@@ -45,16 +58,14 @@ spec:
       value: "{{ pull_request_number }}"
 
     # --- HCP cluster parameters ---
-    # hostedClusterName: include hubClusterName to avoid collisions across hubs
-    # Pattern: {prefix}-{hubClusterName}-pr{number}
+    # hostedClusterName: <pipeline name without -validation>-pr<N>; s3Prefix below
+    # uses the same name, so every cluster gets its own S3 folders
     - name: hostedClusterName
-      value: "hcp-ossm-eic-pr{{ pull_request_number }}"
-    # hostedClusterName: include hubClusterName to avoid collisions across hubs
-    # Pattern: {prefix}-{hubClusterName}-pr{number}
+      value: "hcp-ossm3-multi-eic-proxy-pr{{ pull_request_number }}"
     - name: hostedClusterNamespace
       value: "clusters"
     - name: releaseImage
-      value: "quay.io/openshift-release-dev/ocp-release:4.22.5-x86_64"
+      value: "quay.io/openshift-release-dev/ocp-release:4.21.7-x86_64"
     - name: nodePoolReplicas
       value: "3"
     - name: nodePoolCpuCores
@@ -78,10 +89,14 @@ spec:
       value: "stable-3.2"
     - name: obcName
       value: "sap-eic-restricted-cluster-config-resources"
-    # One folder per cluster (elm/ and edge-icell/ below it); earlier zips stay
-    # (latest version per folder wins)
     - name: s3Prefix
-      value: "restricted-resources/hcp-ossm-eic-pr{{ pull_request_number }}/"
+      value: "restricted-resources/hcp-ossm3-multi-eic-proxy-pr{{ pull_request_number }}/"
+    - name: elmZipFolders
+      value: "elm"
+    - name: eicZipFolders
+      value: "edge-icell-1"
+    - name: cellCount
+      value: "1"
 
     # --- EIC services parameters ---
     - name: postgresVersion
@@ -89,7 +104,7 @@ spec:
     - name: postgresHA
       value: "false"
     - name: datastoreType
-      value: "valkey-cluster"
+      value: "redis"
     - name: redisClusterType
       value: "standard"
 
@@ -103,17 +118,9 @@ spec:
     - name: jiraSecretName
       value: "jira-secret-mj"
     - name: jiraIssueKey
-      value: ""
+      value: "SAPOCP-1978"
 
     # --- Pipeline control ---
-    # Optional browser runner (disabled unless explicitly configured).
-    # Build/install/access instructions: hack/sap-browser/PIPELINE.md
-    # - name: sapBrowserMode
-    #   value: "review-registration"
-    # - name: sapBrowserImage
-    #   value: "YOUR_REGISTRY/YOUR_PROJECT/sap-browser:dev"
-    # - name: sapElmUrl
-    #   value: "https://YOUR-TENANT/comsapclmedgelm.comsapclmedgelm/index.html"
     - name: skipTeardown
       value: "false"
   workspaces:

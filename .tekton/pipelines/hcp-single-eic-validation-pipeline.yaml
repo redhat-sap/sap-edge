@@ -6,7 +6,7 @@
 apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
-  name: hcp-kubevirt-validation-pipeline
+  name: hcp-single-eic-validation-pipeline
   annotations:
     description: "Complete SAP Edge Integration Cell validation pipeline for HCP KubeVirt: creates hosted cluster with MCE/HyperShift on KubeVirt, deploys PostgreSQL and Redis, runs comprehensive endpoint tests, and tears down infrastructure"
 spec:

@@ -20,15 +20,15 @@ ALLOWLIST = [
     # Pre-existing defect: ApprovalTask with when (violates memory doc; requires computed-timeout workaround)
     ("aro-edgelm-validation-pipeline", "ApprovalTask.when", "manual-approval-post-deployment"),
     ("aro-edgelm-validation-pipeline", "ApprovalTask.when", "approval-second-validation-round"),
-    ("aro-eic-ossm3-pipeline", "ApprovalTask.when", "approval-elm-eic-iflow-deployed"),
-    ("aro-eic-ossm3-pipeline", "ApprovalTask.when", "approval-second-test-round"),
+    ("aro-ossm3-single-eic-validation-pipeline", "ApprovalTask.when", "approval-elm-eic-iflow-deployed"),
+    ("aro-ossm3-single-eic-validation-pipeline", "ApprovalTask.when", "approval-second-test-round"),
     ("rosa-edgelm-validation-pipeline", "ApprovalTask.when", "manual-approval-post-deployment"),
     ("rosa-edgelm-validation-pipeline", "ApprovalTask.when", "approval-second-validation-round"),
-    ("rosa-eic-ossm3-pipeline", "ApprovalTask.when", "approval-elm-eic-iflow-deployed"),
-    ("rosa-eic-ossm3-pipeline", "ApprovalTask.when", "approval-second-test-round"),
+    ("rosa-ossm3-single-eic-validation-pipeline", "ApprovalTask.when", "approval-elm-eic-iflow-deployed"),
+    ("rosa-ossm3-single-eic-validation-pipeline", "ApprovalTask.when", "approval-second-test-round"),
     # Pre-existing defect: postgresAdminPassword param removed from rosa-deploy-with-eic-services task but pipeline still passes it
     ("rosa-edgelm-validation-pipeline", "param.undeclared", "deploy-rosa.postgresAdminPassword"),
-    ("rosa-validation-pipeline", "param.undeclared", "deploy-rosa.postgresAdminPassword"),
+    ("rosa-cluster-only-validation-pipeline", "param.undeclared", "deploy-rosa.postgresAdminPassword"),
     # Pre-existing defect: .tekton-examples/rosa-edgelm-validation-run.yaml passes a param its pipeline does not declare
     ("rosa-edgelm-validation-pr{{ pull_request_number }}-", "param", "pullRequestNumber"),
 ]

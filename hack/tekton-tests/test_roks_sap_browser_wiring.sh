@@ -16,10 +16,11 @@ echo "============================================"
 
 TASK=../../.tekton/tasks/roks-sap-browser-task.yaml
 HCP_TASK=../../.tekton/tasks/hcp-sap-browser-task.yaml
-PIPELINE=../../.tekton/pipelines/roks-eic-ossm3-pipeline.yaml
-RUN_FILE=../../.tekton/roks-eic-ossm3-run.yaml
-EXAMPLE_RUN_FILE=../../.tekton-examples/roks-eic-ossm3-run.yaml
+PIPELINE=../../.tekton/pipelines/roks-ossm3-single-eic-validation-pipeline.yaml
+RUN_FILE=../../.tekton/roks-ossm3-single-eic-validation-run.yaml
+EXAMPLE_RUN_FILE=../../.tekton-examples/roks-ossm3-single-eic-validation-run.yaml
 ROKS_ENTRY=../../hack/sap-browser/roks-pipeline.mjs
+SESSION_CODE=../../hack/sap-browser/browser-session.mjs
 
 [[ -f "${TASK}" ]] || fail "${TASK} not found"
 
@@ -27,7 +28,7 @@ ROKS_ENTRY=../../hack/sap-browser/roks-pipeline.mjs
 echo ""
 echo "Test: task_definition"
 echo "--------------------------------------------"
-python3 -I - "${TASK}" "${HCP_TASK}" "${ROKS_ENTRY}" <<'PY'
+python3 -I - "${TASK}" "${HCP_TASK}" "${ROKS_ENTRY}" "${SESSION_CODE}" <<'PY'
 import re
 import sys
 import yaml
@@ -40,8 +41,11 @@ def load_task(path):
 
 task = load_task(sys.argv[1])
 hcp = load_task(sys.argv[2])
-with open(sys.argv[3], encoding="utf-8") as f:
-    entry_source = f.read()
+# roks-pipeline.mjs and the shared session code it runs (browser-session.mjs)
+entry_source = ""
+for path in sys.argv[3:]:
+    with open(path, encoding="utf-8") as f:
+        entry_source += f.read()
 
 errors = []
 MISSING = object()
@@ -171,8 +175,9 @@ expected_names = set(expected_values) | set(field_refs) | set(secret_refs) | set
 if set(env) != expected_names:
     errors.append(f"unexpected/missing env: extra {sorted(set(env) - expected_names)}, missing {sorted(expected_names - set(env))}")
 
-# Every variable roks-pipeline.mjs reads must be set by the task, except the
-# session dir (entrypoint.sh) and the debug switches it refuses.
+# Every variable roks-pipeline.mjs (and the shared session code) reads must be
+# set by the task, except the session dir (entrypoint.sh) and the debug
+# switches it refuses.
 read_by_entry = set(re.findall(r"\benv\.([A-Z][A-Z0-9_]*)", entry_source))
 for line in entry_source.splitlines():
     if re.search(r"for \(const key of \[", line):
@@ -524,8 +529,11 @@ echo "✅ PASS: pipeline_wiring"
 echo ""
 echo "Test: run_files"
 echo "--------------------------------------------"
-cmp -s "${RUN_FILE}" "${EXAMPLE_RUN_FILE}" || fail "${RUN_FILE} and ${EXAMPLE_RUN_FILE} must be identical"
-python3 -I - "${RUN_FILE}" <<'PY'
+# The PR run file (.tekton/) is optional; when present it must equal the example
+if [[ -f "${RUN_FILE}" ]]; then
+  cmp -s "${RUN_FILE}" "${EXAMPLE_RUN_FILE}" || fail "${RUN_FILE} and ${EXAMPLE_RUN_FILE} must be identical"
+fi
+python3 -I - "${EXAMPLE_RUN_FILE}" <<'PY'
 import sys
 import yaml
 
@@ -610,7 +618,7 @@ run_browser_step() {
     --param phase=deploy \
     --param runnerImage=example.com/sap-browser:test \
     --param elmUrl=https://elm.example.com/ \
-    --param pipelineRun=roks-eic-ossm3-pr7-abcde \
+    --param pipelineRun=roks-ossm3-single-eic-validation-pr7-abcde \
     --param pipelineRunUID=0f6c1e4a-1111-2222-3333-444455556666 \
     --param clusterName=redhat-roks-eic-pr7 \
     --param obcName=sap-eic-restricted-cluster-config-resources \

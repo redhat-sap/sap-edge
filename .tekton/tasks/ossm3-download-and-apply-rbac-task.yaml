@@ -123,7 +123,7 @@ spec:
         # Step 1: Download zip files from S3
         # ========================================
         # Download only what this run applies. Other deployments' per-PR folders
-        # (restricted-resources/pr<N>/, restricted-resources/pr<N>-multi-stack/, …)
+        # (restricted-resources/<hostedClusterName>/, …)
         # live in the same bucket, often below a prefix a flat run also uses, and
         # must never become components here:
         #   requiredComponents set   -> only <prefix><component>/* per component

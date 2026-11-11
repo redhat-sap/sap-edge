@@ -13,7 +13,7 @@ echo "============================================"
 
 # ROKS pipeline two-pass apply invariants: ELM zip wait → apply-elm-resources →
 # generate SA kubeconfig → EIC zip wait → apply-eic-resources → re-apply mesh labels.
-python3 -I - ../../.tekton/pipelines/roks-eic-ossm3-pipeline.yaml \
+python3 -I - ../../.tekton/pipelines/roks-ossm3-single-eic-validation-pipeline.yaml \
   ../../.tekton/pipelines/hcp-*.yaml <<'PY'
 import sys
 import yaml
