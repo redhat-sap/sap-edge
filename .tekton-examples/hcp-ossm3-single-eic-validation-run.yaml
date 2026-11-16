@@ -20,7 +20,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: hcp-ossm3-single-eic-validation-pr{{ pull_request_number }}-
+  generateName: hcp-ossm3-single-eic-hub-eic-validation-pr{{ pull_request_number }}-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
@@ -51,10 +51,11 @@ spec:
       value: "{{ pull_request_number }}"
 
     # --- HCP cluster parameters ---
-    # hostedClusterName: <pipeline name without -validation>-pr<N>; s3Prefix below
-    # uses the same name, so every cluster gets its own S3 folders
+    # hostedClusterName: <pipeline name without -validation>-hub-<hubClusterName>-pr<N>
+    # ("eic" in a pipeline name is the product, "hub-<name>" the hub); s3Prefix
+    # below uses the same name, so every cluster gets its own S3 folders
     - name: hostedClusterName
-      value: "hcp-ossm3-single-eic-pr{{ pull_request_number }}"
+      value: "hcp-ossm3-single-eic-hub-eic-pr{{ pull_request_number }}"
     - name: hostedClusterNamespace
       value: "clusters"
     - name: releaseImage
@@ -85,7 +86,7 @@ spec:
     # One folder per cluster (elm/ and edge-icell/ below it); earlier zips stay
     # (latest version per folder wins)
     - name: s3Prefix
-      value: "restricted-resources/hcp-ossm3-single-eic-pr{{ pull_request_number }}/"
+      value: "restricted-resources/hcp-ossm3-single-eic-hub-eic-pr{{ pull_request_number }}/"
 
     # --- EIC services parameters ---
     - name: postgresVersion

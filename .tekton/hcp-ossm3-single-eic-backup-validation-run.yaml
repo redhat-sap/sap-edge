@@ -20,7 +20,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: hcp-ossm3-single-eic-backup-validation-pr{{ pull_request_number }}-
+  generateName: hcp-ossm3-single-eic-backup-hub-eli-validation-pr{{ pull_request_number }}-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
@@ -51,10 +51,11 @@ spec:
       value: "{{ pull_request_number }}"
 
     # --- HCP cluster parameters ---
-    # hostedClusterName: <pipeline name without -validation>-backup-pr<N>; s3Prefix
-    # below uses the same name, so every cluster gets its own S3 folders
+    # hostedClusterName: hcp-ossm3-single-eic-backup-hub-<hubClusterName>-pr<N>
+    # ("eic" is the product, "hub-eli" the hub); s3Prefix below uses the same
+    # name, so every cluster gets its own S3 folders
     - name: hostedClusterName
-      value: "hcp-ossm3-single-eic-backup-pr{{ pull_request_number }}"
+      value: "hcp-ossm3-single-eic-backup-hub-eli-pr{{ pull_request_number }}"
     - name: hostedClusterNamespace
       value: "clusters"
     - name: releaseImage
@@ -75,7 +76,7 @@ spec:
     # The pipeline derives the kubeconfig secret as: {hubClusterName}-kubeconfig
     # Ensure a Secret named "{hubClusterName}-kubeconfig" exists with the hub's kubeconfig
     - name: hubClusterName
-      value: "eic"
+      value: "eli"
 
     # --- OSSM3 parameters ---
     - name: ossm3Channel
@@ -85,7 +86,7 @@ spec:
     # One folder per cluster (elm/ and edge-icell/ below it); earlier zips stay
     # (latest version per folder wins)
     - name: s3Prefix
-      value: "restricted-resources/hcp-ossm3-single-eic-backup-pr{{ pull_request_number }}/"
+      value: "restricted-resources/hcp-ossm3-single-eic-backup-hub-eli-pr{{ pull_request_number }}/"
 
     # --- EIC services parameters ---
     - name: postgresVersion
