@@ -7,7 +7,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: hcp-cloud-connector-validation-pr{{ pull_request_number }}-
+  generateName: hcp-cloud-connector-hub-eic-validation-pr{{ pull_request_number }}-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
@@ -28,9 +28,10 @@ spec:
       value: "{{ revision }}"
     - name: pullRequestNumber
       value: "{{ pull_request_number }}"
-    # hostedClusterName: <pipeline name without -validation>-pr<N>
+    # hostedClusterName: <pipeline name without -validation>-hub-<hubClusterName>-pr<N>
+    # ("eic" in a pipeline name is the product, "hub-<name>" the hub)
     - name: hostedClusterName
-      value: "hcp-cloud-connector-pr{{ pull_request_number }}"
+      value: "hcp-cloud-connector-hub-eic-pr{{ pull_request_number }}"
     - name: hostedClusterNamespace
       value: "clusters"
     - name: releaseImage
