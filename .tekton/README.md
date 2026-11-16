@@ -14,6 +14,15 @@ CI/CD pipelines for deploying and testing SAP Edge Integration Cell on ARO, ROSA
 example `-proxy`), and the run's `generateName` is `<name>-pr<N>-`. To run a
 pipeline on pull requests, copy its example run into `.tekton/`.
 
+**HCP runs name the hub.** `eic` is both the product and one of the two hubs
+(`eli`, `eic`), so the HCP runs put the hub in their names as `hub-<hubClusterName>`:
+`generateName` is `<name without -validation>[-<variant>]-hub-<hub>-validation-pr<N>-`
+and `hostedClusterName` (and `s3Prefix`, `restricted-resources/<hostedClusterName>/`)
+is `<name without -validation>[-<variant>]-hub-<hub>-pr<N>`, for example
+`hcp-ossm3-single-eic-hub-eli-pr<N>` (product EIC, hub eli). Change the names
+together with `hubClusterName`. ROSA, ROKS and ARO keep their short cluster
+names (platform length limits).
+
 **`ossm3` in the name means restricted access:** the pipeline installs OpenShift
 Service Mesh 3, applies SAP's restricted-resources zips in two passes (see
 [Two-pass apply](#two-pass-apply-all-ossm3-pipelines)) and generates the
@@ -264,13 +273,13 @@ run files `restricted-resources/<hostedClusterName>/`), one folder per component
 
 ```text
 # Topology A (shared ELM, one mesh, N cells)
-restricted-resources/hcp-ossm3-multi-eic-pr<N>/
+restricted-resources/hcp-ossm3-multi-eic-hub-eli-pr<N>/
   elm/            restricted-resources-Edge_Lifecycle_Management-<ver>.zip
   edge-icell-1/   restricted-resources-Edge_Integration_Cell-<ver>.zip
   edge-icell-2/   restricted-resources-Edge_Integration_Cell-<ver>.zip
 
 # Topology B (an ELM and a mesh per stack)
-restricted-resources/hcp-ossm3-multi-edge-node-pr<N>/
+restricted-resources/hcp-ossm3-multi-edge-node-hub-eli-pr<N>/
   elm-1/          restricted-resources-Edge_Lifecycle_Management-<ver>.zip
   edge-icell-1/   restricted-resources-Edge_Integration_Cell-<ver>.zip
   elm-2/          restricted-resources-Edge_Lifecycle_Management-<ver>.zip
