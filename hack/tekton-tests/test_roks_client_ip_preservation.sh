@@ -469,6 +469,71 @@ expect_success
 ! grep -q -- "--apikey" "${STUB_IC_LOG}" || fail "--apikey used on the ibmcloud command line"
 echo "✅ PASS: api_key_not_leaked"
 
+# Test case: pipeline_wiring
+# Always runs between the ELM/EIC gate and the ConfigMap; run files list the
+# task; the gate tells the user to allowlist the egress IP, not the VPC
+echo ""
+echo "Test: pipeline_wiring"
+echo "--------------------------------------------"
+python3 -I - ../../.tekton/pipelines/roks-ossm3-single-eic-validation-pipeline.yaml \
+  ../../.tekton-examples/roks-ossm3-single-eic-validation-run.yaml \
+  ../../.tekton/roks-ossm3-single-eic-validation-run.yaml <<'PY'
+import os
+import sys
+import yaml
+
+
+def load(path, kind):
+    with open(path, encoding="utf-8") as f:
+        return next(d for d in yaml.safe_load_all(f) if d and d.get("kind") == kind)
+
+
+errors = []
+pipeline = load(sys.argv[1], "Pipeline")
+tasks = {t["name"]: t for t in pipeline["spec"]["tasks"]}
+task = tasks.get("enable-client-ip-preservation")
+if task is None:
+    errors.append("pipeline task enable-client-ip-preservation missing")
+else:
+    if task.get("taskRef") != {"name": "roks-enable-client-ip-preservation"}:
+        errors.append(f"taskRef: {task.get('taskRef')}")
+    if task.get("runAfter") != ["approval-elm-eic-iflow-deployed"]:
+        errors.append(f"runAfter: {task.get('runAfter')}")
+    if "when" in task:
+        errors.append("enable-client-ip-preservation must always run (no when)")
+    params = {p["name"]: p["value"] for p in task.get("params", [])}
+    expected = {name: f"$(params.{name})" for name in
+                ("clusterName", "roksCredentialsSecretName", "ibmcloudRegion", "ibmcloudResourceGroup")}
+    if params != expected:
+        errors.append(f"params: {params}")
+    if task.get("workspaces") != [{"name": "source", "workspace": "source"}]:
+        errors.append(f"workspaces: {task.get('workspaces')}")
+if tasks["validate-and-create-configmap"].get("runAfter") != ["enable-client-ip-preservation"]:
+    errors.append(f"validate-and-create-configmap runAfter: {tasks['validate-and-create-configmap'].get('runAfter')}")
+gate = {p["name"]: p["value"] for p in tasks["approval-elm-eic-iflow-deployed"]["params"]}["description"]
+if "enable-client-ip-preservation" not in gate:
+    errors.append("the ELM/EIC gate must point to enable-client-ip-preservation for the egress IP")
+if "172.17.0.0/18" in gate:
+    errors.append("the ELM/EIC gate still asks to allowlist the pod network")
+if "must allow 172" in gate or "and 10.0.0.0/16 (VPC)" in gate:
+    errors.append("the ELM/EIC gate still asks to allowlist the VPC")
+jira = {p["name"]: p["value"] for p in tasks["update-jira-ticket"]["params"]}["comment"]
+if "Client IP preservation" not in jira:
+    errors.append("the Jira comment must report client IP preservation")
+task_file = "./.tekton/tasks/roks-enable-client-ip-preservation-task.yaml"
+for path in sys.argv[2:]:
+    if not os.path.exists(path):
+        continue
+    run = load(path, "PipelineRun")
+    listed = run["metadata"]["annotations"]["pipelinesascode.tekton.dev/task"]
+    if task_file not in [t.strip() for t in listed.strip("[]").split(",")]:
+        errors.append(f"{path}: {task_file} missing from pipelinesascode.tekton.dev/task")
+if errors:
+    print("\n".join(errors))
+    sys.exit(1)
+PY
+echo "✅ PASS: pipeline_wiring"
+
 echo ""
 echo "============================================"
 echo "✅ All roks-enable-client-ip-preservation tests passed"
