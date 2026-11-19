@@ -23,14 +23,52 @@ K='--kubeconfig */kubeconfig'
 # Stub binaries for the calls that are not oc (oc is the harness fake)
 STUB_BIN=$(tmp_dir)
 STUB_IC_LOG=$(tmp_file)
-export STUB_IC_LOG
+STUB_LBS=$(tmp_file)
+STUB_LB_STATUSES=$(tmp_file)
+STUB_LISTENERS=$(tmp_file)
+STUB_STATE_DIR=$(tmp_dir)
+export STUB_IC_LOG STUB_LBS STUB_LB_STATUSES STUB_LISTENERS STUB_STATE_DIR
+
+# Stub ibmcloud: logs every call; login only works with the API key in the
+# environment; the load balancer list comes from STUB_LBS; each status poll
+# prints the next line of STUB_LB_STATUSES and each listener poll the next
+# line of STUB_LISTENERS (the last line repeats)
 cat > "${STUB_BIN}/ibmcloud" <<'EOF'
 #!/usr/bin/env bash
+set -euo pipefail
 printf '%s\n' "$*" >> "${STUB_IC_LOG}"
-exit 0
+next_line() {
+  local N TOTAL
+  N=$(( $(cat "${STUB_STATE_DIR}/$2" 2>/dev/null || echo 0) + 1 ))
+  echo "${N}" > "${STUB_STATE_DIR}/$2"
+  TOTAL=$(wc -l < "$1")
+  if [[ ${N} -gt ${TOTAL} ]]; then
+    N=${TOTAL}
+  fi
+  sed -n "${N}p" "$1"
+}
+case "$*" in
+  "login "*)
+    if [[ -z "${IBMCLOUD_API_KEY:-}" ]]; then
+      echo "FAILED: no API key in IBMCLOUD_API_KEY" >&2
+      exit 1
+    fi
+    echo "OK"
+    ;;
+  "is load-balancers --all-resource-groups --output JSON") cat "${STUB_LBS}" ;;
+  "is load-balancer "*" --output JSON")
+    jq -cn --arg id "$3" --arg status "$(next_line "${STUB_LB_STATUSES}" status)" '{id: $id, provisioning_status: $status}'
+    ;;
+  "is load-balancer-listeners "*" --output JSON") next_line "${STUB_LISTENERS}" listeners ;;
+  *) echo "unexpected ibmcloud call: $*" >&2; exit 1 ;;
+esac
 EOF
 cat > "${STUB_BIN}/curl" <<'EOF'
 #!/usr/bin/env bash
+if [[ "${STUB_CURL_FAIL:-0}" == "1" ]]; then
+  echo "curl: (7) Failed to connect" >&2
+  exit 7
+fi
 echo "203.0.113.10"
 EOF
 chmod +x "${STUB_BIN}/ibmcloud" "${STUB_BIN}/curl"
@@ -82,8 +120,26 @@ dump_json() {
     listener_filters: [$ARGS.positional[] | {name: .}]}}}]}' "$@"
 }
 
-# Fresh workspace and fake oc state; the defaults describe a gateway without
-# the annotation whose pods already run the PROXY protocol filter
+# The VPC load balancers in the account: the ALB of the gateway (resource
+# group $1) and a decoy with another hostname
+write_lbs() {
+  jq -cn --arg host "${LB_HOSTNAME}" --arg group "$1" '[
+    {id: "r010-lb-decoy", name: "kube-other-def", hostname: "9f8e7d6c-eu-de.lb.appdomain.cloud",
+     resource_group: {name: "redhat-sap-edge-roks-ci"}},
+    {id: "r010-lb-1", name: "kube-c1-abc", hostname: $host, resource_group: {name: $group}}]' > "${STUB_LBS}"
+}
+
+# Listener array of the ALB (one line): accept_proxy_protocol of port 443 ($1)
+# and port 15021 ($2)
+listeners_json() {
+  jq -cn --argjson https "$1" --argjson status "$2" '[
+    {id: "l-443", port: 443, protocol: "tcp", accept_proxy_protocol: $https},
+    {id: "l-15021", port: 15021, protocol: "tcp", accept_proxy_protocol: $status}]'
+}
+
+# Fresh workspace, fake oc and stub state; the defaults describe a gateway
+# without the annotation whose pods already run the PROXY protocol filter,
+# behind an active ALB that accepts PROXY protocol on every listener
 setup() {
   WS=$(tmp_dir)
   printf 'apiVersion: v1\nkind: Config\n' > "${WS}/kubeconfig"
@@ -93,6 +149,11 @@ setup() {
   EXTRA_RULES=$(tmp_file)
   export FAKE_OC_LOG FAKE_OC_RULES FAKE_OC_STDIN_DIR
   : > "${STUB_IC_LOG}"
+  rm -f "${STUB_STATE_DIR}"/*
+  write_lbs redhat-sap-edge-roks-ci
+  echo "active" > "${STUB_LB_STATUSES}"
+  listeners_json true true > "${STUB_LISTENERS}"
+  export STUB_CURL_FAIL=0
 
   SVC_JSON=$(service_json "")
   PODS_JSON=$(pods_json True)
@@ -105,6 +166,7 @@ setup() {
   export IBMCLOUD_API_KEY="${FAKE_IBM_KEY}"
   export SVC_WAIT_ATTEMPTS=3 SVC_WAIT_DELAY=0
   export LISTENER_WAIT_ATTEMPTS=3 LISTENER_WAIT_DELAY=0
+  export LB_WAIT_ATTEMPTS=3 LB_WAIT_DELAY=0
 }
 
 write_rules() {
@@ -249,6 +311,7 @@ run
 expect_success
 assert_called "apply -f -"
 assert_not_called "annotate service"
+grep -q "^is load-balancer-listeners r010-lb-1 " "${STUB_IC_LOG}" || { cat "${STUB_IC_LOG}"; fail "the ALB check must also run when the annotation was already set"; }
 echo "✅ PASS: already_set"
 
 # Test case: existing_feature_value
@@ -302,6 +365,109 @@ run
 expect_failure
 assert_not_called "apply -f -"
 echo "✅ PASS: no_ready_pods"
+
+# Test case: lb_active
+# Login with region and group, ALB found by hostname, decoy untouched
+echo ""
+echo "Test: lb_active"
+echo "--------------------------------------------"
+setup
+run
+expect_success
+grep -qxF "login -r eu-de -g redhat-sap-edge-roks-ci" "${STUB_IC_LOG}" || { cat "${STUB_IC_LOG}"; fail "ibmcloud login not called with region and resource group"; }
+grep -qxF "is load-balancers --all-resource-groups --output JSON" "${STUB_IC_LOG}" || { cat "${STUB_IC_LOG}"; fail "load balancers not listed across resource groups"; }
+! grep -q "r010-lb-decoy" "${STUB_IC_LOG}" || { cat "${STUB_IC_LOG}"; fail "the decoy load balancer was queried"; }
+expect_output "ALB r010-lb-1 (kube-c1-abc): active, accept_proxy_protocol on all 2 listeners"
+expect_output "Public egress IP of the pipeline cluster: 203.0.113.10"
+echo "✅ PASS: lb_active"
+
+# Test case: lb_pending_then_active
+echo ""
+echo "Test: lb_pending_then_active"
+echo "--------------------------------------------"
+setup
+printf 'update_pending\nupdate_pending\nactive\n' > "${STUB_LB_STATUSES}"
+{ listeners_json false false; listeners_json true true; } > "${STUB_LISTENERS}"
+run
+expect_success
+POLLS=$(grep -c "^is load-balancer r010-lb-1 --output JSON$" "${STUB_IC_LOG}" || true)
+[[ "${POLLS}" -ge 3 ]] || { cat "${STUB_IC_LOG}"; fail "expected at least 3 status polls, got ${POLLS}"; }
+assert_called "get events -n istio-gateways --field-selector involvedObject.name=istio-ingressgateway"
+echo "✅ PASS: lb_pending_then_active"
+
+# Test case: lb_timeout
+echo ""
+echo "Test: lb_timeout"
+echo "--------------------------------------------"
+setup
+echo "update_pending" > "${STUB_LB_STATUSES}"
+export LB_WAIT_ATTEMPTS=2
+run
+expect_failure
+expect_output "update_pending"
+expect_output "443=true"
+expect_output "Access forbidden"
+assert_called "get events -n istio-gateways --field-selector involvedObject.name=istio-ingressgateway"
+echo "✅ PASS: lb_timeout"
+
+# Test case: listener_not_accepting
+echo ""
+echo "Test: listener_not_accepting"
+echo "--------------------------------------------"
+setup
+listeners_json true false > "${STUB_LISTENERS}"
+export LB_WAIT_ATTEMPTS=2
+run
+expect_failure
+expect_output "15021=false"
+echo "✅ PASS: listener_not_accepting"
+
+# Test case: lb_not_found
+echo ""
+echo "Test: lb_not_found"
+echo "--------------------------------------------"
+setup
+jq -c 'map(select(.id == "r010-lb-decoy"))' "${STUB_LBS}" > "${STUB_LBS}.new"
+mv "${STUB_LBS}.new" "${STUB_LBS}"
+run
+expect_failure
+expect_output "${LB_HOSTNAME}"
+echo "✅ PASS: lb_not_found"
+
+# Test case: lb_found_in_other_group
+echo ""
+echo "Test: lb_found_in_other_group"
+echo "--------------------------------------------"
+setup
+write_lbs Default
+run
+expect_success
+expect_output "ALB r010-lb-1 (kube-c1-abc): active"
+echo "✅ PASS: lb_found_in_other_group"
+
+# Test case: egress_lookup_fails
+echo ""
+echo "Test: egress_lookup_fails"
+echo "--------------------------------------------"
+setup
+export STUB_CURL_FAIL=1
+run
+expect_success
+expect_output "Public egress IP of the pipeline cluster: unknown (lookup failed)"
+echo "✅ PASS: egress_lookup_fails"
+
+# Test case: api_key_not_leaked
+echo ""
+echo "Test: api_key_not_leaked"
+echo "--------------------------------------------"
+setup
+run
+expect_success
+! grep -qF -- "${FAKE_IBM_KEY}" "${STUB_IC_LOG}" || fail "API key passed as an ibmcloud argument"
+! grep -qF -- "${FAKE_IBM_KEY}" "${FAKE_OC_LOG}" || fail "API key passed as an oc argument"
+! grep -qF -- "${FAKE_IBM_KEY}" <<< "${TASK_OUT}" || fail "API key printed"
+! grep -q -- "--apikey" "${STUB_IC_LOG}" || fail "--apikey used on the ibmcloud command line"
+echo "✅ PASS: api_key_not_leaked"
 
 echo ""
 echo "============================================"
