@@ -16,9 +16,13 @@ spec:
     filter first on port 8443, connections without the header still
     accepted), checks every ready ingress gateway pod for it, and only then
     sets service.kubernetes.io/ibm-load-balancer-cloud-provider-enable-features
-    to proxy-protocol on the istio-ingressgateway Service. Reads the ROKS
-    cluster through the workspace kubeconfig. Must run AFTER IstioGateways
-    is deployed through ELM; safe to rerun.
+    to proxy-protocol on the istio-ingressgateway Service. Then confirms
+    through the IBM Cloud VPC API (ibmcloud, API key from the credentials
+    Secret) that the ALB found by the Service's hostname is active with
+    accept_proxy_protocol on every listener, and prints the public egress
+    IP of the pipeline cluster, which the httpbinipfilter allowlist must
+    contain. Reads the ROKS cluster through the workspace kubeconfig. Must
+    run AFTER IstioGateways is deployed through ELM; safe to rerun.
   params:
     - name: clusterName
       type: string
@@ -75,6 +79,8 @@ spec:
         SVC_WAIT_DELAY="${SVC_WAIT_DELAY:-30}"
         LISTENER_WAIT_ATTEMPTS="${LISTENER_WAIT_ATTEMPTS:-20}"
         LISTENER_WAIT_DELAY="${LISTENER_WAIT_DELAY:-10}"
+        LB_WAIT_ATTEMPTS="${LB_WAIT_ATTEMPTS:-30}"
+        LB_WAIT_DELAY="${LB_WAIT_DELAY:-30}"
 
         # The ROKS cluster is reached only through the workspace kubeconfig
         unset KUBECONFIG
@@ -196,3 +202,66 @@ spec:
           echo "📋 Setting ${ANNOTATION_KEY}=${NEW_VALUE} on ${GATEWAY_NS}/${SERVICE_NAME}..."
           "${CLUSTER_OC[@]}" annotate service "${SERVICE_NAME}" -n "${GATEWAY_NS}" --overwrite "${ANNOTATION_KEY}=${NEW_VALUE}"
         fi
+
+        # --- 5. The IBM Cloud VPC API confirms that the ALB sends PROXY protocol ---
+        # Checked also when the annotation was already set: the listener
+        # setting is what the IP Filter policy depends on.
+        echo ""
+        echo "🔐 Logging in to IBM Cloud (region ${IBMCLOUD_REGION}, resource group ${IBMCLOUD_RESOURCE_GROUP})..."
+        # The CLI reads the API key from IBMCLOUD_API_KEY, so it is never in
+        # argv; no stdin, so that it fails instead of prompting.
+        ibmcloud login -r "${IBMCLOUD_REGION}" -g "${IBMCLOUD_RESOURCE_GROUP}" < /dev/null ||
+          fail "ibmcloud login failed (API key: key IBMCLOUD_API_KEY of Secret '${ROKS_CREDENTIALS_SECRET_NAME}')"
+
+        # Found by the hostname in the Service status, in any resource group
+        LBS_JSON=$(ibmcloud is load-balancers --all-resource-groups --output JSON) ||
+          fail "Listing the VPC load balancers failed (ibmcloud is load-balancers --all-resource-groups)"
+        LB_ID=$(jq -r --arg h "${LB_HOSTNAME}" '[.[] | select(.hostname == $h)][0].id // empty' <<< "${LBS_JSON}")
+        [[ -n "${LB_ID}" ]] || fail "No VPC load balancer with hostname ${LB_HOSTNAME} (ibmcloud is load-balancers --all-resource-groups)"
+        LB_NAME=$(jq -r --arg id "${LB_ID}" '.[] | select(.id == $id) | .name' <<< "${LBS_JSON}")
+
+        show_events() {
+          "${CLUSTER_OC[@]}" get events -n "${GATEWAY_NS}" --field-selector "involvedObject.name=${SERVICE_NAME}" \
+            --sort-by=.lastTimestamp 2>/dev/null | tail -n 5 || true
+        }
+
+        STATUS="unknown"
+        LISTENER_STATES=""
+        LISTENER_COUNT=0
+        ALL_ACCEPT="false"
+        for ((ATTEMPT = 1; ATTEMPT <= LB_WAIT_ATTEMPTS; ATTEMPT++)); do
+          STATUS=$(ibmcloud is load-balancer "${LB_ID}" --output JSON 2>/dev/null |
+            jq -r '.provisioning_status // "unknown"' 2>/dev/null) || STATUS="unknown"
+          LISTENERS_JSON=$(ibmcloud is load-balancer-listeners "${LB_ID}" --output JSON 2>/dev/null) || LISTENERS_JSON="[]"
+          LISTENER_STATES=$(jq -r '[.[] | "\(.port // .port_min)=\(.accept_proxy_protocol // false)"] | join(" ")' <<< "${LISTENERS_JSON}" 2>/dev/null) || LISTENER_STATES=""
+          LISTENER_COUNT=$(jq 'length' <<< "${LISTENERS_JSON}" 2>/dev/null) || LISTENER_COUNT=0
+          ALL_ACCEPT=$(jq -r 'length > 0 and all(.[]; .accept_proxy_protocol == true)' <<< "${LISTENERS_JSON}" 2>/dev/null) || ALL_ACCEPT="false"
+          echo "   ALB ${LB_ID}: provisioning_status ${STATUS}, listeners (port=accept_proxy_protocol) ${LISTENER_STATES:-none} (attempt ${ATTEMPT}/${LB_WAIT_ATTEMPTS})"
+          if [[ "${STATUS}" == "active" ]] && [[ "${ALL_ACCEPT}" == "true" ]]; then
+            break
+          fi
+          show_events | sed 's/^/      /'
+          if [[ ${ATTEMPT} -lt ${LB_WAIT_ATTEMPTS} ]]; then
+            sleep "${LB_WAIT_DELAY}"
+          fi
+        done
+        if [[ "${STATUS}" != "active" ]] || [[ "${ALL_ACCEPT}" != "true" ]]; then
+          echo "Latest events of ${GATEWAY_NS}/${SERVICE_NAME}:"
+          show_events
+          fail "ALB ${LB_ID} (${LB_NAME}) does not send PROXY protocol: provisioning_status ${STATUS}, listeners ${LISTENER_STATES:-none}. Without it, test-httpbinipfilter fails with \"Access forbidden for the caller IP\"."
+        fi
+        echo "✅ ALB ${LB_ID} (${LB_NAME}): active, accept_proxy_protocol on all ${LISTENER_COUNT} listeners"
+
+        # --- 6. What the httpbinipfilter allowlist needs ---
+        # The endpoint tests run on the pipeline cluster, like this step, so
+        # they reach the gateway from this public address (best effort).
+        EGRESS_IP=$(curl -fsS --max-time 10 https://ifconfig.me 2>/dev/null) || EGRESS_IP=""
+        echo ""
+        if [[ "${EGRESS_IP}" =~ ^[0-9A-Fa-f:.]+$ ]]; then
+          echo "Public egress IP of the pipeline cluster: ${EGRESS_IP}"
+        else
+          echo "Public egress IP of the pipeline cluster: unknown (lookup failed)"
+        fi
+        echo "   The IP Filter policy now sees the clients' public IP addresses: the httpbinipfilter allowlist must contain this address."
+        echo "   Keep the VPC range 10.0.0.0/16 out of the allowlist, or test-httpbinipfilter passes without proving client IP preservation."
+        echo "   Side effect: the status port 15021 no longer answers through the load balancer (PROXY protocol on every listener); the ALB health checks use the health check node port and are not affected."
