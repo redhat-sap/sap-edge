@@ -769,7 +769,7 @@ ROKS pipelines deploy a VPC cluster with IBM Cloud Databases for PostgreSQL and 
    # Upgrade to standard if needed: ibmcloud cr plan-upgrade standard
    ```
 
-6. **SAP `httpbinipfilter` iFlow allowlist** (one-time addition): add the public egress IP of the pipeline cluster, which `enable-client-ip-preservation` prints, so endpoint tests can reach the iFlow (see [Client IP preservation](#roks-client-ip-preservation)). Keep the VPC range `10.0.0.0/16` out of the allowlist: with it, `test-httpbinipfilter` passes without proving that the client IP is preserved.
+6. **SAP `httpbinipfilter` iFlow allowlist** (one-time addition): add the public egress IP of the pipeline cluster, which `enable-client-ip-preservation` prints, so endpoint tests can reach the iFlow. Before the first run, find it from the pipeline namespace with `oc run egress-ip --rm -i --restart=Never --image=registry.access.redhat.com/ubi9/ubi-minimal -- curl -4 -s https://ifconfig.me` (see [Client IP preservation](#roks-client-ip-preservation)). Keep the VPC range `10.0.0.0/16` out of the allowlist: with it, `test-httpbinipfilter` passes without proving that the client IP is preserved.
 
 7. The existing `eic-auth-secret` (shared with other pipelines). No hub cluster is needed. Only if the credentials and registry Secrets should go to a hub cluster: a Secret in the pipeline namespace with the hub kubeconfig (key `kubeconfig`, `config` or `value`), passed as the optional pipeline param `hubKubeconfigSecretName` (default empty).
 

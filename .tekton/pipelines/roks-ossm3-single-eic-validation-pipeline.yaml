@@ -557,7 +557,7 @@ spec:
             - PostgreSQL: keys postgres-host, postgres-port, postgres-database, postgres-username, postgres-ca.crt; password: key POSTGRES_ADMIN_PASSWORD of Secret '$(params.roksCredentialsSecretName)' in the pipeline namespace on the pipeline cluster
             - Redis: keys redis-host, redis-port, redis-username, redis-password, redis-ca.crt
 
-            Client IP preservation: after this gate, enable-client-ip-preservation enables PROXY protocol on the IBM Cloud ALB of istio-ingressgateway, so the IP Filter policy sees the clients' public IP addresses. One-time (if not done yet): the httpbinipfilter iFlow's IP filter must allow the public egress IP of the pipeline cluster (printed by enable-client-ip-preservation), otherwise test-httpbinipfilter fails. Keep the VPC range 10.0.0.0/16 out of the allowlist, or the test passes without proving client IP preservation.
+            Client IP preservation: after this gate, enable-client-ip-preservation enables PROXY protocol on the IBM Cloud ALB of istio-ingressgateway, so the IP Filter policy sees the clients' public IP addresses. One-time (if not done yet): the httpbinipfilter iFlow's IP filter must allow the public egress IP of the pipeline cluster (printed by enable-client-ip-preservation), otherwise test-httpbinipfilter fails. To find it before approving, run in the pipeline namespace: oc run egress-ip --rm -i --restart=Never --image=registry.access.redhat.com/ubi9/ubi-minimal -- curl -4 -s https://ifconfig.me Keep the VPC range 10.0.0.0/16 out of the allowlist, or the test passes without proving client IP preservation.
 
             Please deploy iFlows for testing if not already done.
 
