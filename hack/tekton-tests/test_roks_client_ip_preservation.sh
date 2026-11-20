@@ -25,14 +25,16 @@ STUB_BIN=$(tmp_dir)
 STUB_IC_LOG=$(tmp_file)
 STUB_LBS=$(tmp_file)
 STUB_LB_STATUSES=$(tmp_file)
-STUB_LISTENERS=$(tmp_file)
+STUB_POOLS=$(tmp_file)
 STUB_STATE_DIR=$(tmp_dir)
-export STUB_IC_LOG STUB_LBS STUB_LB_STATUSES STUB_LISTENERS STUB_STATE_DIR
+export STUB_IC_LOG STUB_LBS STUB_LB_STATUSES STUB_POOLS STUB_STATE_DIR
 
 # Stub ibmcloud: logs every call; login only works with the API key in the
 # environment; the load balancer list comes from STUB_LBS; each status poll
-# prints the next line of STUB_LB_STATUSES and each listener poll the next
-# line of STUB_LISTENERS (the last line repeats)
+# prints the next line of STUB_LB_STATUSES and each pool poll the next line
+# of STUB_POOLS (the last line repeats). It knows no listener command: the
+# listeners' accept_proxy_protocol is about PROXY headers from clients, not
+# about what the ALB sends to the gateway
 cat > "${STUB_BIN}/ibmcloud" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -59,7 +61,7 @@ case "$*" in
   "is load-balancer "*" --output JSON")
     jq -cn --arg id "$3" --arg status "$(next_line "${STUB_LB_STATUSES}" status)" '{id: $id, provisioning_status: $status}'
     ;;
-  "is load-balancer-listeners "*" --output JSON") next_line "${STUB_LISTENERS}" listeners ;;
+  "is load-balancer-pools "*" --output JSON") next_line "${STUB_POOLS}" pools ;;
   *) echo "unexpected ibmcloud call: $*" >&2; exit 1 ;;
 esac
 EOF
@@ -135,17 +137,17 @@ write_lbs() {
     {id: "r010-lb-1", name: "kube-c1-abc", hostname: $host, resource_group: {name: $group}}]' > "${STUB_LBS}"
 }
 
-# Listener array of the ALB (one line): accept_proxy_protocol of port 443 ($1)
-# and port 15021 ($2)
-listeners_json() {
-  jq -cn --argjson https "$1" --argjson status "$2" '[
-    {id: "l-443", port: 443, protocol: "tcp", accept_proxy_protocol: $https},
-    {id: "l-15021", port: 15021, protocol: "tcp", accept_proxy_protocol: $status}]'
+# Back-end pools of the ALB (one line): proxy_protocol (disabled, v1 or v2)
+# of the pool for port 443 ($1) and port 15021 ($2)
+pools_json() {
+  jq -cn --arg https "$1" --arg status "$2" '[
+    {id: "p-443", name: "tcp-443-30245", protocol: "tcp", proxy_protocol: $https},
+    {id: "p-15021", name: "tcp-15021-30398", protocol: "tcp", proxy_protocol: $status}]'
 }
 
 # Fresh workspace, fake oc and stub state; the defaults describe a gateway
 # without the annotation whose pods already run the PROXY protocol filter,
-# behind an active ALB that accepts PROXY protocol on every listener
+# behind an active ALB that sends PROXY protocol from every back-end pool
 setup() {
   WS=$(tmp_dir)
   printf 'apiVersion: v1\nkind: Config\n' > "${WS}/kubeconfig"
@@ -158,7 +160,7 @@ setup() {
   rm -f "${STUB_STATE_DIR}"/*
   write_lbs redhat-sap-edge-roks-ci
   echo "active" > "${STUB_LB_STATUSES}"
-  listeners_json true true > "${STUB_LISTENERS}"
+  pools_json v1 v1 > "${STUB_POOLS}"
   export STUB_CURL_FAIL=0
 
   SVC_JSON=$(service_json "")
@@ -317,7 +319,7 @@ run
 expect_success
 assert_called "apply -f -"
 assert_not_called "annotate service"
-grep -q "^is load-balancer-listeners r010-lb-1 " "${STUB_IC_LOG}" || { cat "${STUB_IC_LOG}"; fail "the ALB check must also run when the annotation was already set"; }
+grep -q "^is load-balancer-pools r010-lb-1 " "${STUB_IC_LOG}" || { cat "${STUB_IC_LOG}"; fail "the ALB check must also run when the annotation was already set"; }
 echo "✅ PASS: already_set"
 
 # Test case: existing_feature_value
@@ -383,7 +385,7 @@ expect_success
 grep -qxF "login -r eu-de -g redhat-sap-edge-roks-ci" "${STUB_IC_LOG}" || { cat "${STUB_IC_LOG}"; fail "ibmcloud login not called with region and resource group"; }
 grep -qxF "is load-balancers --all-resource-groups --output JSON" "${STUB_IC_LOG}" || { cat "${STUB_IC_LOG}"; fail "load balancers not listed across resource groups"; }
 ! grep -q "r010-lb-decoy" "${STUB_IC_LOG}" || { cat "${STUB_IC_LOG}"; fail "the decoy load balancer was queried"; }
-expect_output "ALB r010-lb-1 (kube-c1-abc): active, accept_proxy_protocol on all 2 listeners"
+expect_output "ALB r010-lb-1 (kube-c1-abc): active, PROXY protocol on all 2 back-end pools"
 expect_output "Public egress IP of the pipeline cluster: 203.0.113.10"
 echo "✅ PASS: lb_active"
 
@@ -393,7 +395,7 @@ echo "Test: lb_pending_then_active"
 echo "--------------------------------------------"
 setup
 printf 'update_pending\nupdate_pending\nactive\n' > "${STUB_LB_STATUSES}"
-{ listeners_json false false; listeners_json true true; } > "${STUB_LISTENERS}"
+{ pools_json disabled disabled; pools_json v1 v1; } > "${STUB_POOLS}"
 run
 expect_success
 POLLS=$(grep -c "^is load-balancer r010-lb-1 --output JSON$" "${STUB_IC_LOG}" || true)
@@ -411,22 +413,22 @@ export LB_WAIT_ATTEMPTS=2
 run
 expect_failure
 expect_output "update_pending"
-expect_output "443=true"
+expect_output "tcp-443-30245=v1"
 expect_output "Access forbidden"
 assert_called "get events -n istio-gateways --field-selector involvedObject.name=istio-ingressgateway"
 echo "✅ PASS: lb_timeout"
 
-# Test case: listener_not_accepting
+# Test case: pool_not_proxy
 echo ""
-echo "Test: listener_not_accepting"
+echo "Test: pool_not_proxy"
 echo "--------------------------------------------"
 setup
-listeners_json true false > "${STUB_LISTENERS}"
+pools_json v1 disabled > "${STUB_POOLS}"
 export LB_WAIT_ATTEMPTS=2
 run
 expect_failure
-expect_output "15021=false"
-echo "✅ PASS: listener_not_accepting"
+expect_output "tcp-15021-30398=disabled"
+echo "✅ PASS: pool_not_proxy"
 
 # Test case: lb_not_found
 echo ""

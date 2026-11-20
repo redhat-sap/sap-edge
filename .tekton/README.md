@@ -784,7 +784,7 @@ ROKS pipelines deploy a VPC cluster with IBM Cloud Databases for PostgreSQL and 
 
 1. applies the EnvoyFilter `istio-gateways/ingressgateway-proxy-protocol`, which puts the PROXY protocol listener filter first on port 8443 of the ingress gateway (connections without the header are still accepted), and checks every ready gateway pod for it;
 2. only then sets `service.kubernetes.io/ibm-load-balancer-cloud-provider-enable-features: proxy-protocol` on the Service, so the ALB passes the client IP in a PROXY protocol header;
-3. confirms through the IBM Cloud VPC API (API key from `roksCredentialsSecretName`) that the ALB is `active` with `accept_proxy_protocol` on every listener, and fails otherwise;
+3. confirms through the IBM Cloud VPC API (API key from `roksCredentialsSecretName`) that the ALB is `active` and sends PROXY protocol from every back-end pool (`proxy_protocol` `v1` or `v2`; the listeners' `accept_proxy_protocol` concerns headers from clients and stays `false`), and fails otherwise;
 4. prints the public egress IP of the pipeline cluster for the `httpbinipfilter` allowlist.
 
 The IBM Cloud Kubernetes Service updates the existing ALB in place (same hostname and addresses, about two minutes). Side effect: the status port 15021 no longer answers through the load balancer, because the ALB sends the header on every port; the ALB health checks use the health check node port and are not affected. The task is safe to rerun on the same cluster.

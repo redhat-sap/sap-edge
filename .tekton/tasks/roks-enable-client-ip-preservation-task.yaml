@@ -18,8 +18,8 @@ spec:
     sets service.kubernetes.io/ibm-load-balancer-cloud-provider-enable-features
     to proxy-protocol on the istio-ingressgateway Service. Then confirms
     through the IBM Cloud VPC API (ibmcloud, API key from the credentials
-    Secret) that the ALB found by the Service's hostname is active with
-    accept_proxy_protocol on every listener, and prints the public egress
+    Secret) that the ALB found by the Service's hostname is active and sends
+    PROXY protocol (proxy_protocol v1/v2) from every back-end pool, and prints the public egress
     IP of the pipeline cluster, which the httpbinipfilter allowlist must
     contain. Reads the ROKS cluster through the workspace kubeconfig. Must
     run AFTER IstioGateways is deployed through ELM; safe to rerun.
@@ -204,8 +204,10 @@ spec:
         fi
 
         # --- 5. The IBM Cloud VPC API confirms that the ALB sends PROXY protocol ---
-        # Checked also when the annotation was already set: the listener
-        # setting is what the IP Filter policy depends on.
+        # Checked also when the annotation was already set. The setting that
+        # makes the ALB send the PROXY protocol header to the gateway is the
+        # back-end pools' proxy_protocol (v1/v2); the listeners'
+        # accept_proxy_protocol is about headers from clients and stays false.
         echo ""
         echo "🔐 Logging in to IBM Cloud (region ${IBMCLOUD_REGION}, resource group ${IBMCLOUD_RESOURCE_GROUP})..."
         # The CLI reads the API key from IBMCLOUD_API_KEY, so it is never in
@@ -226,18 +228,18 @@ spec:
         }
 
         STATUS="unknown"
-        LISTENER_STATES=""
-        LISTENER_COUNT=0
-        ALL_ACCEPT="false"
+        POOL_STATES=""
+        POOL_COUNT=0
+        ALL_PROXY="false"
         for ((ATTEMPT = 1; ATTEMPT <= LB_WAIT_ATTEMPTS; ATTEMPT++)); do
           STATUS=$(ibmcloud is load-balancer "${LB_ID}" --output JSON 2>/dev/null |
             jq -r '.provisioning_status // "unknown"' 2>/dev/null) || STATUS="unknown"
-          LISTENERS_JSON=$(ibmcloud is load-balancer-listeners "${LB_ID}" --output JSON 2>/dev/null) || LISTENERS_JSON="[]"
-          LISTENER_STATES=$(jq -r '[.[] | "\(.port // .port_min)=\(.accept_proxy_protocol // false)"] | join(" ")' <<< "${LISTENERS_JSON}" 2>/dev/null) || LISTENER_STATES=""
-          LISTENER_COUNT=$(jq 'length' <<< "${LISTENERS_JSON}" 2>/dev/null) || LISTENER_COUNT=0
-          ALL_ACCEPT=$(jq -r 'length > 0 and all(.[]; .accept_proxy_protocol == true)' <<< "${LISTENERS_JSON}" 2>/dev/null) || ALL_ACCEPT="false"
-          echo "   ALB ${LB_ID}: provisioning_status ${STATUS}, listeners (port=accept_proxy_protocol) ${LISTENER_STATES:-none} (attempt ${ATTEMPT}/${LB_WAIT_ATTEMPTS})"
-          if [[ "${STATUS}" == "active" ]] && [[ "${ALL_ACCEPT}" == "true" ]]; then
+          POOLS_JSON=$(ibmcloud is load-balancer-pools "${LB_ID}" --output JSON 2>/dev/null) || POOLS_JSON="[]"
+          POOL_STATES=$(jq -r '[.[] | "\(.name)=\(.proxy_protocol // "unknown")"] | join(" ")' <<< "${POOLS_JSON}" 2>/dev/null) || POOL_STATES=""
+          POOL_COUNT=$(jq 'length' <<< "${POOLS_JSON}" 2>/dev/null) || POOL_COUNT=0
+          ALL_PROXY=$(jq -r 'length > 0 and all(.[]; .proxy_protocol == "v1" or .proxy_protocol == "v2")' <<< "${POOLS_JSON}" 2>/dev/null) || ALL_PROXY="false"
+          echo "   ALB ${LB_ID}: provisioning_status ${STATUS}, back-end pools (name=proxy_protocol) ${POOL_STATES:-none} (attempt ${ATTEMPT}/${LB_WAIT_ATTEMPTS})"
+          if [[ "${STATUS}" == "active" ]] && [[ "${ALL_PROXY}" == "true" ]]; then
             break
           fi
           show_events | sed 's/^/      /'
@@ -245,12 +247,12 @@ spec:
             sleep "${LB_WAIT_DELAY}"
           fi
         done
-        if [[ "${STATUS}" != "active" ]] || [[ "${ALL_ACCEPT}" != "true" ]]; then
+        if [[ "${STATUS}" != "active" ]] || [[ "${ALL_PROXY}" != "true" ]]; then
           echo "Latest events of ${GATEWAY_NS}/${SERVICE_NAME}:"
           show_events
-          fail "ALB ${LB_ID} (${LB_NAME}) does not send PROXY protocol: provisioning_status ${STATUS}, listeners ${LISTENER_STATES:-none}. Without it, test-httpbinipfilter fails with \"Access forbidden for the caller IP\"."
+          fail "ALB ${LB_ID} (${LB_NAME}) does not send PROXY protocol: provisioning_status ${STATUS}, back-end pools ${POOL_STATES:-none}. Without it, test-httpbinipfilter fails with \"Access forbidden for the caller IP\"."
         fi
-        echo "✅ ALB ${LB_ID} (${LB_NAME}): active, accept_proxy_protocol on all ${LISTENER_COUNT} listeners"
+        echo "✅ ALB ${LB_ID} (${LB_NAME}): active, PROXY protocol on all ${POOL_COUNT} back-end pools"
 
         # --- 6. What the httpbinipfilter allowlist needs ---
         # The endpoint tests run on the pipeline cluster, like this step, so
