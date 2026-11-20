@@ -15,6 +15,8 @@ echo "============================================"
 #   .tekton/pipelines/<name>-pipeline.yaml   metadata.name <name>-pipeline
 #   <run dir>/<name>[-<variant>]-run.yaml    pipelineRef <name>-pipeline,
 #                                            generateName <name>[-<variant>]-pr{{ pull_request_number }}-
+#   HCP run files: hostedClusterName hcp-<hub>-<variant>-pr<N> (route host fits 63 chars),
+#                  s3Prefix restricted-resources/<hostedClusterName>/
 #   "ossm3" in <name>  <=>  restricted access (the pipeline applies SAP's
 #                           restricted-resources zips)
 python3 -I - ../../.tekton <<'PY'
@@ -68,6 +70,22 @@ for path in run_files:
         generate_name = doc["metadata"].get("generateName", "")
         check(generate_name == f"{file_stem}-pr{{{{ pull_request_number }}}}-",
               f"{path}: generateName must be {file_stem}-pr{{{{ pull_request_number }}}}-, got {generate_name!r}")
+
+        # HCP: hcp-<hub>-<variant>-pr<N>; the hub Route host
+        # kube-apiserver-external-<hostedClusterNamespace>-<name> must fit in 63 characters
+        params = {p["name"]: p.get("value") for p in doc["spec"].get("params", [])}
+        cluster = params.get("hostedClusterName")
+        if pipeline.startswith("hcp-") and cluster:
+            hub = params.get("hubClusterName", "")
+            check(cluster.startswith(f"hcp-{hub}-") and cluster.endswith("-pr{{ pull_request_number }}"),
+                  f"{path}: hostedClusterName must be hcp-{hub}-<variant>-pr{{{{ pull_request_number }}}}, got {cluster!r}")
+            label = f"kube-apiserver-external-{params.get('hostedClusterNamespace', 'clusters')}-" \
+                    + cluster.replace("{{ pull_request_number }}", "9999")
+            check(len(label) <= 63,
+                  f"{path}: hostedClusterName {cluster!r} too long: route host label {label} has {len(label)} > 63 characters")
+            if "s3Prefix" in params:
+                check(params["s3Prefix"] == f"restricted-resources/{cluster}/",
+                      f"{path}: s3Prefix must be restricted-resources/{cluster}/, got {params['s3Prefix']!r}")
 
 if failures:
     for f in failures:
