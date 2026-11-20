@@ -25,7 +25,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: hcp-ossm3-multi-edge-node-hub-eli-validation-pr{{ pull_request_number }}-
+  generateName: hcp-ossm3-multi-edge-node-validation-pr{{ pull_request_number }}-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
@@ -49,11 +49,11 @@ spec:
       value: "{{ pull_request_number }}"
 
     # --- HCP cluster parameters ---
-    # hostedClusterName: <pipeline name without -validation>-hub-<hubClusterName>-pr<N>
-    # ("hub-<name>" is the hub); s3Prefix below uses the same name, so every
-    # cluster gets its own S3 folders
+    # hostedClusterName: hcp-<hubClusterName>-<variant>-pr<N>, at most 30 characters:
+    # the hub Route host kube-apiserver-external-clusters-<name> must fit in a
+    # 63-character DNS label; s3Prefix below uses the same name
     - name: hostedClusterName
-      value: "hcp-ossm3-multi-edge-node-hub-eli-pr{{ pull_request_number }}"
+      value: "hcp-eli-multi-node-pr{{ pull_request_number }}"
     - name: hostedClusterNamespace
       value: "clusters"
     - name: releaseImage
@@ -82,7 +82,7 @@ spec:
     - name: obcName
       value: "sap-eic-restricted-cluster-config-resources"
     - name: s3Prefix
-      value: "restricted-resources/hcp-ossm3-multi-edge-node-hub-eli-pr{{ pull_request_number }}/"
+      value: "restricted-resources/hcp-eli-multi-node-pr{{ pull_request_number }}/"
     # S3 folders under s3Prefix, one SAP bundle zip each (upload as downloaded):
     #   elm-1/         ELM bundle of Edge Node 1 (creates edgelm-1)
     #   elm-2/         ELM bundle of Edge Node 2 (creates edgelm-2)
