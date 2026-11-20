@@ -63,13 +63,19 @@ case "$*" in
   *) echo "unexpected ibmcloud call: $*" >&2; exit 1 ;;
 esac
 EOF
+# Stub curl: the pipeline cluster has IPv4 and IPv6 egress; only -4 gives the
+# IPv4 address the endpoint tests reach the ALB from
 cat > "${STUB_BIN}/curl" <<'EOF'
 #!/usr/bin/env bash
 if [[ "${STUB_CURL_FAIL:-0}" == "1" ]]; then
   echo "curl: (7) Failed to connect" >&2
   exit 7
 fi
-echo "203.0.113.10"
+if [[ " $* " == *" -4 "* ]]; then
+  echo "203.0.113.10"
+else
+  echo "2001:db8::10"
+fi
 EOF
 chmod +x "${STUB_BIN}/ibmcloud" "${STUB_BIN}/curl"
 export PATH="${STUB_BIN}:${PATH}"
@@ -517,6 +523,18 @@ if "172.17.0.0/18" in gate:
     errors.append("the ELM/EIC gate still asks to allowlist the pod network")
 if "must allow 172" in gate or "and 10.0.0.0/16 (VPC)" in gate:
     errors.append("the ELM/EIC gate still asks to allowlist the VPC")
+if "curl -4" not in gate:
+    errors.append("the ELM/EIC gate must say how to find the egress IP before approving (curl -4)")
+with open("../../.tekton/README.md", encoding="utf-8") as f:
+    readme = f.read()
+if "curl -4" not in readme:
+    errors.append(".tekton/README.md must say how to find the egress IP before the first run (curl -4)")
+with open("../../roks/terraform/README.md", encoding="utf-8") as f:
+    tf_readme = f.read()
+if "172.17.0.0/18` (pod network) and `10.0.0.0/16` (VPC) to its allowlist" in tf_readme:
+    errors.append("roks/terraform/README.md still asks to allowlist the pod network and the VPC")
+if "roks-client-ip-preservation" not in tf_readme:
+    errors.append("roks/terraform/README.md must point to the client IP preservation section")
 jira = {p["name"]: p["value"] for p in tasks["update-jira-ticket"]["params"]}["comment"]
 if "Client IP preservation" not in jira:
     errors.append("the Jira comment must report client IP preservation")

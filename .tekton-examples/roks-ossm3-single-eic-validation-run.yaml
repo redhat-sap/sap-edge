@@ -51,8 +51,13 @@
 #    fails). The run enables client IP preservation (task
 #    enable-client-ip-preservation: PROXY protocol on the IBM Cloud ALB of
 #    istio-ingressgateway), so the IP Filter policy sees that address; the
-#    task prints it. Keep the VPC range 10.0.0.0/16 out of the allowlist, or
-#    the test passes without proving client IP preservation.
+#    task prints it; before the first run, find it from the pipeline
+#    namespace with:
+#      oc run egress-ip --rm -i --restart=Never \
+#        --image=registry.access.redhat.com/ubi9/ubi-minimal -- \
+#        curl -4 -s https://ifconfig.me
+#    Keep the VPC range 10.0.0.0/16 out of the allowlist, or the test passes
+#    without proving client IP preservation.
 # 5. Only for the optional browser automation (sapBrowserMode below): build
 #    and push the runner image (hack/sap-browser/PIPELINE.md), apply
 #    hack/sap-browser/roks-runner-rbac.yaml and upload the Linux elm CLI to

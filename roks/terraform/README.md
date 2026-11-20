@@ -158,8 +158,12 @@ IBM only accepts a pod subnet of `/13` to `/23` inside `172.17.0.0-172.17.255.25
 the OpenShift default `10.128.0.0/14` used on ROSA/ARO is not possible; the
 `pod_subnet` variable validates this.
 
-**One-time step:** the SAP `httpbinipfilter` iFlow has an IP filter; add
-`172.17.0.0/18` (pod network) and `10.0.0.0/16` (VPC) to its allowlist once.
+**One-time step:** the SAP `httpbinipfilter` iFlow has an IP filter. The
+pipeline enables client IP preservation (PROXY protocol on the ALB of the EIC
+ingress gateway), so the filter sees the public egress IP of the pipeline
+cluster: add that address to its allowlist once, and keep the VPC range
+`10.0.0.0/16` out of it. See
+[Client IP preservation](../../.tekton/README.md#roks-client-ip-preservation).
 
 ## One-time setup
 
