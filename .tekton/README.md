@@ -56,6 +56,7 @@ zips to upload.
 - `roks-deploy-task`: Deploy ROKS with Terraform (VPC, cluster, ICR namespace and service ID, PostgreSQL/Redis via IBM Cloud Databases) and fetch the admin kubeconfig into the workspace
 - `roks-validate-and-get-access-task`: Validate cluster access, switch the workspace to a ServiceAccount token kubeconfig and store it with the database connection data in the Secret `eic-credentials-roks-<cluster>` (on the hub cluster when `hubKubeconfigSecretName` is set)
 - `roks-validate-and-create-configmap-task`: Find EIC host and ingress address for tests
+- `roks-enable-client-ip-preservation-task`: Client IP preservation on the EIC ingress gateway: EnvoyFilter with the PROXY protocol listener filter, PROXY protocol annotation on the IBM Cloud ALB, confirmed through the IBM Cloud VPC API; prints the pipeline cluster's egress IP for the `httpbinipfilter` allowlist
 - `roks-registry-access-task`: Store the ICR access for ELM (server, namespace, user, API key from the Terraform state) in the Secret `eic-registry-roks-<cluster>` (on the hub cluster when `hubKubeconfigSecretName` is set), and the Redis password in `eic-credentials-roks-<cluster>`
 - `roks-sap-browser-access-task`: Optional browser automation: let the runner ServiceAccount read this run's three Secrets (per-run Role) and read the cluster's Edge Node ID label; does nothing when the browser is off (`sapBrowserMode` disabled or no `sapBrowserImage`)
 - `roks-sap-browser-task`: Optional browser automation: Playwright browser for the ELM steps (deploy or teardown phase) behind a per-run Route with the OpenShift OAuth proxy; the step always exits 0 and reports the result `outcome` (pod-level failures still fail the task)
@@ -768,7 +769,7 @@ ROKS pipelines deploy a VPC cluster with IBM Cloud Databases for PostgreSQL and 
    # Upgrade to standard if needed: ibmcloud cr plan-upgrade standard
    ```
 
-6. **SAP `httpbinipfilter` iFlow allowlist** (one-time addition): add `172.17.0.0/18` (ROKS pod network) and `10.0.0.0/16` (VPC) so endpoint tests can reach the iFlow.
+6. **SAP `httpbinipfilter` iFlow allowlist** (one-time addition): add the public egress IP of the pipeline cluster, which `enable-client-ip-preservation` prints, so endpoint tests can reach the iFlow. Before the first run, find it from the pipeline namespace with `oc run egress-ip --rm -i --restart=Never --image=registry.access.redhat.com/ubi9/ubi-minimal -- curl -4 -s https://ifconfig.me` (see [Client IP preservation](#roks-client-ip-preservation)). Keep the VPC range `10.0.0.0/16` out of the allowlist: with it, `test-httpbinipfilter` passes without proving that the client IP is preserved.
 
 7. The existing `eic-auth-secret` (shared with other pipelines). No hub cluster is needed. Only if the credentials and registry Secrets should go to a hub cluster: a Secret in the pipeline namespace with the hub kubeconfig (key `kubeconfig`, `config` or `value`), passed as the optional pipeline param `hubKubeconfigSecretName` (default empty).
 
@@ -778,6 +779,15 @@ ROKS pipelines deploy a VPC cluster with IBM Cloud Databases for PostgreSQL and 
 - IBM Cloud Container Registry Secret `eic-registry-roks-<cluster>`: keys `server` (`de.icr.io`), `namespace` (the cluster name), `username` (`iamapikey`) and `password` (API key of the run's ICR service ID). Terraform in `roks-deploy` creates the namespace and the service ID; `roks-registry-access` stores the Secret.
 - Secret `eic-credentials-roks-<cluster>`: token kubeconfig, PostgreSQL/Redis connection data and `redis-password`
 - PostgreSQL admin password: key `POSTGRES_ADMIN_PASSWORD` of your Secret `<roksCredentialsSecretName>` (default `roks-ci-credentials`; pipeline namespace, pipeline cluster)
+
+<a id="roks-client-ip-preservation"></a>**Client IP preservation:** on ROKS VPC, the IBM Cloud Application Load Balancer (ALB) in front of `istio-ingressgateway` replaces the client IP with its own private address, so the EIC IP Filter policy would only see `10.0.x.x` addresses. After the ELM/EIC approval gate, `enable-client-ip-preservation` (task `roks-enable-client-ip-preservation`) always:
+
+1. applies the EnvoyFilter `istio-gateways/ingressgateway-proxy-protocol`, which puts the PROXY protocol listener filter first on port 8443 of the ingress gateway (connections without the header are still accepted), and checks every ready gateway pod for it;
+2. only then sets `service.kubernetes.io/ibm-load-balancer-cloud-provider-enable-features: proxy-protocol` on the Service, so the ALB passes the client IP in a PROXY protocol header;
+3. confirms through the IBM Cloud VPC API (API key from `roksCredentialsSecretName`) that the ALB is `active` and sends PROXY protocol from every back-end pool (`proxy_protocol` `v1` or `v2`; the listeners' `accept_proxy_protocol` concerns headers from clients and stays `false`), and fails otherwise;
+4. prints the public egress IP of the pipeline cluster for the `httpbinipfilter` allowlist.
+
+The IBM Cloud Kubernetes Service updates the existing ALB in place (same hostname and addresses, about two minutes). Side effect: the status port 15021 no longer answers through the load balancer, because the ALB sends the header on every port; the ALB health checks use the health check node port and are not affected. The task is safe to rerun on the same cluster.
 
 **Running:**
 

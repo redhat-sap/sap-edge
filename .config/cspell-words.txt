@@ -255,3 +255,5 @@ walldorf
 xbem
 xklaieniej
 xlarge
+istiogateways
+pipelinesascode

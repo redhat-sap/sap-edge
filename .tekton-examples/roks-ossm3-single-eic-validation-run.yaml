@@ -46,9 +46,18 @@
 #    No hub cluster is needed: the Secrets eic-credentials-roks-<cluster>
 #    and eic-registry-roks-<cluster> go to the pipeline namespace unless
 #    hubKubeconfigSecretName is set (see below).
-# 4. Add 172.17.0.0/18 (ROKS pod network) and 10.0.0.0/16 (VPC) to the IP
-#    filter allowlist of the httpbinipfilter iFlow (otherwise
-#    test-httpbinipfilter fails).
+# 4. Add the public egress IP of the pipeline cluster to the IP filter
+#    allowlist of the httpbinipfilter iFlow (otherwise test-httpbinipfilter
+#    fails). The run enables client IP preservation (task
+#    enable-client-ip-preservation: PROXY protocol on the IBM Cloud ALB of
+#    istio-ingressgateway), so the IP Filter policy sees that address; the
+#    task prints it; before the first run, find it from the pipeline
+#    namespace with:
+#      oc run egress-ip --rm -i --restart=Never \
+#        --image=registry.access.redhat.com/ubi9/ubi-minimal -- \
+#        curl -4 -s https://ifconfig.me
+#    Keep the VPC range 10.0.0.0/16 out of the allowlist, or the test passes
+#    without proving client IP preservation.
 # 5. Only for the optional browser automation (sapBrowserMode below): build
 #    and push the runner image (hack/sap-browser/PIPELINE.md), apply
 #    hack/sap-browser/roks-runner-rbac.yaml and upload the Linux elm CLI to
@@ -73,7 +82,7 @@ metadata:
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
-    pipelinesascode.tekton.dev/task: "[./.tekton/tasks/git-clone.yaml, ./.tekton/tasks/roks-deploy-task.yaml, ./.tekton/tasks/roks-validate-and-get-access-task.yaml, ./.tekton/tasks/roks-registry-access-task.yaml, ./.tekton/tasks/roks-validate-and-create-configmap-task.yaml, ./.tekton/tasks/roks-teardown-task.yaml, ./.tekton/tasks/ossm3-preflight-check-task.yaml, ./.tekton/tasks/ossm3-verify-operators-task.yaml, ./.tekton/tasks/ossm3-download-and-apply-rbac-task.yaml, ./.tekton/tasks/ossm3-prepare-namespaces-task.yaml, ./.tekton/tasks/ossm3-configure-mesh-task.yaml, ./.tekton/tasks/ossm3-generate-sa-based-kubeconfig-task.yaml]"
+    pipelinesascode.tekton.dev/task: "[./.tekton/tasks/git-clone.yaml, ./.tekton/tasks/roks-deploy-task.yaml, ./.tekton/tasks/roks-validate-and-get-access-task.yaml, ./.tekton/tasks/roks-registry-access-task.yaml, ./.tekton/tasks/roks-validate-and-create-configmap-task.yaml, ./.tekton/tasks/roks-enable-client-ip-preservation-task.yaml, ./.tekton/tasks/roks-teardown-task.yaml, ./.tekton/tasks/ossm3-preflight-check-task.yaml, ./.tekton/tasks/ossm3-verify-operators-task.yaml, ./.tekton/tasks/ossm3-download-and-apply-rbac-task.yaml, ./.tekton/tasks/ossm3-prepare-namespaces-task.yaml, ./.tekton/tasks/ossm3-configure-mesh-task.yaml, ./.tekton/tasks/ossm3-generate-sa-based-kubeconfig-task.yaml]"
     pipelinesascode.tekton.dev/max-keep-runs: "1"
     # "false": a push must never cancel this run. Cancelling kills the pod in
     # the middle of terraform apply (deploy-roks, 60-90 minutes) or destroy

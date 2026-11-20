@@ -1,0 +1,271 @@
+# SPDX-FileCopyrightText: 2026 SAP edge team
+# SPDX-FileContributor: Manjun Jiao (@mjiao)
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: roks-enable-client-ip-preservation
+spec:
+  description: >-
+    Enables client IP preservation on the EIC ingress gateway of a ROKS
+    cluster, so that the EIC IP Filter policy sees the client IP instead of a
+    private address of the IBM Cloud VPC ALB. Applies the EnvoyFilter
+    istio-gateways/ingressgateway-proxy-protocol (PROXY protocol listener
+    filter first on port 8443, connections without the header still
+    accepted), checks every ready ingress gateway pod for it, and only then
+    sets service.kubernetes.io/ibm-load-balancer-cloud-provider-enable-features
+    to proxy-protocol on the istio-ingressgateway Service. Then confirms
+    through the IBM Cloud VPC API (ibmcloud, API key from the credentials
+    Secret) that the ALB found by the Service's hostname is active and sends
+    PROXY protocol (proxy_protocol v1/v2) from every back-end pool, and prints the public egress
+    IP of the pipeline cluster, which the httpbinipfilter allowlist must
+    contain. Reads the ROKS cluster through the workspace kubeconfig. Must
+    run AFTER IstioGateways is deployed through ELM; safe to rerun.
+  params:
+    - name: clusterName
+      type: string
+      description: "ROKS cluster name"
+    - name: roksCredentialsSecretName
+      type: string
+      description: "Name of the Kubernetes Secret with the ROKS credentials; this task reads the key IBMCLOUD_API_KEY"
+    - name: ibmcloudRegion
+      type: string
+      description: "IBM Cloud region of the cluster"
+      default: "eu-de"
+    - name: ibmcloudResourceGroup
+      type: string
+      description: "IBM Cloud resource group used for the login"
+      default: "redhat-sap-edge-roks-ci"
+  workspaces:
+    - name: source
+      description: "Workspace with kubeconfig (token kubeconfig from roks-validate-and-get-access)"
+  steps:
+    - name: enable-client-ip-preservation
+      image: registry.access.redhat.com/ubi9/ubi
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: CLUSTER_NAME
+          value: "$(params.clusterName)"
+        - name: IBMCLOUD_REGION
+          value: "$(params.ibmcloudRegion)"
+        - name: IBMCLOUD_RESOURCE_GROUP
+          value: "$(params.ibmcloudResourceGroup)"
+        - name: ROKS_CREDENTIALS_SECRET_NAME
+          value: "$(params.roksCredentialsSecretName)"
+        # Read by ibmcloud login; never printed and never in argv
+        - name: IBMCLOUD_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: $(params.roksCredentialsSecretName)
+              key: IBMCLOUD_API_KEY
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        WORKSPACE_DIR="$(workspaces.source.path)"
+        WORKSPACE_KUBECONFIG="${WORKSPACE_DIR}/kubeconfig"
+        GATEWAY_NS="istio-gateways"
+        SERVICE_NAME="istio-ingressgateway"
+        GATEWAY_LABEL="istio=ingressgateway-com.sap.edgelm-istio-gateways"
+        ENVOYFILTER_NAME="ingressgateway-proxy-protocol"
+        GATEWAY_PORT="8443"
+        LISTENER_NAME="0.0.0.0_${GATEWAY_PORT}"
+        PROXY_FILTER="envoy.filters.listener.proxy_protocol"
+        ANNOTATION_KEY="service.kubernetes.io/ibm-load-balancer-cloud-provider-enable-features"
+        ANNOTATION_FEATURE="proxy-protocol"
+        SVC_WAIT_ATTEMPTS="${SVC_WAIT_ATTEMPTS:-20}"
+        SVC_WAIT_DELAY="${SVC_WAIT_DELAY:-30}"
+        LISTENER_WAIT_ATTEMPTS="${LISTENER_WAIT_ATTEMPTS:-20}"
+        LISTENER_WAIT_DELAY="${LISTENER_WAIT_DELAY:-10}"
+        LB_WAIT_ATTEMPTS="${LB_WAIT_ATTEMPTS:-30}"
+        LB_WAIT_DELAY="${LB_WAIT_DELAY:-30}"
+
+        # The ROKS cluster is reached only through the workspace kubeconfig
+        unset KUBECONFIG
+        TMP_DIR=$(mktemp -d)
+        trap 'rm -rf "${TMP_DIR}"' EXIT
+
+        fail() {
+          echo "❌ $*" >&2
+          exit 1
+        }
+
+        echo "🔒 Enabling client IP preservation on ROKS cluster ${CLUSTER_NAME}"
+        echo "=============================================="
+
+        [[ "${CLUSTER_NAME}" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || fail "Invalid clusterName '${CLUSTER_NAME}': lowercase letters, digits and hyphens only"
+        [[ -s "${WORKSPACE_KUBECONFIG}" ]] || fail "${WORKSPACE_KUBECONFIG} not found or empty; roks-validate-and-get-access writes it"
+
+        # Install tools (jq, oc, IBM Cloud CLI with the vpc-infrastructure plugin)
+        echo "📦 Installing required packages..."
+        dnf install -y jq tar gzip
+        echo "📦 Installing OpenShift CLI..."
+        curl -fsSL -o "${TMP_DIR}/oc.tar.gz" https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz
+        tar xzf "${TMP_DIR}/oc.tar.gz" -C "${TMP_DIR}" oc
+        mv "${TMP_DIR}/oc" /usr/local/bin/oc
+        rm -f "${TMP_DIR}/oc.tar.gz"
+        oc version --client
+        echo "📦 Installing IBM Cloud CLI..."
+        curl -fsSL https://clis.cloud.ibm.com/install/linux | sh
+        ibmcloud config --check-version=false
+        ibmcloud plugin install vpc-infrastructure -f
+        ibmcloud version
+        echo "✅ Tools installed"
+
+        CLUSTER_OC=(oc --kubeconfig "${WORKSPACE_KUBECONFIG}")
+
+        # --- 1. The Service has a load balancer hostname and gateway pods are ready ---
+        SVC_JSON=""
+        LB_HOSTNAME=""
+        READY_PODS=()
+        for ((ATTEMPT = 1; ATTEMPT <= SVC_WAIT_ATTEMPTS; ATTEMPT++)); do
+          SVC_JSON=$("${CLUSTER_OC[@]}" get service "${SERVICE_NAME}" -n "${GATEWAY_NS}" -o json 2>/dev/null) || SVC_JSON=""
+          LB_HOSTNAME=""
+          READY_PODS=()
+          if [[ -n "${SVC_JSON}" ]]; then
+            LB_HOSTNAME=$(jq -r '.status.loadBalancer.ingress[0].hostname // empty' <<< "${SVC_JSON}")
+            PODS_JSON=$("${CLUSTER_OC[@]}" get pods -n "${GATEWAY_NS}" -l "${GATEWAY_LABEL}" -o json 2>/dev/null) || PODS_JSON='{"items": []}'
+            while IFS= read -r POD; do
+              [[ -n "${POD}" ]] && READY_PODS+=("${POD}")
+            done < <(jq -r '.items[] | select(.status.phase == "Running" and any(.status.conditions[]?; .type == "Ready" and .status == "True")) | .metadata.name' <<< "${PODS_JSON}")
+          fi
+          if [[ -n "${LB_HOSTNAME}" ]] && [[ ${#READY_PODS[@]} -gt 0 ]]; then
+            break
+          fi
+          echo "   Waiting for ${GATEWAY_NS}/${SERVICE_NAME} with a load balancer hostname and ready ingress gateway pods (attempt ${ATTEMPT}/${SVC_WAIT_ATTEMPTS})"
+          if [[ ${ATTEMPT} -lt ${SVC_WAIT_ATTEMPTS} ]]; then
+            sleep "${SVC_WAIT_DELAY}"
+          fi
+        done
+        [[ -n "${SVC_JSON}" ]] || fail "Service ${GATEWAY_NS}/${SERVICE_NAME} not found; make sure IstioGateways is deployed through ELM"
+        [[ -n "${LB_HOSTNAME}" ]] || fail "Service ${GATEWAY_NS}/${SERVICE_NAME} has no load balancer hostname yet"
+        [[ ${#READY_PODS[@]} -gt 0 ]] || fail "No ready ingress gateway pods (label ${GATEWAY_LABEL}) in ${GATEWAY_NS}"
+        echo "✅ ${GATEWAY_NS}/${SERVICE_NAME}: load balancer ${LB_HOSTNAME}, ${#READY_PODS[@]} ready gateway pod(s)"
+
+        # --- 2. The gateway accepts PROXY protocol (and connections without it) ---
+        echo ""
+        echo "📋 Applying EnvoyFilter ${GATEWAY_NS}/${ENVOYFILTER_NAME}..."
+        "${CLUSTER_OC[@]}" apply -f - <<EOF
+        apiVersion: networking.istio.io/v1alpha3
+        kind: EnvoyFilter
+        metadata:
+          name: ${ENVOYFILTER_NAME}
+          namespace: ${GATEWAY_NS}
+        spec:
+          workloadSelector:
+            labels:
+              istio: ${GATEWAY_LABEL#istio=}
+          configPatches:
+            - applyTo: LISTENER_FILTER
+              match:
+                context: GATEWAY
+                listener:
+                  portNumber: ${GATEWAY_PORT}
+              patch:
+                operation: INSERT_FIRST
+                value:
+                  name: ${PROXY_FILTER}
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.listener.proxy_protocol.v3.ProxyProtocol
+                    allow_requests_without_proxy_protocol: true
+        EOF
+
+        # --- 3. Every ready gateway pod runs the filter before the ALB sends the header ---
+        # Once the ALB sends PROXY protocol, a pod without the filter fails
+        # every connection, so the annotation waits for all of them.
+        for POD in "${READY_PODS[@]}"; do
+          FIRST=""
+          for ((ATTEMPT = 1; ATTEMPT <= LISTENER_WAIT_ATTEMPTS; ATTEMPT++)); do
+            FIRST=$("${CLUSTER_OC[@]}" exec -n "${GATEWAY_NS}" "${POD}" -c istio-proxy -- \
+              pilot-agent request GET 'config_dump?resource=dynamic_listeners' 2>/dev/null |
+              jq -r --arg l "${LISTENER_NAME}" '.configs[]?.active_state?.listener? | select(.name == $l) | .listener_filters[0].name // empty' 2>/dev/null) || FIRST=""
+            if [[ "${FIRST}" == "${PROXY_FILTER}" ]]; then
+              break
+            fi
+            echo "   ${POD}: first listener filter on ${LISTENER_NAME} is '${FIRST:-none}' (attempt ${ATTEMPT}/${LISTENER_WAIT_ATTEMPTS})"
+            if [[ ${ATTEMPT} -lt ${LISTENER_WAIT_ATTEMPTS} ]]; then
+              sleep "${LISTENER_WAIT_DELAY}"
+            fi
+          done
+          [[ "${FIRST}" == "${PROXY_FILTER}" ]] || fail "${POD}: listener ${LISTENER_NAME} does not start with ${PROXY_FILTER}; the load balancer is left unchanged"
+          echo "   ✅ ${POD}: ${PROXY_FILTER} first on ${LISTENER_NAME}"
+        done
+
+        # --- 4. The ALB sends PROXY protocol ---
+        CURRENT=$(jq -r --arg k "${ANNOTATION_KEY}" '.metadata.annotations[$k] // empty' <<< "${SVC_JSON}")
+        if [[ ",${CURRENT}," == *",${ANNOTATION_FEATURE},"* ]]; then
+          echo "✅ ${ANNOTATION_KEY} already contains ${ANNOTATION_FEATURE}"
+        else
+          NEW_VALUE="${CURRENT:+${CURRENT},}${ANNOTATION_FEATURE}"
+          echo "📋 Setting ${ANNOTATION_KEY}=${NEW_VALUE} on ${GATEWAY_NS}/${SERVICE_NAME}..."
+          "${CLUSTER_OC[@]}" annotate service "${SERVICE_NAME}" -n "${GATEWAY_NS}" --overwrite "${ANNOTATION_KEY}=${NEW_VALUE}"
+        fi
+
+        # --- 5. The IBM Cloud VPC API confirms that the ALB sends PROXY protocol ---
+        # Checked also when the annotation was already set. The setting that
+        # makes the ALB send the PROXY protocol header to the gateway is the
+        # back-end pools' proxy_protocol (v1/v2); the listeners'
+        # accept_proxy_protocol is about headers from clients and stays false.
+        echo ""
+        echo "🔐 Logging in to IBM Cloud (region ${IBMCLOUD_REGION}, resource group ${IBMCLOUD_RESOURCE_GROUP})..."
+        # The CLI reads the API key from IBMCLOUD_API_KEY, so it is never in
+        # argv; no stdin, so that it fails instead of prompting.
+        ibmcloud login -r "${IBMCLOUD_REGION}" -g "${IBMCLOUD_RESOURCE_GROUP}" < /dev/null ||
+          fail "ibmcloud login failed (API key: key IBMCLOUD_API_KEY of Secret '${ROKS_CREDENTIALS_SECRET_NAME}')"
+
+        # Found by the hostname in the Service status, in any resource group
+        LBS_JSON=$(ibmcloud is load-balancers --all-resource-groups --output JSON) ||
+          fail "Listing the VPC load balancers failed (ibmcloud is load-balancers --all-resource-groups)"
+        LB_ID=$(jq -r --arg h "${LB_HOSTNAME}" '[.[] | select(.hostname == $h)][0].id // empty' <<< "${LBS_JSON}")
+        [[ -n "${LB_ID}" ]] || fail "No VPC load balancer with hostname ${LB_HOSTNAME} (ibmcloud is load-balancers --all-resource-groups)"
+        LB_NAME=$(jq -r --arg id "${LB_ID}" '.[] | select(.id == $id) | .name' <<< "${LBS_JSON}")
+
+        show_events() {
+          "${CLUSTER_OC[@]}" get events -n "${GATEWAY_NS}" --field-selector "involvedObject.name=${SERVICE_NAME}" \
+            --sort-by=.lastTimestamp 2>/dev/null | tail -n 5 || true
+        }
+
+        STATUS="unknown"
+        POOL_STATES=""
+        POOL_COUNT=0
+        ALL_PROXY="false"
+        for ((ATTEMPT = 1; ATTEMPT <= LB_WAIT_ATTEMPTS; ATTEMPT++)); do
+          STATUS=$(ibmcloud is load-balancer "${LB_ID}" --output JSON 2>/dev/null |
+            jq -r '.provisioning_status // "unknown"' 2>/dev/null) || STATUS="unknown"
+          POOLS_JSON=$(ibmcloud is load-balancer-pools "${LB_ID}" --output JSON 2>/dev/null) || POOLS_JSON="[]"
+          POOL_STATES=$(jq -r '[.[] | "\(.name)=\(.proxy_protocol // "unknown")"] | join(" ")' <<< "${POOLS_JSON}" 2>/dev/null) || POOL_STATES=""
+          POOL_COUNT=$(jq 'length' <<< "${POOLS_JSON}" 2>/dev/null) || POOL_COUNT=0
+          ALL_PROXY=$(jq -r 'length > 0 and all(.[]; .proxy_protocol == "v1" or .proxy_protocol == "v2")' <<< "${POOLS_JSON}" 2>/dev/null) || ALL_PROXY="false"
+          echo "   ALB ${LB_ID}: provisioning_status ${STATUS}, back-end pools (name=proxy_protocol) ${POOL_STATES:-none} (attempt ${ATTEMPT}/${LB_WAIT_ATTEMPTS})"
+          if [[ "${STATUS}" == "active" ]] && [[ "${ALL_PROXY}" == "true" ]]; then
+            break
+          fi
+          show_events | sed 's/^/      /'
+          if [[ ${ATTEMPT} -lt ${LB_WAIT_ATTEMPTS} ]]; then
+            sleep "${LB_WAIT_DELAY}"
+          fi
+        done
+        if [[ "${STATUS}" != "active" ]] || [[ "${ALL_PROXY}" != "true" ]]; then
+          echo "Latest events of ${GATEWAY_NS}/${SERVICE_NAME}:"
+          show_events
+          fail "ALB ${LB_ID} (${LB_NAME}) does not send PROXY protocol: provisioning_status ${STATUS}, back-end pools ${POOL_STATES:-none}. Without it, test-httpbinipfilter fails with \"Access forbidden for the caller IP\"."
+        fi
+        echo "✅ ALB ${LB_ID} (${LB_NAME}): active, PROXY protocol on all ${POOL_COUNT} back-end pools"
+
+        # --- 6. What the httpbinipfilter allowlist needs ---
+        # The endpoint tests run on the pipeline cluster, like this step, so
+        # they reach the gateway from this public address (best effort). IPv4
+        # only: the ALB is reached over IPv4, an IPv6 egress address would be
+        # the wrong one to allowlist.
+        EGRESS_IP=$(curl -4 -fsS --max-time 10 https://ifconfig.me 2>/dev/null) || EGRESS_IP=""
+        echo ""
+        if [[ "${EGRESS_IP}" =~ ^[0-9A-Fa-f:.]+$ ]]; then
+          echo "Public egress IP of the pipeline cluster: ${EGRESS_IP}"
+        else
+          echo "Public egress IP of the pipeline cluster: unknown (lookup failed)"
+        fi
+        echo "   The IP Filter policy now sees the clients' public IP addresses: the httpbinipfilter allowlist must contain this address."
+        echo "   Keep the VPC range 10.0.0.0/16 out of the allowlist, or test-httpbinipfilter passes without proving client IP preservation."
+        echo "   Side effect: the status port 15021 no longer answers through the load balancer (PROXY protocol on every listener); the ALB health checks use the health check node port and are not affected."

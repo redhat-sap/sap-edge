@@ -8,7 +8,7 @@ kind: Pipeline
 metadata:
   name: roks-ossm3-single-eic-validation-pipeline
   annotations:
-    description: "Complete SAP Edge Integration Cell validation pipeline for ROKS (Red Hat OpenShift on IBM Cloud, VPC): deploys a ROKS cluster with Terraform in the resource group redhat-sap-edge-roks-ci (IBM Cloud Container Registry namespace for ELM, IBM Cloud Databases for PostgreSQL and Redis), waits for the restricted-resources uploads to the run's own S3 folders, sets up OSSM3 restricted access, optionally drives the ELM steps with a Playwright browser behind a Route (sapBrowserMode), pauses for ELM registration and EIC deployment, runs two rounds of endpoint tests, and tears down the infrastructure"
+    description: "Complete SAP Edge Integration Cell validation pipeline for ROKS (Red Hat OpenShift on IBM Cloud, VPC): deploys a ROKS cluster with Terraform in the resource group redhat-sap-edge-roks-ci (IBM Cloud Container Registry namespace for ELM, IBM Cloud Databases for PostgreSQL and Redis), waits for the restricted-resources uploads to the run's own S3 folders, sets up OSSM3 restricted access, optionally drives the ELM steps with a Playwright browser behind a Route (sapBrowserMode), pauses for ELM registration and EIC deployment, enables client IP preservation (PROXY protocol on the IBM Cloud ALB of the istio-ingressgateway), runs two rounds of endpoint tests, and tears down the infrastructure"
 spec:
   # Failure policy (as ROSA/ARO/HCP): a run that fails before the teardown
   # approval, or whose teardown approval is rejected, leaves the cluster for
@@ -557,22 +557,44 @@ spec:
             - PostgreSQL: keys postgres-host, postgres-port, postgres-database, postgres-username, postgres-ca.crt; password: key POSTGRES_ADMIN_PASSWORD of Secret '$(params.roksCredentialsSecretName)' in the pipeline namespace on the pipeline cluster
             - Redis: keys redis-host, redis-port, redis-username, redis-password, redis-ca.crt
 
-            One-time (if not done yet): the httpbinipfilter iFlow's IP filter must allow 172.17.0.0/18 (ROKS pod network) and 10.0.0.0/16 (VPC), otherwise test-httpbinipfilter fails.
+            Client IP preservation: after this gate, enable-client-ip-preservation enables PROXY protocol on the IBM Cloud ALB of istio-ingressgateway, so the IP Filter policy sees the clients' public IP addresses. One-time (if not done yet): the httpbinipfilter iFlow's IP filter must allow the public egress IP of the pipeline cluster (printed by enable-client-ip-preservation), otherwise test-httpbinipfilter fails. To find it before approving, run in the pipeline namespace: oc run egress-ip --rm -i --restart=Never --image=registry.access.redhat.com/ubi9/ubi-minimal -- curl -4 -s https://ifconfig.me Keep the VPC range 10.0.0.0/16 out of the allowlist, or the test passes without proving client IP preservation.
 
             Please deploy iFlows for testing if not already done.
 
             After deployment is complete and istio-ingressgateway has a LoadBalancer address (ROKS VPC load balancers expose a hostname):
-            APPROVE: Continue to create ConfigMap and run endpoint tests
+            APPROVE: Continue to enable client IP preservation, create ConfigMap and run endpoint tests
             REJECT: Stop the pipeline; the cluster and its IBM Cloud resources stay (billable) until removed with: make roks-destroy CLUSTER=$(params.clusterName)
         - name: numberOfApprovalsRequired
           value: '1'
         - name: timeout
           value: '336h'
 
+    # Client IP preservation, always: the IBM Cloud ALB replaces the client
+    # IP with its private address, so without this the IP Filter policy sees
+    # the ALB. EnvoyFilter on the ingress gateway first, then the PROXY
+    # protocol annotation on istio-ingressgateway, confirmed through the IBM
+    # Cloud VPC API. After the gate: the Service exists only once ELM has
+    # deployed IstioGateways.
+    - name: enable-client-ip-preservation
+      runAfter: [approval-elm-eic-iflow-deployed]
+      taskRef: { name: roks-enable-client-ip-preservation }
+      params:
+        - name: clusterName
+          value: $(params.clusterName)
+        - name: roksCredentialsSecretName
+          value: $(params.roksCredentialsSecretName)
+        - name: ibmcloudRegion
+          value: $(params.ibmcloudRegion)
+        - name: ibmcloudResourceGroup
+          value: $(params.ibmcloudResourceGroup)
+      workspaces:
+        - name: source
+          workspace: source
+
     # Create ConfigMap cluster-info-roks-<cluster> with the EIC host and the
     # istio-ingressgateway LoadBalancer address (after ELM/EIC/iFlow deployment)
     - name: validate-and-create-configmap
-      runAfter: [approval-elm-eic-iflow-deployed]
+      runAfter: [enable-client-ip-preservation]
       taskRef: { name: roks-validate-and-create-configmap }
       params:
         - name: clusterName
@@ -582,8 +604,10 @@ spec:
           workspace: source
 
     # Endpoint tests run after ConfigMap creation
-    # NOTE: httpbinipfilter has an IP filter policy. The ROKS pod network
-    # (172.17.0.0/18) and VPC (10.0.0.0/16) must be in the iFlow's allowlist.
+    # NOTE: httpbinipfilter has an IP filter policy. With client IP
+    # preservation it sees the public egress IP of the pipeline cluster
+    # (printed by enable-client-ip-preservation), which must be in the
+    # iFlow's allowlist; keep the VPC range 10.0.0.0/16 out of it.
     - name: test-httpbinipfilter
       runAfter: [validate-and-create-configmap]
       when:
@@ -863,6 +887,7 @@ spec:
             * Namespace preparation: Completed
             * Service Mesh 3.x configuration: Completed
             * Restricted kubeconfig: Generated
+            * Client IP preservation (PROXY protocol on the IBM Cloud ALB): Completed
             * Endpoint tests (2 rounds): Completed
             * Automated EIC endpoint tests skipped: $(params.skipAutomatedTests)
 
