@@ -14,6 +14,18 @@ CI/CD pipelines for deploying and testing SAP Edge Integration Cell on ARO, ROSA
 example `-proxy`), and the run's `generateName` is `<name>-pr<N>-`. To run a
 pipeline on pull requests, copy its example run into `.tekton/`.
 
+**HCP cluster names** are `hcp-<hubClusterName>-<variant>-pr<N>` (for example
+`hcp-eli-multi-pr<N>`; `eic` is also a hub name, so the hub always comes right
+after `hcp-`), at most 30 characters with a 4-digit PR number: on the hub, the
+kube-apiserver Route gets the default host
+`kube-apiserver-external-clusters-<hostedClusterName>`, which must fit in a
+63-character DNS label. `s3Prefix` is `restricted-resources/<hostedClusterName>/`.
+Change the name together with `hubClusterName`. A second run of the same
+pipeline is a variant whose suffix names it, for example
+`hcp-ossm3-single-eic-validation-eli-backup-run.yaml` with the cluster
+`hcp-eli-backup-pr<N>`. `hack/tekton-tests/test_naming.sh` checks these rules.
+ROSA, ROKS and ARO keep their own cluster names (platform length limits).
+
 **`ossm3` in the name means restricted access:** the pipeline installs OpenShift
 Service Mesh 3, applies SAP's restricted-resources zips in two passes (see
 [Two-pass apply](#two-pass-apply-all-ossm3-pipelines)) and generates the
@@ -264,13 +276,13 @@ run files `restricted-resources/<hostedClusterName>/`), one folder per component
 
 ```text
 # Topology A (shared ELM, one mesh, N cells)
-restricted-resources/hcp-ossm3-multi-eic-pr<N>/
+restricted-resources/hcp-eli-multi-pr<N>/
   elm/            restricted-resources-Edge_Lifecycle_Management-<ver>.zip
   edge-icell-1/   restricted-resources-Edge_Integration_Cell-<ver>.zip
   edge-icell-2/   restricted-resources-Edge_Integration_Cell-<ver>.zip
 
 # Topology B (an ELM and a mesh per stack)
-restricted-resources/hcp-ossm3-multi-edge-node-pr<N>/
+restricted-resources/hcp-eli-multi-node-pr<N>/
   elm-1/          restricted-resources-Edge_Lifecycle_Management-<ver>.zip
   edge-icell-1/   restricted-resources-Edge_Integration_Cell-<ver>.zip
   elm-2/          restricted-resources-Edge_Lifecycle_Management-<ver>.zip

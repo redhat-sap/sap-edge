@@ -51,10 +51,11 @@ spec:
       value: "{{ pull_request_number }}"
 
     # --- HCP cluster parameters ---
-    # hostedClusterName: <pipeline name without -validation>-pr<N>; s3Prefix below
-    # uses the same name, so every cluster gets its own S3 folders
+    # hostedClusterName: hcp-<hubClusterName>-<variant>-pr<N>, at most 30 characters:
+    # the hub Route host kube-apiserver-external-clusters-<name> must fit in a
+    # 63-character DNS label; s3Prefix below uses the same name
     - name: hostedClusterName
-      value: "hcp-ossm3-single-eic-pr{{ pull_request_number }}"
+      value: "hcp-eic-single-pr{{ pull_request_number }}"
     - name: hostedClusterNamespace
       value: "clusters"
     - name: releaseImage
@@ -85,7 +86,7 @@ spec:
     # One folder per cluster (elm/ and edge-icell/ below it); earlier zips stay
     # (latest version per folder wins)
     - name: s3Prefix
-      value: "restricted-resources/hcp-ossm3-single-eic-pr{{ pull_request_number }}/"
+      value: "restricted-resources/hcp-eic-single-pr{{ pull_request_number }}/"
 
     # --- EIC services parameters ---
     - name: postgresVersion
