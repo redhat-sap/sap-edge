@@ -7,7 +7,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: hcp-single-eic-hub-eic-validation-pr{{ pull_request_number }}-
+  generateName: hcp-single-eic-validation-pr{{ pull_request_number }}-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
@@ -28,10 +28,11 @@ spec:
       value: "{{ revision }}"
     - name: pullRequestNumber
       value: "{{ pull_request_number }}"
-    # hostedClusterName: <pipeline name without -validation>-hub-<hubClusterName>-pr<N>
-    # ("eic" in a pipeline name is the product, "hub-<name>" the hub)
+    # hostedClusterName: hcp-<hubClusterName>-<variant>-pr<N>, at most 30 characters:
+    # the hub Route host kube-apiserver-external-clusters-<name> must fit in a
+    # 63-character DNS label
     - name: hostedClusterName
-      value: "hcp-single-eic-hub-eic-pr{{ pull_request_number }}"
+      value: "hcp-eic-full-pr{{ pull_request_number }}"
     - name: hostedClusterNamespace
       value: "clusters"
     - name: releaseImage

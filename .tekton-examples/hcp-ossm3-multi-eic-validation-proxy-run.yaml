@@ -34,7 +34,7 @@
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: hcp-ossm3-multi-eic-proxy-hub-eic-validation-pr{{ pull_request_number }}-
+  generateName: hcp-ossm3-multi-eic-validation-proxy-pr{{ pull_request_number }}-
   annotations:
     pipelinesascode.tekton.dev/on-event: "[pull_request]"   # only PRs
     pipelinesascode.tekton.dev/on-target-branch: "[main]"
@@ -58,11 +58,11 @@ spec:
       value: "{{ pull_request_number }}"
 
     # --- HCP cluster parameters ---
-    # hostedClusterName: <pipeline name without -validation>-proxy-hub-<hubClusterName>-pr<N>
-    # ("eic" in a pipeline name is the product, "hub-<name>" the hub); s3Prefix
-    # below uses the same name, so every cluster gets its own S3 folders
+    # hostedClusterName: hcp-<hubClusterName>-<variant>-pr<N>, at most 30 characters:
+    # the hub Route host kube-apiserver-external-clusters-<name> must fit in a
+    # 63-character DNS label; s3Prefix below uses the same name
     - name: hostedClusterName
-      value: "hcp-ossm3-multi-eic-proxy-hub-eic-pr{{ pull_request_number }}"
+      value: "hcp-eic-multi-proxy-pr{{ pull_request_number }}"
     - name: hostedClusterNamespace
       value: "clusters"
     - name: releaseImage
@@ -91,7 +91,7 @@ spec:
     - name: obcName
       value: "sap-eic-restricted-cluster-config-resources"
     - name: s3Prefix
-      value: "restricted-resources/hcp-ossm3-multi-eic-proxy-hub-eic-pr{{ pull_request_number }}/"
+      value: "restricted-resources/hcp-eic-multi-proxy-pr{{ pull_request_number }}/"
     - name: elmZipFolders
       value: "elm"
     - name: eicZipFolders
