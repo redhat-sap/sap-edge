@@ -143,11 +143,11 @@ spec:
     - name: publicDNS
       value: "false"
     - name: skipAutomatedTests
-      value: "true"
+      value: "false"
     - name: jiraSecretName
       value: "jira-secret-mj"
     - name: jiraIssueKey
-      value: ""                                 # Jira issue to comment on; empty skips update-jira-ticket
+      value: "SAPOCP-2286"                      # Jira issue to comment on; empty skips update-jira-ticket
     # --- Hub cluster (optional; none by default) ---
     # To store eic-credentials-roks-<cluster> and eic-registry-roks-<cluster>
     # on a hub cluster instead of the pipeline cluster, set this param to the
