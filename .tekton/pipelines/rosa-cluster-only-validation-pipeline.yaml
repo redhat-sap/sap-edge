@@ -36,7 +36,7 @@ spec:
       default: "redhat-token-secret"
     - name: hubKubeconfigSecretName
       type: string
-      description: "Name of the Secret containing kubeconfig for hub cluster (optional)"
+      description: "Optional Secret in the pipeline namespace with the kubeconfig (key kubeconfig, config or value) of another cluster that stores the access Secret eic-credentials-rosa-<cluster>; empty (default): the pipeline namespace on the pipeline cluster"
       default: ""
     - name: terraformStateS3Bucket
       type: string

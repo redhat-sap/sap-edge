@@ -59,9 +59,7 @@ spec:
     - name: jiraSecretName
       value: "jira-secret-mj"
     - name: jiraIssueKey
-      value: "SAPOCP-2108"
-    - name: hubClusterName
-      value: "eic"
+      value: "SAPOCP-2286"
     # Worker nodes are sized (Standard_D8s_v3 x3) to host Quay/ELM/EIC,
     # so keep master nodes unschedulable (control-plane only).
     - name: enableMasterScheduling

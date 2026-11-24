@@ -339,8 +339,9 @@ spec:
           elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.value}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
             echo "✅ Kubeconfig extracted (key: value)"
           else
-            echo "⚠️  Failed to extract hub kubeconfig, will use in-cluster service account"
-            HUB_KUBECONFIG=""
+            echo "❌ Failed to extract kubeconfig from secret '${HUB_KUBECONFIG_SECRET}'"
+            echo "   Secret should have kubeconfig data under key 'kubeconfig', 'config', or 'value'"
+            exit 1
           fi
           if [[ -n "${HUB_KUBECONFIG}" ]]; then
             chmod 600 "${HUB_KUBECONFIG}"

@@ -147,6 +147,15 @@ oc create secret generic rosa-postgres-admin-password \
   --from-literal=POSTGRES_ADMIN_PASSWORD="YourSecure-Password123!"
 ```
 
+**ARO and ROSA need no hub cluster.** The access Secret for ELM,
+`eic-credentials-aro-<cluster>` or `eic-credentials-rosa-<cluster>` (database
+connection data, Quay endpoint and credentials), is created in the pipeline
+namespace and deleted by the teardown. To keep it on another cluster instead,
+put that cluster's kubeconfig into a Secret in the pipeline namespace (key
+`kubeconfig`, `config` or `value`) and pass its name as the optional pipeline
+param `hubKubeconfigSecretName` (default empty). When that Secret cannot be
+read, the validate and Quay tasks fail; the teardown warns and continues.
+
 **ROKS-specific secrets** (one Secret, pipeline param `roksCredentialsSecretName`):
 ```bash
 # IBMCLOUD_API_KEY: IBM Cloud API key (preferably a service ID's key scoped to the resource group)

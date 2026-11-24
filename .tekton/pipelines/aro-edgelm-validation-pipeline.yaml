@@ -56,7 +56,7 @@ spec:
       default: "false"
     - name: hubKubeconfigSecretName
       type: string
-      description: "Name of the Secret containing kubeconfig for hub cluster (optional)"
+      description: "Optional Secret in the pipeline namespace with the kubeconfig (key kubeconfig, config or value) of another cluster that stores the access Secret eic-credentials-aro-<cluster>; empty (default): the pipeline namespace on the pipeline cluster"
       default: ""
     - name: targetVersionPrefix
       type: string

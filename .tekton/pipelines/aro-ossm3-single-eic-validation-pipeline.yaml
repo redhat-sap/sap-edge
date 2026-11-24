@@ -79,9 +79,10 @@ spec:
       type: string
       description: "Skip automated endpoint tests for manual execution: httpbinipfilter, slvredis, ratelimit-slvredis (true/false)"
       default: "false"
-    - name: hubClusterName
+    - name: hubKubeconfigSecretName
       type: string
-      description: "Name of the hub cluster (used to derive kubeconfig secret name: {hubClusterName}-kubeconfig)"
+      description: "Optional Secret in the pipeline namespace with the kubeconfig (key kubeconfig, config or value) of another cluster that stores the access Secret eic-credentials-aro-<cluster>; empty (default): the pipeline namespace on the pipeline cluster"
+      default: ""
     # --- OSSM3 parameters ---
     - name: ossm3Channel
       type: string
@@ -164,7 +165,7 @@ spec:
         - name: postgresAdminPasswordSecretName
           value: $(params.postgresAdminPasswordSecretName)
         - name: hubKubeconfigSecretName
-          value: $(params.hubClusterName)-kubeconfig
+          value: $(params.hubKubeconfigSecretName)
         - name: enableMasterScheduling
           value: $(params.enableMasterScheduling)
       workspaces:
@@ -186,7 +187,7 @@ spec:
         - name: quayAdminPasswordSecretName
           value: $(params.quayAdminPasswordSecretName)
         - name: hubKubeconfigSecretName
-          value: $(params.hubClusterName)-kubeconfig
+          value: $(params.hubKubeconfigSecretName)
       workspaces:
         - name: source
           workspace: source
@@ -839,7 +840,7 @@ spec:
         - name: azureSecretName
           value: $(params.azureSecretName)
         - name: hubKubeconfigSecretName
-          value: $(params.hubClusterName)-kubeconfig
+          value: $(params.hubKubeconfigSecretName)
       workspaces:
         - name: source
           workspace: source
