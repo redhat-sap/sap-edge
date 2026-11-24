@@ -34,6 +34,11 @@ spec:
       value: "eu-north-1"
     - name: rosaVersion
       value: "4.22.3"
+    # Hub cluster that stores the ELM access Secret
+    # eic-credentials-rosa-<cluster> (in the namespace of the kubeconfig's
+    # context), where ELM reads it from
+    - name: hubKubeconfigSecretName
+      value: "eic-kubeconfig"
     - name: awsSecretName
       value: "aws-mj"
     - name: redhatTokenSecretName

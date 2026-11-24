@@ -34,6 +34,11 @@ spec:
       value: "eic-on-ocp-demo"
     - name: aroVersion
       value: "4.21.22"
+    # Hub cluster that stores the ELM access Secret
+    # eic-credentials-aro-<cluster> (in the namespace of the kubeconfig's
+    # context), where ELM reads it from
+    - name: hubKubeconfigSecretName
+      value: "eic-kubeconfig"
     - name: azureSecretName
       value: "mj-azure-sp"
     - name: pullSecretName
