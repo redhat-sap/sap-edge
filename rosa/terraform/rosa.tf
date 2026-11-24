@@ -28,4 +28,10 @@ module "rosa-hcp" {
   oidc_config_id        = var.oidc_config_id
   create_operator_roles = var.create_operator_roles
   operator_role_prefix  = var.operator_role_prefix != "" ? var.operator_role_prefix : var.cluster_name
+
+  # ROSA classifies a subnet as public only if it routes to an internet
+  # gateway. Passing just the subnet IDs lets Terraform request the cluster
+  # before the internet gateway and routes exist; ROSA then sees only private
+  # subnets ("Availability zone ... has more than one private subnet").
+  depends_on = [module.vpc]
 }
