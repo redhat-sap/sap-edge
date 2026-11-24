@@ -327,16 +327,45 @@ spec:
 
         # QUAY_ENDPOINT was already extracted above
 
-        # Configure hub cluster kubeconfig for secret patching
+        # Configure hub cluster kubeconfig for secret patching.
+        # KUBECONFIG is exported and points at the cluster Quay is deployed
+        # to, where the hub Secret does not exist. Read the hub Secret
+        # through the pipeline cluster's in-cluster service account instead,
+        # snapshotted from the pod's mounted token.
+        PIPELINE_KUBECONFIG=""
+        SA_DIR="/var/run/secrets/kubernetes.io/serviceaccount"
+        if [[ -s "${SA_DIR}/token" ]]; then
+          PIPELINE_KUBECONFIG="/tmp/pipeline-kubeconfig"
+          {
+            echo "apiVersion: v1"
+            echo "kind: Config"
+            echo "clusters:"
+            echo "- name: in-cluster"
+            echo "  cluster:"
+            echo "    certificate-authority: ${SA_DIR}/ca.crt"
+            echo "    server: https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT_HTTPS:-443}"
+            echo "users:"
+            echo "- name: pipeline"
+            echo "  user:"
+            echo "    token: $(cat "${SA_DIR}/token")"
+            echo "contexts:"
+            echo "- name: default"
+            echo "  context:"
+            echo "    cluster: in-cluster"
+            echo "    user: pipeline"
+            echo "    namespace: $(cat "${SA_DIR}/namespace")"
+            echo "current-context: default"
+          } > "${PIPELINE_KUBECONFIG}"
+        fi
         HUB_KUBECONFIG=""
         if [[ -n "${HUB_KUBECONFIG_SECRET}" ]]; then
           echo "🔐 Extracting hub cluster kubeconfig from secret: ${HUB_KUBECONFIG_SECRET}..."
           HUB_KUBECONFIG="/tmp/hub-kubeconfig"
-          if kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.kubeconfig}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+          if KUBECONFIG="${PIPELINE_KUBECONFIG}" kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.kubeconfig}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
             echo "✅ Kubeconfig extracted (key: kubeconfig)"
-          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.config}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+          elif KUBECONFIG="${PIPELINE_KUBECONFIG}" kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.config}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
             echo "✅ Kubeconfig extracted (key: config)"
-          elif kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.value}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
+          elif KUBECONFIG="${PIPELINE_KUBECONFIG}" kubectl get secret "${HUB_KUBECONFIG_SECRET}" -o jsonpath='{.data.value}' 2>/dev/null | base64 -d > "${HUB_KUBECONFIG}" 2>/dev/null && [[ -s "${HUB_KUBECONFIG}" ]]; then
             echo "✅ Kubeconfig extracted (key: value)"
           else
             echo "❌ Failed to extract kubeconfig from secret '${HUB_KUBECONFIG_SECRET}'"
