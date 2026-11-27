@@ -26,6 +26,9 @@ ALLOWLIST = [
     ("rosa-edgelm-validation-pipeline", "ApprovalTask.when", "approval-second-validation-round"),
     ("rosa-ossm3-single-eic-validation-pipeline", "ApprovalTask.when", "approval-elm-eic-iflow-deployed"),
     ("rosa-ossm3-single-eic-validation-pipeline", "ApprovalTask.when", "approval-second-test-round"),
+    # roks-ossm3 gates the same approvals with skipEicValidation, like aro/rosa
+    ("roks-ossm3-single-eic-validation-pipeline", "ApprovalTask.when", "approval-elm-eic-iflow-deployed"),
+    ("roks-ossm3-single-eic-validation-pipeline", "ApprovalTask.when", "approval-second-test-round"),
     # Pre-existing defect: postgresAdminPassword param removed from rosa-deploy-with-eic-services task but pipeline still passes it
     ("rosa-edgelm-validation-pipeline", "param.undeclared", "deploy-rosa.postgresAdminPassword"),
     ("rosa-cluster-only-validation-pipeline", "param.undeclared", "deploy-rosa.postgresAdminPassword"),

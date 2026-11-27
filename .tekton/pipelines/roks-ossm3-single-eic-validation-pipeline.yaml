@@ -100,6 +100,10 @@ spec:
       type: string
       description: "Skip all automated EIC endpoint tests, both rounds: http test1, http testelster, httpbinipfilter, slvredis, ratelimit-slvredis (true/false)"
       default: "false"
+    - name: skipEicValidation
+      type: string
+      description: "Skip the EIC pass and its validation: no EIC zip wait and Edge Integration Cell deployment, no client IP preservation, no ConfigMap and endpoint tests, no Jira update; skips directly to teardown approval (true/false)"
+      default: "false"
 
     # --- Jira parameters ---
     - name: jiraSecretName
@@ -457,6 +461,10 @@ spec:
     # Wait for the EIC restricted-resources zip to be uploaded (log: the upload plan)
     - name: wait-eic-zip
       runAfter: [generate-sa-based-kubeconfig]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
       taskRef: { name: ossm3-wait-for-restricted-resources }
       params:
         - name: obcName
@@ -473,6 +481,10 @@ spec:
     # Download and apply the EIC restricted-access resources
     - name: apply-eic-resources
       runAfter: [wait-eic-zip]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
       taskRef: { name: ossm3-download-and-apply-rbac }
       params:
         - name: hostedClusterName
@@ -492,6 +504,10 @@ spec:
     # Labels and SCC annotations for the EIC namespaces the EIC bundle created
     - name: prepare-namespaces-eic
       runAfter: [apply-eic-resources]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
       taskRef: { name: ossm3-prepare-namespaces }
       params:
         - name: hostedClusterName
@@ -506,6 +522,10 @@ spec:
     # only after this task, so the EIC pods get their sidecars
     - name: configure-mesh-eic
       runAfter: [prepare-namespaces-eic]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
       taskRef: { name: ossm3-configure-mesh }
       params:
         - name: hostedClusterName
@@ -524,6 +544,10 @@ spec:
     # optional browser deploy session (no `when`)
     - name: approval-elm-eic-iflow-deployed
       runAfter: [configure-mesh-eic, registry-access, sap-browser-deploy]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
       taskRef:
         apiVersion: openshift-pipelines.org/v1alpha1
         kind: ApprovalTask
@@ -577,6 +601,10 @@ spec:
     # deployed IstioGateways.
     - name: enable-client-ip-preservation
       runAfter: [approval-elm-eic-iflow-deployed]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
       taskRef: { name: roks-enable-client-ip-preservation }
       params:
         - name: clusterName
@@ -595,6 +623,10 @@ spec:
     # istio-ingressgateway LoadBalancer address (after ELM/EIC/iFlow deployment)
     - name: validate-and-create-configmap
       runAfter: [enable-client-ip-preservation]
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
       taskRef: { name: roks-validate-and-create-configmap }
       params:
         - name: clusterName
@@ -611,6 +643,9 @@ spec:
     - name: test-httpbinipfilter
       runAfter: [validate-and-create-configmap]
       when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
         - input: $(params.skipAutomatedTests)
           operator: in
           values: ["false"]
@@ -631,6 +666,9 @@ spec:
     - name: test-http-test1
       runAfter: [validate-and-create-configmap]
       when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
         - input: $(params.skipAutomatedTests)
           operator: in
           values: ["false"]
@@ -651,6 +689,9 @@ spec:
     - name: test-http-testelster
       runAfter: [validate-and-create-configmap]
       when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
         - input: $(params.skipAutomatedTests)
           operator: in
           values: ["false"]
@@ -671,6 +712,9 @@ spec:
     - name: test-slvredis
       runAfter: [validate-and-create-configmap]
       when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
         - input: $(params.skipAutomatedTests)
           operator: in
           values: ["false"]
@@ -691,6 +735,9 @@ spec:
     - name: test-ratelimit-slvredis
       runAfter: [test-slvredis]
       when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
         - input: $(params.skipAutomatedTests)
           operator: in
           values: ["false"]
@@ -716,6 +763,10 @@ spec:
         - test-http-testelster
         - test-slvredis
         - test-ratelimit-slvredis
+      when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
       taskRef:
         apiVersion: openshift-pipelines.org/v1alpha1
         kind: ApprovalTask
@@ -746,6 +797,9 @@ spec:
     - name: test-httpbinipfilter-round2
       runAfter: [approval-second-test-round]
       when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
         - input: $(params.skipAutomatedTests)
           operator: in
           values: ["false"]
@@ -766,6 +820,9 @@ spec:
     - name: test-http-test1-round2
       runAfter: [approval-second-test-round]
       when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
         - input: $(params.skipAutomatedTests)
           operator: in
           values: ["false"]
@@ -786,6 +843,9 @@ spec:
     - name: test-http-testelster-round2
       runAfter: [approval-second-test-round]
       when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
         - input: $(params.skipAutomatedTests)
           operator: in
           values: ["false"]
@@ -806,6 +866,9 @@ spec:
     - name: test-slvredis-round2
       runAfter: [approval-second-test-round]
       when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
         - input: $(params.skipAutomatedTests)
           operator: in
           values: ["false"]
@@ -826,6 +889,9 @@ spec:
     - name: test-ratelimit-slvredis-round2
       runAfter: [test-slvredis-round2]
       when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
         - input: $(params.skipAutomatedTests)
           operator: in
           values: ["false"]
@@ -851,6 +917,9 @@ spec:
         - test-slvredis-round2
         - test-ratelimit-slvredis-round2
       when:
+        - input: $(params.skipEicValidation)
+          operator: in
+          values: ["false"]
         - input: $(params.jiraIssueKey)
           operator: notin
           values: [""]

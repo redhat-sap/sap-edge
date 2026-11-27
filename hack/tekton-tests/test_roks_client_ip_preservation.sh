@@ -478,8 +478,9 @@ expect_success
 echo "✅ PASS: api_key_not_leaked"
 
 # Test case: pipeline_wiring
-# Always runs between the ELM/EIC gate and the ConfigMap; run files list the
-# task; the gate tells the user to allowlist the egress IP, not the VPC
+# Runs between the ELM/EIC gate and the ConfigMap when the EIC validation is
+# not skipped; run files list the task; the gate tells the user to allowlist
+# the egress IP, not the VPC
 echo ""
 echo "Test: pipeline_wiring"
 echo "--------------------------------------------"
@@ -507,8 +508,12 @@ else:
         errors.append(f"taskRef: {task.get('taskRef')}")
     if task.get("runAfter") != ["approval-elm-eic-iflow-deployed"]:
         errors.append(f"runAfter: {task.get('runAfter')}")
-    if "when" in task:
-        errors.append("enable-client-ip-preservation must always run (no when)")
+    if task.get("when") != [{
+        "input": "$(params.skipEicValidation)",
+        "operator": "in",
+        "values": ["false"],
+    }]:
+        errors.append(f"enable-client-ip-preservation must run unless the EIC validation is skipped (when: {task.get('when')})")
     params = {p["name"]: p["value"] for p in task.get("params", [])}
     expected = {name: f"$(params.{name})" for name in
                 ("clusterName", "roksCredentialsSecretName", "ibmcloudRegion", "ibmcloudResourceGroup")}

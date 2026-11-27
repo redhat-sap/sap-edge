@@ -142,6 +142,8 @@ spec:
       value: "eic-auth-secret"
     - name: publicDNS
       value: "false"
+    - name: skipEicValidation
+      value: "false"
     - name: skipAutomatedTests
       value: "false"
     - name: jiraSecretName

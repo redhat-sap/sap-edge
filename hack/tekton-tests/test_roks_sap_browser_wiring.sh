@@ -473,7 +473,12 @@ for needle in ('helper_source="$SAP_BROWSER_SOURCE"',
 
 for name, task in tasks.items():
     if task.get("taskRef", {}).get("kind") == "ApprovalTask":
-        check("when" not in task, f"ApprovalTask {name} must not carry when")
+        # The EIC-pass approvals carry the skipEicValidation gate, like aro/rosa
+        check(task.get("when") in (None, [{
+            "input": "$(params.skipEicValidation)",
+            "operator": "in",
+            "values": ["false"],
+        }]), f"ApprovalTask {name} must not carry when (except skipEicValidation)")
 
 # Only sap-browser-deploy consumes the Edge Node ID
 for name, task in tasks.items():
