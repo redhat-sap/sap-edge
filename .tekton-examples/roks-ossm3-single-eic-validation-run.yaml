@@ -121,7 +121,7 @@ spec:
     - name: ibmcloudResourceGroup
       value: "redhat-sap-edge-roks-ci"
     - name: openshiftVersion
-      value: "4.21_openshift"
+      value: "4.22_openshift"
     - name: workerFlavor
       value: "bx2.16x64"
     - name: workersPerZone
@@ -141,6 +141,8 @@ spec:
     - name: eicAuthSecretName
       value: "eic-auth-secret"
     - name: publicDNS
+      value: "false"
+    - name: skipEicValidation
       value: "false"
     - name: skipAutomatedTests
       value: "false"

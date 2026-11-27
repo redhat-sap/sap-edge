@@ -23,6 +23,16 @@
         namespace: openshift-marketplace
         kubeconfig: "{{ kubeconfig_path | default(omit) }}"
       register: quay_packagemanifest
+      # On a new cluster the OLM package server and the catalog pods keep
+      # starting for a while after the cluster reports ready (ARO: about 20
+      # minutes after the deployment), and until then the PackageManifest is
+      # missing or the API is not served. Retry instead of failing on an
+      # empty list in the next task.
+      until: >-
+        (quay_packagemanifest.resources | default([]) | length > 0) and
+        (quay_packagemanifest.resources[0].status.channels | default([]) | length > 0)
+      retries: 60
+      delay: 30
 
     - name: Select latest stable channel
       set_fact:

@@ -34,6 +34,11 @@ spec:
       value: "eic-on-ocp-demo"
     - name: aroVersion
       value: "4.21.22"
+    # Hub cluster that stores the ELM access Secret
+    # eic-credentials-aro-<cluster> (in the namespace of the kubeconfig's
+    # context), where ELM reads it from
+    - name: hubKubeconfigSecretName
+      value: "eic-kubeconfig"
     - name: azureSecretName
       value: "mj-azure-sp"
     - name: pullSecretName
@@ -59,9 +64,7 @@ spec:
     - name: jiraSecretName
       value: "jira-secret-mj"
     - name: jiraIssueKey
-      value: "SAPOCP-2108"
-    - name: hubClusterName
-      value: "eic"
+      value: "SAPOCP-2286"
     # Worker nodes are sized (Standard_D8s_v3 x3) to host Quay/ELM/EIC,
     # so keep master nodes unschedulable (control-plane only).
     - name: enableMasterScheduling

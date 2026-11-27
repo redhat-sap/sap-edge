@@ -94,6 +94,39 @@ spec:
           echo "✅ Hub kubeconfig saved for later use"
         else
           echo "ℹ️  No hub kubeconfig secret provided, using in-cluster service account"
+          # oc login below overwrites ~/.kube/config with the cluster being
+          # validated, and an empty KUBECONFIG later falls back to that file,
+          # which would store the Secret on the validated cluster. Snapshot
+          # the in-cluster service account now, before any oc login, so the
+          # Secret lands in the pipeline namespace on the pipeline cluster.
+          HUB_KUBECONFIG="/tmp/pipeline-kubeconfig"
+          SA_DIR="/var/run/secrets/kubernetes.io/serviceaccount"
+          if [[ ! -s "${SA_DIR}/token" ]]; then
+            echo "❌ No hub kubeconfig secret and no in-cluster service account token"
+            echo "   Pass hubKubeconfigSecretName to choose where the Secret is stored"
+            exit 1
+          fi
+          {
+            echo "apiVersion: v1"
+            echo "kind: Config"
+            echo "clusters:"
+            echo "- name: in-cluster"
+            echo "  cluster:"
+            echo "    certificate-authority: ${SA_DIR}/ca.crt"
+            echo "    server: https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT_HTTPS:-443}"
+            echo "users:"
+            echo "- name: pipeline"
+            echo "  user:"
+            echo "    token: $(cat "${SA_DIR}/token")"
+            echo "contexts:"
+            echo "- name: default"
+            echo "  context:"
+            echo "    cluster: in-cluster"
+            echo "    user: pipeline"
+            echo "    namespace: $(cat "${SA_DIR}/namespace")"
+            echo "current-context: default"
+          } > "${HUB_KUBECONFIG}"
+          chmod 600 "${HUB_KUBECONFIG}"
         fi
 
         echo "🔐 Logging into Azure..."
@@ -487,12 +520,11 @@ spec:
           fi
         fi
 
-        # Switch back to hub cluster for secret creation
-        if [[ -n "${HUB_KUBECONFIG}" ]]; then
-          MGMT_KUBECONFIG="${HUB_KUBECONFIG}"
-        else
-          MGMT_KUBECONFIG=""
-        fi
+        # Switch back to the hub cluster (or the snapshotted pipeline cluster)
+        # for secret creation. HUB_KUBECONFIG is never empty here, so oc can
+        # never fall back to ~/.kube/config, which oc login repointed at the
+        # cluster that was just validated.
+        MGMT_KUBECONFIG="${HUB_KUBECONFIG}"
 
         KUBECONFIG="${MGMT_KUBECONFIG}" oc delete secret "${CREDS_SECRET_NAME}" --ignore-not-found=true
         KUBECONFIG="${MGMT_KUBECONFIG}" oc create secret generic "${CREDS_SECRET_NAME}" "${SECRET_ARGS[@]}"

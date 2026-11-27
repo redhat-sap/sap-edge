@@ -147,6 +147,21 @@ oc create secret generic rosa-postgres-admin-password \
   --from-literal=POSTGRES_ADMIN_PASSWORD="YourSecure-Password123!"
 ```
 
+**Where the ELM access Secret lives.** The access Secret for ELM,
+`eic-credentials-aro-<cluster>` or `eic-credentials-rosa-<cluster>` (database
+connection data, Quay endpoint and credentials), is created on the hub cluster
+ELM reads it from, in the namespace of that cluster's kubeconfig context, and
+deleted by the teardown. Put the hub's kubeconfig into a Secret in the
+pipeline namespace (key `kubeconfig`, `config` or `value`) and pass its name
+as the pipeline param `hubKubeconfigSecretName`; the ossm3 validation runs
+use `eic-kubeconfig`, like the EdgeLM and cluster-only runs. With the default
+(empty) the validate tasks snapshot the pod's in-cluster service account
+before any `oc login` — which repoints `~/.kube/config` at the validated
+cluster, where an empty `KUBECONFIG` would otherwise store the Secret — so
+the Secret lands in the pipeline namespace on the pipeline cluster. When the
+named Secret cannot be read, the validate and Quay tasks fail; the teardown
+warns and continues.
+
 **ROKS-specific secrets** (one Secret, pipeline param `roksCredentialsSecretName`):
 ```bash
 # IBMCLOUD_API_KEY: IBM Cloud API key (preferably a service ID's key scoped to the resource group)
