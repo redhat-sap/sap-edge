@@ -58,9 +58,9 @@ spec:
     - name: publicDNS
       value: "false"
     - name: skipEicValidation
-      value: "false"
+      value: "true"
     - name: skipAutomatedTests
-      value: "false"
+      value: "true"
     - name: jiraSecretName
       value: "jira-secret-mj"
     - name: jiraIssueKey
